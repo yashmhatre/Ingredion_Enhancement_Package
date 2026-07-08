@@ -8,14 +8,12 @@ schedule, and evolves the schema safely instead of re-scanning the whole
 source directory on every run.
 """
 
+from pyspark.sql.functions import col
+
 from .config import IngestionConfig
 
 
 def read_json_stream(spark, config: IngestionConfig):
-    """
-    Returns a streaming DataFrame reading new JSON files from
-    config.source_path using Auto Loader.
-    """
     reader = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "json")
@@ -26,7 +24,10 @@ def read_json_stream(spark, config: IngestionConfig):
     )
 
     if config.max_files_per_trigger:
-        reader = reader.option("cloudFiles.maxFilesPerTrigger", config.max_files_per_trigger)
+        reader = reader.option(
+            "cloudFiles.maxFilesPerTrigger",
+            config.max_files_per_trigger,
+        )
 
     if config.schema_hint_ddl:
         reader = reader.schema(config.schema_hint_ddl)
@@ -36,18 +37,24 @@ def read_json_stream(spark, config: IngestionConfig):
 
     df = reader.load(config.source_path)
 
-    from pyspark.sql.functions import input_file_name
-    df = df.withColumn("_input_file_name", input_file_name())
+    # Unity Catalog lineage
+    df = (
+        df.select("*", "_metadata")
+          .withColumn("_input_file_name", col("_metadata.file_path"))
+          .drop("_metadata")
+    )
 
     return df
 
 
-def get_trigger_kwargs(config: IngestionConfig) -> dict:
-    """Translates config.trigger_mode into the kwargs writeStream.trigger() expects."""
+def get_trigger_kwargs(config: IngestionConfig):
     if config.trigger_mode == "availableNow":
         return {"availableNow": True}
+
     if config.trigger_mode == "once":
         return {"once": True}
+
     if config.trigger_mode == "processingTime":
         return {"processingTime": config.trigger_processing_time}
+
     raise ValueError(f"Unknown trigger_mode: {config.trigger_mode}")

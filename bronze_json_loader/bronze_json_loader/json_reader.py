@@ -45,8 +45,15 @@ def read_json(spark, config: IngestionConfig):
 
     df = reader.load(config.source_path)
 
+    from pyspark.sql.functions import col
+
+    df = (
+        reader.load(config.source_path)
+            .select("*", col("_metadata.file_path").alias("_input_file_name"))
+    )
+
     # Track provenance regardless of flatten mode - cheap and always useful in bronze.
-    from pyspark.sql.functions import input_file_name
-    df = df.withColumn("_input_file_name", input_file_name())
+    # from pyspark.sql.functions import input_file_name
+    # df = df.withColumn("_input_file_name", input_file_name())
 
     return df

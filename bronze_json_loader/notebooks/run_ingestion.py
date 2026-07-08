@@ -1,5 +1,8 @@
 # Databricks notebook source
-# COMMAND ----------
+# /// script
+# [tool.databricks.environment]
+# environment_version = "2"
+# ///
 # MAGIC %md
 # MAGIC # Bronze JSON Ingestion - Job Entrypoint
 # MAGIC Parameterized entrypoint meant to be run as a Databricks Job task
@@ -8,18 +11,32 @@
 # MAGIC table/source - only the parameters change per job.
 
 # COMMAND ----------
+
 import sys
 
 # When shipped as a workspace file alongside this notebook, this makes the
 # package importable without a full wheel install. Prefer installing the
 # wheel as a cluster/job library in real production use.
-sys.path.append("/Workspace/Shared/bronze_json_loader")  # adjust to your deployed path
+sys.path.append("/Workspace/Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader")  # adjust to your deployed path
+
+# COMMAND ----------
+
+import sys
+
+sys.path.insert(
+    0,
+    "/Workspace/Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader"
+)
+
+# COMMAND ----------
+
 
 from bronze_json_loader import BronzeIngestion, IngestionConfig, get_logger
 
 logger = get_logger()
 
 # COMMAND ----------
+
 dbutils.widgets.text("config_path", "", "Path to config YAML/JSON (optional)")
 dbutils.widgets.text("source_path", "", "Source path (overrides config)")
 dbutils.widgets.text("catalog", "", "Catalog (optional)")
@@ -32,6 +49,7 @@ dbutils.widgets.text("checkpoint_location", "", "Checkpoint location (streaming 
 dbutils.widgets.text("schema_location", "", "Schema location (streaming only)")
 
 # COMMAND ----------
+
 config_path = dbutils.widgets.get("config_path").strip()
 
 overrides = {}
@@ -51,6 +69,7 @@ else:
 logger.info("Resolved config: %s", config.to_dict())
 
 # COMMAND ----------
+
 job = BronzeIngestion(spark, config)
 
 if config.ingestion_mode == "streaming":
