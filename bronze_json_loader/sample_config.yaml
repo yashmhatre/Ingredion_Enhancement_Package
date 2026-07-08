@@ -1,19 +1,19 @@
 # Sample config for bronze_json_loader
 # Any Spark-readable path works: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/
 
-source_path: "abfss://raw@mystorage.dfs.core.windows.net/orders/"
+source_path: "/Volumes/workspace/default/ingredion/orders.json"
 multiline: true
 # schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
 reader_options: {}
 
-flatten_mode: "auto"          # raw | flatten | auto
+flatten_mode: "raw"          # raw | flatten | auto
 flatten_separator: "_"
 explode_arrays: false
 max_flatten_depth: null
 auto_flatten_threshold: 5
 
-catalog: "main"                # omit/null for hive_metastore
-schema_name: "bronze"
+catalog: "workspace"                # omit/null for hive_metastore
+schema_name: "default"
 table: "orders_raw"
 write_mode: "append"           # append | overwrite | merge
 # merge_keys: ["order_id"]
