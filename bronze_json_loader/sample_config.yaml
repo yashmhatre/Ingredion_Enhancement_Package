@@ -1,0 +1,46 @@
+# Sample config for bronze_json_loader
+# Any Spark-readable path works: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/
+
+source_path: "abfss://raw@mystorage.dfs.core.windows.net/orders/"
+multiline: true
+# schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
+reader_options: {}
+
+flatten_mode: "auto"          # raw | flatten | auto
+flatten_separator: "_"
+explode_arrays: false
+max_flatten_depth: null
+auto_flatten_threshold: 5
+
+catalog: "main"                # omit/null for hive_metastore
+schema_name: "bronze"
+table: "orders_raw"
+write_mode: "append"           # append | overwrite | merge
+# merge_keys: ["order_id"]
+partition_by: null
+merge_schema: true
+
+add_audit_columns: true
+audit_ingest_ts_col: "_ingested_at"
+audit_source_file_col: "_source_file"
+audit_batch_id_col: "_batch_id"
+# batch_id: "manual-batch-001"
+
+# --- Data quality ---
+required_columns: []            # e.g. ["order_id", "customer_id"]
+fail_on_quality_error: true      # false = quarantine bad rows instead of failing the job
+# quarantine_table: "main.bronze.orders_raw_quarantine"
+
+# --- Reliability ---
+retry_attempts: 3
+retry_delay_seconds: 10.0
+
+# --- Incremental (Auto Loader) ingestion - only used when ingestion_mode: streaming ---
+# ingestion_mode: "streaming"
+# checkpoint_location: "/Volumes/main/bronze/_checkpoints/orders_raw"
+# schema_location: "/Volumes/main/bronze/_schemas/orders_raw"
+# schema_evolution_mode: "addNewColumns"   # addNewColumns | rescue | failOnNewColumns | none
+# rescued_data_column: "_rescued_data"
+# max_files_per_trigger: 1000
+# trigger_mode: "availableNow"             # availableNow | once | processingTime
+# trigger_processing_time: "30 seconds"    # required if trigger_mode == processingTime
