@@ -37,6 +37,45 @@ resources:
       email_notifications:
         on_failure:
           - ${var.notification_email}
+
+    # Directory ingestion: loads every .json in source_dir into its own
+    # bronze table named {filename}_bronze. Run with:
+    #   databricks bundle run bronze_directory_ingestion
+    bronze_directory_ingestion:
+      name: bronze_directory_ingestion
+      # max_concurrent_runs: 1
+
+      tasks:
+        - task_key: ingest_directory
+
+          notebook_task:
+            notebook_path: /Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader/notebooks/run_directory_ingestion
+            base_parameters:
+              source_dir: /Volumes/${var.catalog}/default/ingredion/
+              catalog: ${var.catalog}
+              schema_name: default
+              table_name_template: "{filename}_bronze"
+              flatten_mode: raw
+              write_mode: append
+              multiline: "true"
+              max_files: "50"
+              stop_on_error: "false"
+              # Data quality: applied to every file unless overridden below.
+              required_columns: ""                  # e.g. "order_id" or "order_id,customer_id"
+              fail_on_quality_error: "false"        # false = quarantine bad rows, keep loading
+              # Per-file overrides as a JSON string (filename -> IngestionConfig fields):
+              per_file_config_json: >-
+                {"orders_quarantine_test.json": {"required_columns": ["order_id"]}}
+
+      # Uncomment to run on a schedule instead of manually:
+      # schedule:
+      #   quartz_cron_expression: "0 0 6 * * ?"   # daily 06:00 UTC
+      #   timezone_id: "UTC"
+      #   pause_status: UNPAUSED
+
+      email_notifications:
+        on_failure:
+          - ${var.notification_email}
 # resources:
   # jobs:
   #   bronze_orders_ingestion:

@@ -1,7 +1,7 @@
 # Sample config for bronze_json_loader
 # Any Spark-readable path works: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/
 
-source_path: "/Volumes/workspace/default/ingredion/orders.json"
+source_path: "/Volumes/workspace/default/ingredion/"
 multiline: true
 # schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
 reader_options: {}
