@@ -30,9 +30,9 @@ resources:
         - task_key: ingest_orders
 
           notebook_task:
-            notebook_path: notebooks/run_ingestion.py
+            notebook_path: /Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader/notebooks/run_ingestion
             base_parameters:
-              config_path: /Volumes/${var.catalog}/configs/bronze_json_loader/orders_bronze.yaml
+              config_path: /Workspace/Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader/config/order_bronze.yaml
 
       email_notifications:
         on_failure:
