@@ -18,6 +18,33 @@ jobs:
           FILES=$(git diff --name-only HEAD~1 HEAD | tr '\n' ', ')
           echo "files=$FILES" >> "$GITHUB_OUTPUT"
 
+      - name: Notify Teams
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "type": "message",
+            "attachments": [{
+              "contentType": "application/vnd.microsoft.card.adaptive",
+              "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                  {"type": "TextBlock", "text": "🔔 Push to ${{ github.repository }}", "weight": "bolder", "size": "medium"},
+                  {"type": "FactSet", "facts": [
+                    {"title": "Branch", "value": "${{ github.ref_name }}"},
+                    {"title": "Author", "value": "${{ github.actor }}"},
+                    {"title": "Message", "value": "${{ github.event.head_commit.message }}"},
+                    {"title": "Files changed", "value": "${{ steps.changes.outputs.files }}"}
+                  ]}
+                ],
+                "actions": [{
+                  "type": "Action.OpenUrl",
+                  "title": "View Commit",
+                  "url": "${{ github.event.head_commit.url }}"
+                }]
+              }
+            }]
+          }' "${{ secrets.TEAMS_WEBHOOK_URL }}"
       - name: Send Teams channel email
         uses: dawidd6/action-send-mail@v3
         with:

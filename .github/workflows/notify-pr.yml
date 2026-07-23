@@ -8,24 +8,31 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Send Teams channel email
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.office365.com
-          server_port: 587
-          username: yash.mhatre@exeliqconsulting.com
-          password: ${{ secrets.SMTP_APP_PASSWORD }}
-          subject: "🔀 PR ${{ github.event.action }}: ${{ github.event.pull_request.title }}"
-          to: ${{ secrets.TEAMS_CHANNEL_EMAIL }}
-          from: GitHub Actions <yash.mhatre@exeliqconsulting.com>
-          body: |
-            Repository: ${{ github.repository }}
-            Branch: ${{ github.head_ref }}
-            Action: ${{ github.event.action }}
-            Author: ${{ github.actor }}
-            Title: ${{ github.event.pull_request.title }}
-            Files changed: ${{ github.event.pull_request.changed_files }}
-            Additions: +${{ github.event.pull_request.additions }}
-            Deletions: -${{ github.event.pull_request.deletions }}
-
-            View: ${{ github.event.pull_request.html_url }}
+      - name: Notify Teams
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "type": "message",
+            "attachments": [{
+              "contentType": "application/vnd.microsoft.card.adaptive",
+              "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                  {"type": "TextBlock", "text": "🔀 PR ${{ github.event.action }}: ${{ github.event.pull_request.title }}", "weight": "bolder", "size": "medium"},
+                  {"type": "FactSet", "facts": [
+                    {"title": "Branch", "value": "${{ github.head_ref }}"},
+                    {"title": "Author", "value": "${{ github.actor }}"},
+                    {"title": "Files changed", "value": "${{ github.event.pull_request.changed_files }}"},
+                    {"title": "Additions", "value": "+${{ github.event.pull_request.additions }}"},
+                    {"title": "Deletions", "value": "-${{ github.event.pull_request.deletions }}"}
+                  ]}
+                ],
+                "actions": [{
+                  "type": "Action.OpenUrl",
+                  "title": "View PR",
+                  "url": "${{ github.event.pull_request.html_url }}"
+                }]
+              }
+            }]
+          }' "${{ secrets.TEAMS_WEBHOOK_URL }}"
