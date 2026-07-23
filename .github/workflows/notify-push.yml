@@ -21,11 +21,27 @@ jobs:
       - name: Notify Teams
         run: |
           curl -H "Content-Type: application/json" -d '{
-            "workflow": "Push Notification",
-            "status": "commit",
-            "repository": "${{ github.repository }}",
-            "branch": "${{ github.ref_name }}",
-            "actor": "${{ github.actor }}",
-            "run_url": "${{ github.event.head_commit.url }}",
-            "message": "${{ github.event.head_commit.message }} | Files: ${{ steps.changes.outputs.files }}"
+            "type": "message",
+            "attachments": [{
+              "contentType": "application/vnd.microsoft.card.adaptive",
+              "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                  {"type": "TextBlock", "text": "🔔 Push to ${{ github.repository }}", "weight": "bolder", "size": "medium"},
+                  {"type": "FactSet", "facts": [
+                    {"title": "Branch", "value": "${{ github.ref_name }}"},
+                    {"title": "Author", "value": "${{ github.actor }}"},
+                    {"title": "Message", "value": "${{ github.event.head_commit.message }}"},
+                    {"title": "Files changed", "value": "${{ steps.changes.outputs.files }}"}
+                  ]}
+                ],
+                "actions": [{
+                  "type": "Action.OpenUrl",
+                  "title": "View Commit",
+                  "url": "${{ github.event.head_commit.url }}"
+                }]
+              }
+            }]
           }' "${{ secrets.TEAMS_WEBHOOK_URL }}"
