@@ -272,3 +272,4 @@ done as Step 7 — it'll be picked up later as its own step once you're ready.)
 - `cd bronze_json_loader && databricks bundle validate -t dev --profile bronze-json-loader-dev`
 
 *(checkpoint pending)*
+
