@@ -2,7 +2,7 @@ name: Notify Teams on Push
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
 
 jobs:
   notify:
@@ -15,29 +15,17 @@ jobs:
       - name: Get changed files
         id: changes
         run: |
-          FILES=$(git diff --name-only HEAD~1 HEAD)
-          echo "files<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$FILES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          FILES=$(git diff --name-only HEAD~1 HEAD | tr '\n' ', ')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
 
-      - name: Send Teams channel email
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.sendgrid.net
-          server_port: 587
-          username: apikey
-          password: ${{ secrets.SENDGRID_API_KEY }}
-          subject: "🔔 Push to ${{ github.repository }} (${{ github.ref_name }})"
-          to: ${{ secrets.TEAMS_CHANNEL_EMAIL }}
-          from: GitHub Actions <yashmhatre26@gmail.com>
-          body: |
-            Repository: ${{ github.repository }}
-            Branch: ${{ github.ref_name }}
-            Commit: ${{ github.sha }}
-            Author: ${{ github.actor }}
-            Message: ${{ github.event.head_commit.message }}
-
-            Files changed:
-            ${{ steps.changes.outputs.files }}
-
-            View: ${{ github.event.head_commit.url }}
+      - name: Notify Teams
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "workflow": "Push Notification",
+            "status": "commit",
+            "repository": "${{ github.repository }}",
+            "branch": "${{ github.ref_name }}",
+            "actor": "${{ github.actor }}",
+            "run_url": "${{ github.event.head_commit.url }}",
+            "message": "${{ github.event.head_commit.message }} | Files: ${{ steps.changes.outputs.files }}"
+          }' "${{ secrets.TEAMS_WEBHOOK_URL }}"
