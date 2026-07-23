@@ -2,7 +2,7 @@ name: Notify Teams on Push
 
 on:
   push:
-    branches: [**]
+    branches: ['**']
 
 jobs:
   notify:
