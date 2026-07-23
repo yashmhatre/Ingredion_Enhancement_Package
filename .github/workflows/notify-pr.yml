@@ -8,18 +8,24 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Notify Teams
-        run: |
-          curl -H "Content-Type: application/json" -d '{
-            "workflow": "Pull Request Notification",
-            "status": "${{ github.event.action }}",
-            "repository": "${{ github.repository }}",
-            "branch": "${{ github.head_ref }}",
-            "actor": "${{ github.actor }}",
-            "run_url": "${{ github.event.pull_request.html_url }}",
-            "message": "${{ github.event.pull_request.title }}",
-            "commit_id": "${{ github.event.pull_request.head.sha }}",
-            "files_changed": "${{ github.event.pull_request.changed_files }} files",
-            "additions": "${{ github.event.pull_request.additions }}",
-            "deletions": "${{ github.event.pull_request.deletions }}"
-          }' "${{ secrets.TEAMS_WEBHOOK_URL }}"
+      - name: Send Teams channel email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.sendgrid.net
+          server_port: 587
+          username: apikey
+          password: ${{ secrets.SENDGRID_API_KEY }}
+          subject: "🔀 PR ${{ github.event.action }}: ${{ github.event.pull_request.title }}"
+          to: ${{ secrets.TEAMS_CHANNEL_EMAIL }}
+          from: GitHub Actions <yashmhatre26@gmail.com>
+          body: |
+            Repository: ${{ github.repository }}
+            Branch: ${{ github.head_ref }}
+            Action: ${{ github.event.action }}
+            Author: ${{ github.actor }}
+            Title: ${{ github.event.pull_request.title }}
+            Files changed: ${{ github.event.pull_request.changed_files }}
+            Additions: +${{ github.event.pull_request.additions }}
+            Deletions: -${{ github.event.pull_request.deletions }}
+
+            View: ${{ github.event.pull_request.html_url }}
