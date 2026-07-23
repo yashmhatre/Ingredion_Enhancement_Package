@@ -1,0 +1,34 @@
+name: Notify Teams on Push
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get changed files
+        id: changes
+        run: |
+          FILES=$(git diff --name-only HEAD~1 HEAD | tr '\n' ',' | sed 's/,$//')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Teams
+        run: |
+          curl -H "Content-Type: application/json" -d '{
+            "workflow": "Push Notification",
+            "status": "commit",
+            "repository": "${{ github.repository }}",
+            "branch": "${{ github.ref_name }}",
+            "actor": "${{ github.actor }}",
+            "run_url": "${{ github.event.head_commit.url }}",
+            "message": "${{ github.event.head_commit.message }}",
+            "commit_id": "${{ github.sha }}",
+            "files_changed": "${{ steps.changes.outputs.files }}",
+            "commit_count": "${{ github.event.commits[0] && github.event.commits && 1 || 0 }}"
+          }' "${{ secrets.TEAMS_WEBHOOK_URL }}"
