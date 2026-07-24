@@ -30,9 +30,9 @@ resources:
         - task_key: ingest_orders
 
           notebook_task:
-            notebook_path: /Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader/notebooks/run_ingestion
+            notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/notebooks/run_ingestion
             base_parameters:
-              config_path: /Workspace/Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader/config/order_bronze.yaml
+              config_path: /Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/config/order_bronze.yaml
 
       email_notifications:
         on_failure:
@@ -49,11 +49,11 @@ resources:
         - task_key: ingest_directory
 
           notebook_task:
-            notebook_path: /Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader/notebooks/run_directory_ingestion
+            notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/notebooks/run_directory_ingestion
             base_parameters:
-              source_dir: /Volumes/${var.catalog}/default/ingredion/
+              source_dir: /Volumes/${var.catalog}/ingredion_dev/ingredion/
               catalog: ${var.catalog}
-              schema_name: default
+              schema_name: ingredion_dev
               table_name_template: "{filename}_bronze"
               flatten_mode: raw
               write_mode: append
