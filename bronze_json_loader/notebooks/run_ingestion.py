@@ -14,18 +14,11 @@
 
 import sys
 
-# When shipped as a workspace file alongside this notebook, this makes the
-# package importable without a full wheel install. Prefer installing the
-# wheel as a cluster/job library in real production use.
-sys.path.append("/Workspace/Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader")  # adjust to your deployed path
-
-# COMMAND ----------
-
-import sys
+sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader")  # adjust to your deployed path
 
 sys.path.insert(
     0,
-    "/Workspace/Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader"
+    "/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader"
 )
 
 # COMMAND ----------
