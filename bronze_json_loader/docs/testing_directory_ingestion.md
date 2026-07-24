@@ -210,3 +210,42 @@ and removes the recurring stale-path/wrong-identity failure mode for good.
 
 **All tests passing** — file discovery, `.jsonl` support, and file
 archival, both locally and on Databricks (serverless).
+
+## Retry limit before quarantine (permanently-failing files)
+
+Files that fail *ingestion* (not just the archival move) are now tracked
+across runs via a persisted retry counter, instead of being retried
+forever with no escape hatch.
+
+**Behavior:**
+- State stored at `{source_dir}/_state/retry_state.json` — a simple
+  `{file_path: consecutive_failure_count}` map
+- On each ingestion failure, the counter increments. Below
+  `max_ingestion_retries` (default 3), the file is left in place for the
+  next run to retry
+- At the threshold, the file is moved to `quarantine_files/` (same
+  folder/purpose as the existing move-failure quarantine path) and its
+  counter entry is cleared
+- On a successful ingestion, any existing counter for that file is
+  cleared — a file that fails once or twice but later succeeds is never
+  quarantined
+- The `_state/` subfolder is naturally invisible to `list_json_files`
+  (non-recursive, `.json`/`.jsonl` filter only) — confirmed with a
+  dedicated test
+
+**Why this was added:** found during end-to-end deployment testing —
+`malformed.json` and `duplicate_keys.json` (both permanently broken, not
+transient) would otherwise fail identically on every single future run
+forever, with no signal that a human needs to intervene.
+
+**Gotcha hit while testing:** file paths returned by `list_json_files`
+include Databricks' `dbfs:` scheme prefix (e.g.
+`dbfs:/Volumes/.../flaky.json`), not just the plain path. Tests that
+reconstruct an expected key manually (e.g. `f"{source_dir}/file.json"`)
+will mismatch the actual dictionary key. Fixed by reading the real path
+back from the `results` list rather than reconstructing it.
+
+### Status
+All 3 new tests passing (state persistence across calls, quarantine at
+threshold, state cleared on eventual success, state file never treated
+as ingestible data) — locally and on Databricks.

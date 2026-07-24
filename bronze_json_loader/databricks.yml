@@ -8,7 +8,7 @@ bundle:
 
 variables:
   catalog:
-    default: workspace
+    default: ingredion_en_dev
   notification_email:
     default: yashmhatre26@gmail.com
 
@@ -51,7 +51,7 @@ resources:
           notebook_task:
             notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/notebooks/run_directory_ingestion
             base_parameters:
-              source_dir: /Volumes/${var.catalog}/ingredion_dev/ingredion/
+              source_dir: /Volumes/${var.catalog}/ingredion_dev/ext-ingredion-dev/raw/JSON/
               catalog: ${var.catalog}
               schema_name: ingredion_dev
               table_name_template: "{filename}_bronze"

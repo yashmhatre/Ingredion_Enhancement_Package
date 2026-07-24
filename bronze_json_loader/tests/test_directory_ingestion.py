@@ -150,3 +150,102 @@ def test_archive_ingested_file_leaves_file_in_place_when_all_moves_fail(json_tes
 
     assert result["move_status"] == "failed_left_in_place"
     assert os.path.exists(os.path.join(write_dir, "orders.json"))  # untouched, not lost
+
+# ---- retry-limit before quarantine tests ----
+
+from bronze_json_loader.directory_ingestion import ingest_directory_to_bronze
+
+
+def _make_failing_config_class(fail_on_filenames):
+    """Returns a fake BronzeIngestion-like run() that raises for specific
+    filenames and succeeds otherwise - lets us simulate repeated ingestion
+    failures across multiple calls without needing real bad JSON content
+    (which would also need real Spark schema behavior to fail correctly)."""
+    def fake_run(self):
+        if any(name in self.config.source_path for name in fail_on_filenames):
+            raise ValueError("simulated ingestion failure")
+        return {"table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0}
+    return fake_run
+
+
+def test_retry_state_persists_across_calls_and_quarantines_at_limit(spark, json_test_dir, monkeypatch):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "bad.json", json.dumps({"x": 1}))
+    _write(write_dir, "good.json", json.dumps({"x": 2}))
+
+    import bronze_json_loader.directory_ingestion as di
+    from bronze_json_loader.pipeline import BronzeIngestion
+
+    monkeypatch.setattr(BronzeIngestion, "run", _make_failing_config_class(["bad.json"]))
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, max_ingestion_retries=3, catalog=None, schema_name="default"
+    )
+    bad_result = next(r for r in results if "bad.json" in r["file"])
+    actual_file_path = bad_result["file"]  # use this everywhere below
+    assert bad_result["status"] == "failed"
+    assert bad_result["attempts"] == 1
+    assert "move_status" not in bad_result
+
+    state = di._read_retry_state(source_dir)
+    assert state.get(actual_file_path) == 1
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, max_ingestion_retries=3, catalog=None, schema_name="default"
+    )
+    bad_result = next(r for r in results if "bad.json" in r["file"])
+    assert bad_result["attempts"] == 2
+    assert "move_status" not in bad_result
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, max_ingestion_retries=3, catalog=None, schema_name="default"
+    )
+    bad_result = next(r for r in results if "bad.json" in r["file"])
+    assert bad_result["attempts"] == 3
+    assert bad_result["move_status"] == "quarantined"
+    assert not os.path.exists(os.path.join(write_dir, "bad.json"))
+
+    state = di._read_retry_state(source_dir)
+    assert actual_file_path not in state
+
+
+def test_retry_state_cleared_on_eventual_success(spark, json_test_dir, monkeypatch):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "flaky.json", json.dumps({"x": 1}))
+
+    import bronze_json_loader.directory_ingestion as di
+    from bronze_json_loader.pipeline import BronzeIngestion
+
+    monkeypatch.setattr(BronzeIngestion, "run", _make_failing_config_class(["flaky.json"]))
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, max_ingestion_retries=3, catalog=None, schema_name="default"
+    )
+    flaky_result = next(r for r in results if "flaky.json" in r["file"])
+    assert flaky_result["attempts"] == 1
+    actual_file_path = flaky_result["file"]  # use the real path, don't reconstruct it
+
+    state = di._read_retry_state(source_dir)
+    assert state.get(actual_file_path) == 1
+
+    monkeypatch.setattr(BronzeIngestion, "run", _make_failing_config_class([]))
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, max_ingestion_retries=3, catalog=None, schema_name="default"
+    )
+    good_result = next(r for r in results if "flaky.json" in r["file"])
+    assert good_result["status"] == "success"
+
+    state = di._read_retry_state(source_dir)
+    assert actual_file_path not in state
+
+
+def test_retry_state_file_never_treated_as_data(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+
+    di_module = __import__("bronze_json_loader.directory_ingestion", fromlist=["_write_retry_state"])
+    di_module._write_retry_state(source_dir, {"some/file.json": 1})
+
+    files = di_module.list_json_files(spark, source_dir)
+    names = [f.split("/")[-1] for f in files]
+    assert "retry_state.json" not in names
+    assert names == ["a.json"]

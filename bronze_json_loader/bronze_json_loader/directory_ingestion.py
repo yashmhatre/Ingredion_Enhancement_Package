@@ -24,6 +24,7 @@ import os
 import re
 from typing import Dict, Any, List, Optional
 import shutil
+import json as _json
 from datetime import datetime, timezone
 from .config import IngestionConfig
 from .logging_utils import logger
@@ -190,12 +191,68 @@ def _archive_ingested_file(source_dir: str, file_path: str) -> Dict[str, str]:
             )
             return {"move_status": "failed_left_in_place", "move_detail": str(quarantine_exc)}
 
+_RETRY_STATE_SUBFOLDER = "_state"
+_RETRY_STATE_FILENAME = "retry_state.json"
+
+def _retry_state_path(source_dir: str) -> str:
+    return f"{source_dir.rstrip('/')}/{_RETRY_STATE_SUBFOLDER}/{_RETRY_STATE_FILENAME}"
+
+
+def _read_retry_state(source_dir: str) -> Dict[str, int]:
+    """Reads the persisted {file_path: consecutive_failure_count} map.
+    Returns an empty dict if the state file doesn't exist yet (first run)
+    or can't be parsed - never raises, since losing retry counts is a
+    minor issue and should not block ingestion."""
+    path = _retry_state_path(source_dir)
+    try:
+        import IPython
+        dbutils = IPython.get_ipython().user_ns["dbutils"]
+        content = dbutils.fs.head(path, 1_000_000)
+    except Exception:
+        # No dbutils, or file doesn't exist via dbutils - try local read.
+        local_path = path[len("file://"):] if path.startswith("file://") else path
+        try:
+            with open(local_path, "r") as f:
+                content = f.read()
+        except Exception:
+            return {}
+
+    try:
+        return _json.loads(content)
+    except Exception:
+        logger.warning("Could not parse retry state at %s - starting fresh.", path)
+        return {}
+
+
+def _write_retry_state(source_dir: str, state: Dict[str, int]) -> None:
+    """Writes the retry-state map back. Never raises - a failure to persist
+    retry counts should not fail the ingestion run itself."""
+    path = _retry_state_path(source_dir)
+    content = _json.dumps(state)
+
+    try:
+        import IPython
+        dbutils = IPython.get_ipython().user_ns["dbutils"]
+        dbutils.fs.put(path, content, overwrite=True)
+        return
+    except Exception:
+        pass
+
+    try:
+        local_path = path[len("file://"):] if path.startswith("file://") else path
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "w") as f:
+            f.write(content)
+    except Exception as exc:
+        logger.warning("Could not persist retry state to %s: %s", path, exc)
+
 def ingest_directory_to_bronze(
         spark,
         source_dir: str,
         table_name_template: str = "{filename}_bronze",
         max_files: Optional[int] = None,
         stop_on_error: bool = False,
+        max_ingestion_retries: int = 3,
         base_config: Optional[Dict[str, Any]] = None,
         **config_overrides,
     ) -> List[Dict[str, Any]]:
@@ -258,6 +315,12 @@ def ingest_directory_to_bronze(
         try:
             cfg = IngestionConfig.from_dict({**shared, "source_path": file_path, "table": table})
             summary = BronzeIngestion(spark, cfg).run()
+
+            retry_state = _read_retry_state(source_dir)
+            if file_path in retry_state:
+                retry_state.pop(file_path)
+                _write_retry_state(source_dir, retry_state)
+
             move_result = _archive_ingested_file(source_dir, file_path)
             results.append({
                 "file": file_path,
@@ -271,12 +334,44 @@ def ingest_directory_to_bronze(
             logger.error("Failed to ingest %s: %s", file_path, exc)
             if stop_on_error:
                 raise
-            results.append({
-                "file": file_path,
-                "table": table,
-                "status": "failed",
-                "error": str(exc),
-            })
+
+            retry_state = _read_retry_state(source_dir)
+            attempts = retry_state.get(file_path, 0) + 1
+
+            if attempts >= max_ingestion_retries:
+                retry_state.pop(file_path, None)
+                _write_retry_state(source_dir, retry_state)
+                try:
+                    dest = _move_file(source_dir, file_path, "quarantine_files")
+                    logger.warning(
+                        "%s failed ingestion %d time(s) - quarantined to %s", file_path, attempts, dest
+                    )
+                    results.append({
+                        "file": file_path, "table": table, "status": "failed",
+                        "error": str(exc), "attempts": attempts,
+                        "move_status": "quarantined", "move_detail": dest,
+                    })
+                except Exception as move_exc:
+                    logger.error(
+                        "%s failed ingestion %d time(s) and could not be quarantined: %s",
+                        file_path, attempts, move_exc,
+                    )
+                    results.append({
+                        "file": file_path, "table": table, "status": "failed",
+                        "error": str(exc), "attempts": attempts,
+                        "move_status": "failed_left_in_place", "move_detail": str(move_exc),
+                    })
+            else:
+                retry_state[file_path] = attempts
+                _write_retry_state(source_dir, retry_state)
+                logger.warning(
+                    "%s failed ingestion (attempt %d/%d) - left in raw/ for retry",
+                    file_path, attempts, max_ingestion_retries,
+                )
+                results.append({
+                    "file": file_path, "table": table, "status": "failed",
+                    "error": str(exc), "attempts": attempts,
+                })
 
     ok = sum(1 for r in results if r["status"] == "success")
     logger.info("Directory ingestion finished: %d/%d file(s) succeeded", ok, len(results))
