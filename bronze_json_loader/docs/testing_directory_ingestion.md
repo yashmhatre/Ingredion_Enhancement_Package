@@ -162,3 +162,51 @@ except Exception as exc:
 
 - `azure_setup.md` needs correcting — documented catalog/schema/volume
   names don't match the actual workspace (see table above)
+
+## File archival (move/archive processed files)
+
+`ingest_directory_to_bronze` now archives successfully-ingested files via
+`_archive_ingested_file` / `_move_file`, with three outcomes:
+
+1. **Clean success** → moved to `processed/{date}/`
+2. **Move fails** → falls back to `quarantine_files/` for manual review
+   (kept separate from the pre-existing, unused `quarantine/` folder
+   reserved for manually-quarantined raw files, to avoid ambiguity between
+   a human-driven process and this automated one)
+3. **Everything fails** → file left in place in `raw/` (backlog), logged
+   clearly — never silently lost, never blocks other files in the same run
+
+Scoped to directory ingestion only — batch/single-table ingestion
+(`order_bronze.yaml`-style, reading a whole folder into one table) doesn't
+map per-file moves as cleanly, and is left as a possible future
+refinement.
+
+Tests use `monkeypatch` to simulate move failures and confirm each
+fallback path. All 4 archival tests pass locally and on Databricks.
+
+### Gotcha: mixed import styles broke monkeypatching
+
+Initial test draft mixed `from module import func` (top of file) with
+`import module as alias` (inside test functions). If these resolve to
+different loaded instances of the same module — a real risk in this repo
+given the recurring `sys.path`/duplicate-module issues seen throughout
+this testing effort — `monkeypatch.setattr(alias, "func", ...)` patches
+the wrong copy, and the original function still runs. Fixed by using a
+single `import bronze_json_loader.directory_ingestion as di` consistently
+throughout the file, with all calls going through `di.`.
+
+### Gotcha: sys.path via "Run tests" button skips notebook setup
+
+Databricks' file-editor "Run tests" button runs `pytest` directly, without
+executing any notebook cell first — so hardcoded `sys.path.insert(...)`
+calls in notebooks never take effect in this entry point. Fixed
+permanently by having `conftest.py` compute the package path dynamically
+from its own file location (`os.path.dirname(os.path.dirname(os.path.abspath(__file__)))`)
+instead of relying on a hardcoded workspace path — works identically
+regardless of entry point (notebook, "Run tests" button, or terminal),
+and removes the recurring stale-path/wrong-identity failure mode for good.
+
+## Status
+
+**All tests passing** — file discovery, `.jsonl` support, and file
+archival, both locally and on Databricks (serverless).

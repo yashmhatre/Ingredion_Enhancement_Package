@@ -1,4 +1,18 @@
 import os
+import sys
+
+# Make the package importable regardless of entry point (notebook cell,
+# "Run tests" button, or terminal). Computed relative to this file's own
+# location instead of a hardcoded workspace path - avoids the recurring
+# stale-path/wrong-identity issue entirely.
+#
+# This file lives at: .../Ingredion_Enhancement_Package/bronze_json_loader/tests/conftest.py
+# The importable package lives at: .../bronze_json_loader/bronze_json_loader/
+# So we need the OUTER bronze_json_loader folder (parent of "tests") on sys.path.
+_package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _package_parent not in sys.path:
+    sys.path.insert(0, _package_parent)
+    
 import uuid
 import pytest
 

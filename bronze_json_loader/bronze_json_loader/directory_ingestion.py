@@ -23,7 +23,8 @@ the results list, but does not stop the remaining files from loading.
 import os
 import re
 from typing import Dict, Any, List, Optional
-
+import shutil
+from datetime import datetime, timezone
 from .config import IngestionConfig
 from .logging_utils import logger
 
@@ -131,16 +132,73 @@ def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> 
         files = files[:max_files]
     return files
 
+def _move_file(source_dir: str, file_path: str, dest_subfolder: str) -> str:
+    """
+    Moves a single file from its current location into `dest_subfolder`
+    (relative to source_dir), using dbutils.fs.mv when available (works on
+    all Databricks compute, including UC Volumes and cloud paths), falling
+    back to shutil.move for local/pytest paths.
+
+    Returns the destination path. Raises on failure - caller decides how
+    to handle it; this function does not swallow errors.
+    """
+    filename = file_path.rsplit("/", 1)[-1]
+    dest_path = f"{source_dir.rstrip('/')}/{dest_subfolder}/{filename}"
+
+    try:
+        import IPython
+        dbutils = IPython.get_ipython().user_ns["dbutils"]
+        dbutils.fs.mv(file_path, dest_path)
+    except (ImportError, KeyError):
+        # No dbutils available - local/pytest environment.
+        local_src = file_path[len("file://"):] if file_path.startswith("file://") else file_path
+        local_dest = dest_path[len("file://"):] if dest_path.startswith("file://") else dest_path
+        os.makedirs(os.path.dirname(local_dest), exist_ok=True)
+        shutil.move(local_src, local_dest)
+
+    return dest_path
+
+
+def _archive_ingested_file(source_dir: str, file_path: str) -> Dict[str, str]:
+    """
+    Moves a successfully-ingested file to processed/{date}/. If that move
+    fails, falls back to quarantine_files/ for manual review. If even that
+    fails, the file is left in place (backlog) and the failure is logged -
+    data is never silently lost, and ingestion of other files is never
+    blocked by one file's move failure.
+
+    Returns {"move_status": "moved"|"quarantined"|"failed_left_in_place",
+             "move_detail": <destination path or error message>}.
+    Never raises.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    try:
+        dest = _move_file(source_dir, file_path, f"processed/{today}")
+        logger.info("Archived %s -> %s", file_path, dest)
+        return {"move_status": "moved", "move_detail": dest}
+    except Exception as move_exc:
+        logger.warning("Failed to archive %s (%s) - attempting quarantine", file_path, move_exc)
+        try:
+            dest = _move_file(source_dir, file_path, "quarantine_files")
+            logger.warning("Quarantined %s -> %s (original archive move failed)", file_path, dest)
+            return {"move_status": "quarantined", "move_detail": dest}
+        except Exception as quarantine_exc:
+            logger.error(
+                "Failed to archive or quarantine %s - left in place for manual review (backlog): %s",
+                file_path, quarantine_exc,
+            )
+            return {"move_status": "failed_left_in_place", "move_detail": str(quarantine_exc)}
 
 def ingest_directory_to_bronze(
-    spark,
-    source_dir: str,
-    table_name_template: str = "{filename}_bronze",
-    max_files: Optional[int] = None,
-    stop_on_error: bool = False,
-    base_config: Optional[Dict[str, Any]] = None,
-    **config_overrides,
-) -> List[Dict[str, Any]]:
+        spark,
+        source_dir: str,
+        table_name_template: str = "{filename}_bronze",
+        max_files: Optional[int] = None,
+        stop_on_error: bool = False,
+        base_config: Optional[Dict[str, Any]] = None,
+        **config_overrides,
+    ) -> List[Dict[str, Any]]:
     """
     Discovers JSON files in source_dir and loads each into its own bronze
     table named via table_name_template.
@@ -200,12 +258,14 @@ def ingest_directory_to_bronze(
         try:
             cfg = IngestionConfig.from_dict({**shared, "source_path": file_path, "table": table})
             summary = BronzeIngestion(spark, cfg).run()
+            move_result = _archive_ingested_file(source_dir, file_path)
             results.append({
                 "file": file_path,
                 "table": summary["table"],
                 "status": "success",
                 "rows": summary["row_count"],
                 "quarantined_rows": summary.get("quarantined_row_count", 0),
+                **move_result,
             })
         except Exception as exc:
             logger.error("Failed to ingest %s: %s", file_path, exc)
