@@ -3,9 +3,10 @@
 ## Purpose
 
 Manual validation of `json_reader.py` against real ADLS-hosted JSON files,
-covering structural variety, multi-file merges, and bad/malformed data.
-This is **not** part of the local `pytest` suite — it requires a live
-Databricks cluster with Unity Catalog access to the `ingredion` container.
+covering structural variety, multi-file merges, bad/malformed data, and
+schema-hint (`schema_hint_ddl`) enforcement. This is **not** part of the
+local `pytest` suite — it requires a live Databricks cluster with Unity
+Catalog access to the `ingredion` container.
 
 Notebook: `bronze_json_loader/notebooks/validate_json_reader.py`
 
@@ -32,10 +33,18 @@ abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON/
   multi_file/
     orders_a.json
     orders_b.json
+  schema_hint/
+    full_match.json
+    extra_fields.json
+    missing_optional.json
+    type_mismatch.json
 ```
 
 Storage account: `ingredionenpkgdev` (container name `ingredion` is
 different from the account name — easy to confuse, see gotchas below).
+
+Schema-hint cases are all validated against the same DDL:
+`"id INT, name STRING, age INT"`.
 
 ## Known gotchas (hit during initial setup)
 
@@ -100,9 +109,9 @@ failure for the whole read, not a per-row quarantine case.
 
 **Conclusion:** `json_reader.py`'s behavior here is correct and consistent
 with underlying Spark semantics — this is a genuine data-quality
-constraint of the source, not a bug in the reader. The original test
-expectation (duplicate keys "just work") was incorrect and has been
-corrected.
+constraint of the source, not a bug in the reader. The test
+(`duplicate_keys_documented_limitation`) now asserts the expected
+`AnalysisException` is raised, rather than expecting a clean read.
 
 **Recommendation for source data producers:** JSON files with duplicate
 keys at the same nesting level will fail the entire batch read, not just
@@ -111,11 +120,36 @@ it needs to be caught before ingestion (e.g. a pre-validation step), since
 the pipeline's existing quarantine mechanism (`quality.py`) operates on
 already-successfully-read rows and cannot help here.
 
+## Finding: type mismatches against schema_hint_ddl are safely rescued, not lost
+
+**Test case:** `type_mismatch.json` — `{"id": "not_a_number", "name": "Dave", "age": 40}`
+against schema hint `"id INT, name STRING, age INT"`.
+
+**Actual behavior:** the mistyped field (`id`) is set to `NULL` in its
+typed column, but the original raw value is preserved in `_rescued_data`:
+
+```
+id=NULL, name=Dave, age=40,
+_rescued_data={"id":"not_a_number","_file_path":".../type_mismatch.json"}
+```
+
+The read succeeds cleanly — no exception, no corrupt-record routing.
+
+**Conclusion:** type mismatches against an explicit schema hint are
+non-destructive by default. Downstream consumers relying on strict typing
+will see `NULL` for the mistyped field, but nothing is silently dropped —
+the original value remains recoverable from `_rescued_data` for debugging
+or reprocessing. This is meaningfully safer behavior than the
+duplicate-keys case above (a full read failure) — worth keeping in mind
+when reasoning about how different kinds of malformed source data will
+actually surface downstream.
+
 ## How to run
 
 1. Confirm fixture files exist at the path above:
    ```python
    display(dbutils.fs.ls("abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON/"))
+   display(dbutils.fs.ls("abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON/schema_hint/"))
    ```
 2. Open `notebooks/validate_json_reader.py`, attach to a serverless cluster
 3. Confirm `sys.path.insert(0, ...)` points at your current deployed path
@@ -127,14 +161,18 @@ already-successfully-read rows and cannot help here.
 
 ## Status
 
-**18/19 passing.** The 19th (`duplicate_keys_no_crash`) fails by design —
-see Finding above. Test file/assertion should be updated to expect and
-assert the `AnalysisException`, rather than expecting a clean read.
+**24/24 passing.**
+
+- 19/19 base JSON reader cases (structural variety, multi-file, bad data,
+  edge cases) — including `duplicate_keys_documented_limitation`, which
+  correctly asserts the expected `AnalysisException` rather than a clean
+  read
+- 5/5 schema-hint enforcement cases (`schema_hint_full_match`,
+  `schema_hint_extra_fields_rescued`, `schema_hint_missing_field_is_null`,
+  `schema_hint_absent_regression`, `schema_hint_type_mismatch_nulls_and_rescues`)
 
 ## Related issues
 
-- Schema-hint enforcement (rescued data, type coercion) — separate
-  follow-up task, not covered by this notebook
 - `.jsonl` files not discovered by `directory_ingestion.py`'s file
   listing — separate bug, filed
 - Move/archive processed files after ingestion — separate task, filed,

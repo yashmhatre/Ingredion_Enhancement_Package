@@ -192,6 +192,59 @@ check("missing_source_raises", _check_missing_source_raises)
 
 # COMMAND ----------
 
+# MAGIC %md ### Schema hint enforcement (schema_hint_ddl)
+# MAGIC Split out from the base task — covers rescued data, missing/extra
+# MAGIC fields, and type coercion against an explicit schema. All cases here
+# MAGIC use the same DDL: "id INT, name STRING, age INT".
+
+# COMMAND ----------
+
+HINT_DDL = "id INT, name STRING, age INT"
+SCHEMA_HINT_BASE = f"{BASE}/schema_hint"
+
+def _check_full_match():
+    df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/full_match.json", schema_hint_ddl=HINT_DDL))
+    assert df.count() == 1, "expected 1 row"
+    assert "_rescued_data" not in df.columns or df.filter("_rescued_data IS NOT NULL").count() == 0, \
+        "expected no rescued data for an exact schema match"
+
+check("schema_hint_full_match", _check_full_match)
+
+def _check_extra_fields():
+    df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/extra_fields.json", schema_hint_ddl=HINT_DDL))
+    assert "_rescued_data" in df.columns, "_rescued_data column missing"
+    rescued = df.filter("_rescued_data IS NOT NULL").count()
+    assert rescued == 1, f"expected 1 row with rescued data (extra 'email' field), got {rescued}"
+
+check("schema_hint_extra_fields_rescued", _check_extra_fields)
+
+def _check_missing_optional():
+    df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/missing_optional.json", schema_hint_ddl=HINT_DDL))
+    row = df.collect()[0]
+    assert row["age"] is None, f"expected age to be null when missing from source, got {row['age']}"
+
+check("schema_hint_missing_field_is_null", _check_missing_optional)
+
+def _check_no_schema_hint_regression():
+    # No schema_hint_ddl provided at all - confirms inferred-schema path
+    # (existing default behavior) is unaffected by schema_hint_ddl support.
+    df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/full_match.json"))
+    assert df.count() == 1, "expected 1 row with inferred schema (no hint)"
+
+check("schema_hint_absent_regression", _check_no_schema_hint_regression)
+
+def _check_type_mismatch():
+    df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/type_mismatch.json", schema_hint_ddl=HINT_DDL))
+    row = df.collect()[0]
+    assert row["id"] is None, f"expected id to be null on type mismatch, got {row['id']}"
+    assert row["_rescued_data"] is not None, "expected original mistyped value preserved in _rescued_data"
+    assert "not_a_number" in row["_rescued_data"], \
+        f"expected original value 'not_a_number' recoverable in _rescued_data, got {row['_rescued_data']}"
+
+check("schema_hint_type_mismatch_nulls_and_rescues", _check_type_mismatch)
+
+# COMMAND ----------
+
 # MAGIC %md ### Report
 
 # COMMAND ----------
@@ -206,7 +259,3 @@ if len(failed) > 0:
     dbutils.notebook.exit(f"FAILED: {len(failed)}/{len(report_df)} case(s) failed: {list(failed['case'])}")
 
 dbutils.notebook.exit(f"SUCCESS: all {len(report_df)} case(s) passed")
-
-# COMMAND ----------
-
-report_df[report_df["case"] == "duplicate_keys_no_crash"]["detail"].values[0]
