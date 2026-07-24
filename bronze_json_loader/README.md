@@ -1,3 +1,9 @@
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the target-state
+architecture, including planned multi-format ingestion and the
+async AI-assisted metadata layer.
+
 # bronze-json-loader
 
 Plug-and-play package for reading nested JSON (from any location) and
