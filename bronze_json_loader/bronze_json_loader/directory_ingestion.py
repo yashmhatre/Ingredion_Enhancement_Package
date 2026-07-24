@@ -65,11 +65,18 @@ def _try_dbutils_ls(source_dir: str) -> Optional[List[str]]:
         dbutils = IPython.get_ipython().user_ns["dbutils"]  # type: ignore[union-attr]
     except Exception:
         return None
-    entries = dbutils.fs.ls(source_dir)
+
+    try:
+        entries = dbutils.fs.ls(source_dir)
+    except Exception as exc:
+        if "FileNotFoundException" in str(exc) or "does not exist" in str(exc).lower() or "No such file" in str(exc):
+            raise FileNotFoundError(f"source_dir does not exist: {source_dir}") from exc
+        raise
+
     return sorted(
         e.path
         for e in entries
-        if not e.path.endswith("/") and e.name.lower().endswith(".json")
+        if not e.path.endswith("/") and e.name.lower().endswith((".json", ".jsonl"))
     )
 
 
@@ -83,7 +90,7 @@ def _try_posix_ls(source_dir: str) -> Optional[List[str]]:
     return sorted(
         os.path.join(source_dir.rstrip("/"), f)
         for f in os.listdir(local)
-        if f.lower().endswith(".json") and os.path.isfile(os.path.join(local, f))
+        if f.lower().endswith((".json", ".jsonl")) and os.path.isfile(os.path.join(local, f))
     )
 
 
@@ -117,7 +124,7 @@ def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> 
         files = sorted(
             str(status.getPath().toString())
             for status in statuses
-            if status.isFile() and str(status.getPath().getName()).lower().endswith(".json")
+            if status.isFile() and str(status.getPath().getName()).lower().endswith((".json", ".jsonl"))
         )
 
     if max_files is not None:

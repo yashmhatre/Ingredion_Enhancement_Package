@@ -10,7 +10,12 @@ from bronze_json_loader.directory_ingestion import (
 )
 
 
-# ---- pure-python naming tests (no Spark) ----
+def _write(write_dir, name, content):
+    with open(os.path.join(write_dir, name), "w") as f:
+        f.write(content)
+
+
+# ---- pure-python naming tests (no Spark) - unchanged ----
 
 def test_sanitize_basic():
     assert sanitize_table_name("orders.json") == "orders"
@@ -40,26 +45,41 @@ def test_build_table_name_requires_placeholder():
         build_table_name("orders.json", "no_placeholder_here")
 
 
-# ---- file discovery test (local Spark, local filesystem) ----
+# ---- file discovery tests (real filesystem, local or Databricks Volume) ----
 
-def test_list_json_files_finds_only_json(spark, tmp_path):
-    (tmp_path / "a.json").write_text(json.dumps({"x": 1}))
-    (tmp_path / "b.JSON").write_text(json.dumps({"x": 2}))
-    (tmp_path / "notes.txt").write_text("ignore me")
-    os.makedirs(tmp_path / "subdir", exist_ok=True)
+def test_list_json_files_finds_only_json(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "b.JSON", json.dumps({"x": 2}))
+    _write(write_dir, "notes.txt", "ignore me")
+    os.makedirs(os.path.join(write_dir, "subdir"), exist_ok=True)
 
-    files = list_json_files(spark, f"file://{tmp_path}")
-    names = [f.split("/")[-1] for f in files]
+    files = list_json_files(spark, source_dir)
+    names = sorted(f.split("/")[-1] for f in files)
     assert names == ["a.json", "b.JSON"]
 
 
-def test_list_json_files_max_files(spark, tmp_path):
+def test_list_json_files_includes_jsonl(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "b.jsonl", json.dumps({"x": 2}))
+    _write(write_dir, "c.JSONL", json.dumps({"x": 3}))
+    _write(write_dir, "notes.txt", "ignore me")
+
+    files = list_json_files(spark, source_dir)
+    names = sorted(f.split("/")[-1] for f in files)
+    assert names == ["a.json", "b.jsonl", "c.JSONL"]
+
+
+def test_list_json_files_max_files(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
     for i in range(5):
-        (tmp_path / f"f{i}.json").write_text(json.dumps({"i": i}))
-    files = list_json_files(spark, f"file://{tmp_path}", max_files=2)
+        _write(write_dir, f"f{i}.json", json.dumps({"i": i}))
+    files = list_json_files(spark, source_dir, max_files=2)
     assert len(files) == 2
 
 
-def test_list_json_files_missing_dir_raises(spark, tmp_path):
+def test_list_json_files_missing_dir_raises(spark, json_test_dir):
+    _, source_dir = json_test_dir
     with pytest.raises(FileNotFoundError):
-        list_json_files(spark, f"file://{tmp_path}/does_not_exist")
+        list_json_files(spark, f"{source_dir}/does_not_exist")

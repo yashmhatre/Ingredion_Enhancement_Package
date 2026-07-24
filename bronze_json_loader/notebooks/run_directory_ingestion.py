@@ -1,5 +1,4 @@
 # Databricks notebook source
-# COMMAND ----------
 # MAGIC %md
 # MAGIC # Bronze JSON Directory Ingestion - Job Entrypoint
 # MAGIC Discovers all .json files in `source_dir` and loads each into its own
@@ -8,16 +7,18 @@
 # MAGIC Databricks Job task - all parameters come from job/task parameters.
 
 # COMMAND ----------
+
 import sys
 
 # Adjust to your deployed path (Repos path if using Git folders).
-sys.path.append("/Workspace/Users/yashmhatre26@gmail.com/Ingredion_Enchancement_Package/bronze_json_loader")
+sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader")
 
 from bronze_json_loader import ingest_directory_to_bronze, get_logger
 
 logger = get_logger()
 
 # COMMAND ----------
+
 dbutils.widgets.text("source_dir", "", "Directory containing JSON files")
 dbutils.widgets.text("catalog", "workspace", "Catalog")
 dbutils.widgets.text("schema_name", "default", "Target schema")
@@ -32,6 +33,7 @@ dbutils.widgets.dropdown("fail_on_quality_error", "true", ["true", "false"], "Fa
 dbutils.widgets.text("per_file_config_json", "", "Per-file overrides as JSON (optional)")
 
 # COMMAND ----------
+
 source_dir = dbutils.widgets.get("source_dir").strip()
 if not source_dir:
     raise ValueError("source_dir job parameter is required")
@@ -63,6 +65,7 @@ results = ingest_directory_to_bronze(
 )
 
 # COMMAND ----------
+
 import pandas as pd
 summary_df = spark.createDataFrame(pd.DataFrame(results))
 display(summary_df)
