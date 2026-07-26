@@ -39,13 +39,22 @@ def spark():
         yield spark
         return
 
-    spark = (
+    builder = (
         SparkSession.builder
         .appName("bronze_json_loader-tests")
         .master("local[2]")
         .config("spark.sql.shuffle.partitions", "2")
-        .getOrCreate()
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
     )
+
+    try:
+        from delta import configure_spark_with_delta_pip
+        builder = configure_spark_with_delta_pip(builder)
+    except ImportError:
+        pass  # delta-spark not installed - Delta-writing tests will fail with a clear error instead
+
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     yield spark
     spark.stop()

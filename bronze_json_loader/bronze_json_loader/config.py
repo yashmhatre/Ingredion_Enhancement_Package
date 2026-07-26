@@ -73,6 +73,14 @@ class IngestionConfig:
     audit_source_file_col: str = "_source_file"
     audit_batch_id_col: str = "_batch_id"
     batch_id: Optional[str] = None         # if None, an ISO timestamp is generated at run time
+    # --- Run-level audit trail (separate from the per-row audit columns
+    # above) — one record per pipeline execution, independent of any
+    # single bronze table. See audit.py.
+    enable_run_audit: bool = True
+    audit_catalog: Optional[str] = None      # defaults to `catalog` if not set
+    audit_schema_name: str = "bronze"        # schema for the audit table
+    audit_table: str = "_ingestion_audit"    # dedicated table name
+    run_id: Optional[str] = None             # if None, generated at run time (like batch_id)
 
     def __post_init__(self):
         if not self.source_path:
@@ -112,6 +120,11 @@ class IngestionConfig:
     @property
     def full_table_name(self) -> str:
         parts = [p for p in (self.catalog, self.schema_name, self.table) if p]
+        return ".".join(parts)
+    
+    @property
+    def resolved_audit_table(self) -> str:
+        parts = [p for p in (self.audit_catalog or self.catalog, self.audit_schema_name, self.audit_table) if p]
         return ".".join(parts)
 
     # ---- constructors ----
