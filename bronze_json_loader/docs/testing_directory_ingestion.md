@@ -158,94 +158,68 @@ except Exception as exc:
 
 **All tests passing, both locally and on Databricks (serverless).**
 
+## Folder-as-table (subfolder merging)
+
+Any subfolder found directly inside `source_dir` (one level deep only) is
+now treated as one logical multi-file dataset: every file inside it is
+read individually, successfully-read files are merged (`unionByName`,
+`allowMissingColumns=True`), and the result is written to a single table
+named after the folder (via the same `sanitize_table_name`/
+`build_table_name` logic used for files).
+
+**This is a deliberate behavior change** — subfolders were previously
+silently ignored. The `_state/`, `processed/`, and `quarantine_files/`
+bookkeeping folders (and anything else prefixed `_`) are explicitly
+excluded from subfolder discovery, so they're never mistaken for a
+folder-as-table unit.
+
+**Read strategy — not a plain Spark folder read.** Spark's built-in
+multi-file read (`spark.read.json(folder_path)`) is all-or-nothing at
+schema-resolution time (see the `duplicate_keys.json` finding above — one
+bad file can break the entire read). Since per-file retry-tracking is
+required, each file is read individually via `read_json`, validated with
+`.count()`, and only successfully-validated files are unioned. A single
+malformed file inside a folder does not block the rest.
+
+**Archival timing — validated, then written, then archived.** An early
+version tried to archive each file immediately after validating it
+(before the final write), which broke because Spark DataFrames are
+lazy — the real read only happens when something forces it (`.count()`,
+or the final write), and by the time the write ran, the source file had
+already been moved. Fixed by moving archival to a second pass, strictly
+*after* `run_on_dataframe()` succeeds — validated files are read a second
+time by Spark at write time (acceptable I/O cost), and archival only
+happens once nothing further needs to read from the original path.
+
+**No `.cache()`/`.persist()` — not supported on serverless.** An
+intermediate fix attempted `.cache()` to avoid the double-read above;
+this fails outright on serverless compute
+(`NOT_SUPPORTED_WITH_SERVERLESS: PERSIST TABLE is not supported`). The
+validate-then-archive-after-write ordering above avoids needing
+`.cache()` at all.
+
+**Folder structure preserved in archival/quarantine.** Files inside a
+folder archive to `processed/{date}/{folder_name}/{filename}` (not
+flattened to `processed/{date}/{filename}`), so lineage back to the
+source folder-table stays obvious. Same for `quarantine_files/`.
+Implemented via a new `relative_subpath` parameter threaded through
+`_move_file` and `_archive_ingested_file`.
+
+**Retry-limit and schema_hint_ddl both apply per-file inside a folder,
+unchanged.** The existing retry-state mechanism keys on full file path
+(e.g. `.../orders/order1.json`), which naturally distinguishes files
+across different folders with no code changes needed. `schema_hint_ddl`,
+if passed to `ingest_directory_to_bronze`, applies to every file inside
+every folder — recommended when a folder's files might have inconsistent
+inferred types, since `unionByName` on independently-inferred schemas can
+silently coerce mismatched types.
+
+### Status
+All 3 folder-as-table tests passing (merge into one table, one bad file
+doesn't block the rest, folder structure preserved in archival) —
+locally and on Databricks (serverless).
+
 ## Related issues
 
 - `azure_setup.md` needs correcting — documented catalog/schema/volume
   names don't match the actual workspace (see table above)
-
-## File archival (move/archive processed files)
-
-`ingest_directory_to_bronze` now archives successfully-ingested files via
-`_archive_ingested_file` / `_move_file`, with three outcomes:
-
-1. **Clean success** → moved to `processed/{date}/`
-2. **Move fails** → falls back to `quarantine_files/` for manual review
-   (kept separate from the pre-existing, unused `quarantine/` folder
-   reserved for manually-quarantined raw files, to avoid ambiguity between
-   a human-driven process and this automated one)
-3. **Everything fails** → file left in place in `raw/` (backlog), logged
-   clearly — never silently lost, never blocks other files in the same run
-
-Scoped to directory ingestion only — batch/single-table ingestion
-(`order_bronze.yaml`-style, reading a whole folder into one table) doesn't
-map per-file moves as cleanly, and is left as a possible future
-refinement.
-
-Tests use `monkeypatch` to simulate move failures and confirm each
-fallback path. All 4 archival tests pass locally and on Databricks.
-
-### Gotcha: mixed import styles broke monkeypatching
-
-Initial test draft mixed `from module import func` (top of file) with
-`import module as alias` (inside test functions). If these resolve to
-different loaded instances of the same module — a real risk in this repo
-given the recurring `sys.path`/duplicate-module issues seen throughout
-this testing effort — `monkeypatch.setattr(alias, "func", ...)` patches
-the wrong copy, and the original function still runs. Fixed by using a
-single `import bronze_json_loader.directory_ingestion as di` consistently
-throughout the file, with all calls going through `di.`.
-
-### Gotcha: sys.path via "Run tests" button skips notebook setup
-
-Databricks' file-editor "Run tests" button runs `pytest` directly, without
-executing any notebook cell first — so hardcoded `sys.path.insert(...)`
-calls in notebooks never take effect in this entry point. Fixed
-permanently by having `conftest.py` compute the package path dynamically
-from its own file location (`os.path.dirname(os.path.dirname(os.path.abspath(__file__)))`)
-instead of relying on a hardcoded workspace path — works identically
-regardless of entry point (notebook, "Run tests" button, or terminal),
-and removes the recurring stale-path/wrong-identity failure mode for good.
-
-## Status
-
-**All tests passing** — file discovery, `.jsonl` support, and file
-archival, both locally and on Databricks (serverless).
-
-## Retry limit before quarantine (permanently-failing files)
-
-Files that fail *ingestion* (not just the archival move) are now tracked
-across runs via a persisted retry counter, instead of being retried
-forever with no escape hatch.
-
-**Behavior:**
-- State stored at `{source_dir}/_state/retry_state.json` — a simple
-  `{file_path: consecutive_failure_count}` map
-- On each ingestion failure, the counter increments. Below
-  `max_ingestion_retries` (default 3), the file is left in place for the
-  next run to retry
-- At the threshold, the file is moved to `quarantine_files/` (same
-  folder/purpose as the existing move-failure quarantine path) and its
-  counter entry is cleared
-- On a successful ingestion, any existing counter for that file is
-  cleared — a file that fails once or twice but later succeeds is never
-  quarantined
-- The `_state/` subfolder is naturally invisible to `list_json_files`
-  (non-recursive, `.json`/`.jsonl` filter only) — confirmed with a
-  dedicated test
-
-**Why this was added:** found during end-to-end deployment testing —
-`malformed.json` and `duplicate_keys.json` (both permanently broken, not
-transient) would otherwise fail identically on every single future run
-forever, with no signal that a human needs to intervene.
-
-**Gotcha hit while testing:** file paths returned by `list_json_files`
-include Databricks' `dbfs:` scheme prefix (e.g.
-`dbfs:/Volumes/.../flaky.json`), not just the plain path. Tests that
-reconstruct an expected key manually (e.g. `f"{source_dir}/file.json"`)
-will mismatch the actual dictionary key. Fixed by reading the real path
-back from the `results` list rather than reconstructing it.
-
-### Status
-All 3 new tests passing (state persistence across calls, quarantine at
-threshold, state cleared on eventual success, state file never treated
-as ingestible data) — locally and on Databricks.

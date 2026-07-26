@@ -23,20 +23,25 @@ targets:
 
 resources:
   jobs:
-    bronze_orders_ingestion:
-      name: bronze_orders_ingestion
+    # bronze_orders_ingestion: commented out (not deleted) - was a sample/
+    # test job for the single-table ingestion path, validated during
+    # development. Kept here as reference for anyone building a similar
+    # single-table job, but disabled to avoid unnecessary deployment/
+    # scheduling cost. Uncomment and redeploy if needed again.
+    # bronze_orders_ingestion:
+    #   name: bronze_orders_ingestion
 
-      tasks:
-        - task_key: ingest_orders
+    #   tasks:
+    #     - task_key: ingest_orders
 
-          notebook_task:
-            notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/notebooks/run_ingestion
-            base_parameters:
-              config_path: /Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/config/order_bronze.yaml
+    #       notebook_task:
+    #         notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/notebooks/run_ingestion
+    #         base_parameters:
+    #           config_path: /Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/config/order_bronze.yaml
 
-      email_notifications:
-        on_failure:
-          - ${var.notification_email}
+    #   email_notifications:
+    #     on_failure:
+    #       - ${var.notification_email}
 
     # Directory ingestion: loads every .json in source_dir into its own
     # bronze table named {filename}_bronze. Run with:

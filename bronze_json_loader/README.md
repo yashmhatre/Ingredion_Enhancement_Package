@@ -1,15 +1,15 @@
-## Architecture
-
-See [docs/architecture.md](docs/architecture.md) for the target-state
-architecture, including planned multi-format ingestion and the
-async AI-assisted metadata layer.
-
 # bronze-json-loader
 
 Plug-and-play package for reading nested JSON (from any location) and
 loading it into a Delta **bronze** table on Databricks. Built so any user
 on your workspace can reuse it just by installing the package and pointing
 it at a config.
+
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the target-state
+architecture, including planned multi-format ingestion and the
+async AI-assisted metadata layer.
 
 ## Install (on a Databricks cluster)
 
@@ -58,6 +58,63 @@ auto-detect based on extension.
 
 Any other user just needs their own config file (or their own kwargs) - the
 package code itself never changes.
+
+## Directory ingestion (multi-file sources)
+
+```python
+from bronze_json_loader import ingest_directory_to_bronze
+
+results = ingest_directory_to_bronze(
+    spark,
+    source_dir="/Volumes/main/default/raw_json/",
+    catalog="main",
+    schema_name="bronze",
+    table_name_template="{filename}_bronze",   # or "bronze_{filename}"
+    flatten_mode="auto",
+)
+```
+
+Discovers every `.json`/`.jsonl` file directly inside `source_dir` and
+loads each one into its own bronze table. One bad file is logged and
+reported in the results list, but does not stop the remaining files from
+loading (`stop_on_error=False`, the default).
+
+### Folder-as-table (subfolder merging)
+
+Any subfolder found directly inside `source_dir` (one level deep) is
+treated as one logical dataset — every file inside it is read
+individually, successfully-read files are merged (`unionByName`,
+tolerant of minor schema differences between files), and the result is
+written to a single table named after the folder (e.g. `orders/` →
+`orders_bronze`). A single malformed file inside a folder never blocks
+the rest of that folder's files from being ingested. Archival and
+retry-limit quarantine both apply per-file inside the folder, and
+preserve folder structure (`processed/{date}/orders/order1.json`, not
+flattened). Pass `schema_hint_ddl` when ingesting sources where files in
+the same folder might have inconsistent inferred types, to keep the
+merge predictable.
+
+Note: this means subfolders are no longer silently skipped — if your
+`source_dir` has subfolders you don't want treated as tables, keep them
+outside `source_dir`, or be aware they'll now produce a table on the
+next run.
+
+### Automatic file archival
+
+After a file is successfully ingested, it's moved to `processed/{date}/`
+automatically. If the move itself fails, the file falls back to
+`quarantine_files/` for manual review; if even that fails, the file is
+left in place and clearly logged - never silently lost.
+
+### Retry limit before quarantine
+
+Files that fail *ingestion* (not just the archival move) are retried on
+subsequent runs, up to `max_ingestion_retries` (default 3), before being
+moved to `quarantine_files/`. This prevents permanently-broken files
+(malformed JSON, unsupported structures) from failing identically on
+every run forever with no signal that a human needs to intervene. A file
+that fails once or twice but later succeeds has its retry counter
+cleared automatically.
 
 ## Handling nested JSON
 
@@ -109,13 +166,21 @@ bronze_json_loader/
   flattener.py          # raw / flatten / auto nested-field handling
   quality.py            # required-column validation + quarantine split
   bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
+  directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
   retry.py              # exponential-backoff retry decorator
   logging_utils.py       # structured logging
-  pipeline.py           # BronzeIngestion orchestrator (run() / run_streaming())
+  pipeline.py           # BronzeIngestion orchestrator (run() / run_streaming() / run_on_dataframe())
 notebooks/
-  run_ingestion.py      # parameterized Databricks notebook entrypoint (widgets)
-tests/                  # pytest suite (config, flatten, quality logic)
-databricks.yml          # Databricks Asset Bundle - scheduled job deployment
+  run_ingestion.py             # parameterized Databricks notebook entrypoint (widgets)
+  run_directory_ingestion.py    # directory/multi-file ingestion entrypoint
+  validate_json_reader.py        # ADLS-based validation notebook (not part of pytest)
+docs/
+  architecture.md                    # target-state architecture (multi-format + async AI layer)
+  testing_json_reader.md              # JSON reader validation notes + findings
+  testing_directory_ingestion.md       # directory ingestion, archival, retry-limit, folder-as-table testing
+  testing_end_to_end_deployment.md     # full deployed-bundle validation
+tests/                # pytest suite (config, flatten, quality, directory ingestion, archival, retry-limit, folder-as-table)
+databricks.yml        # Databricks Asset Bundle - scheduled job deployment
 setup.py
 sample_config.yaml
 ```
@@ -152,6 +217,11 @@ a job failure doesn't duplicate rows.
 concurrent-write conflicts) in exponential-backoff retries via
 `retry_attempts` / `retry_delay_seconds`.
 
+**Directory ingestion resilience.** Multi-file sources get per-file failure
+isolation, automatic archival of successfully-ingested files, retry-limit
+tracking before quarantining permanently-broken files, and folder-as-table
+merging for subfolders - see the Directory ingestion section above.
+
 **Logging.** All pipeline stages log through `bronze_json_loader.logging_utils`,
 which shows up in Databricks driver/job-run logs. Get the same logger in your
 own code with `from bronze_json_loader import get_logger`.
@@ -164,12 +234,22 @@ parameterized entrypoint the job calls - point `config_path` at a config
 file per table/source rather than duplicating the notebook.
 
 **Testing.** `tests/` has a pytest suite covering config validation,
-flatten/raw/auto behavior, and the quality gate, using a local
-`SparkSession` (no Databricks connection needed). Run with:
+flatten/raw/auto behavior, the quality gate, directory ingestion, file
+archival, retry-limit quarantine, and folder-as-table merging, using a
+local `SparkSession` (no Databricks connection needed) - the suite is also
+environment-aware and runs correctly directly on a Databricks cluster.
+Run with:
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
+
+For deeper validation notes, findings, and known Spark behaviors
+discovered during testing (e.g. duplicate-key handling, schema-hint
+rescued data, folder-as-table gotchas), see `docs/testing_json_reader.md`
+and `docs/testing_directory_ingestion.md`. Full production deployment
+validation (real Databricks jobs, real Unity Catalog environment) is in
+`docs/testing_end_to_end_deployment.md`.
 
 ## Operational notes / known caveats
 
@@ -184,3 +264,7 @@ pytest
   business key to keep retried merges safe.
 - This package doesn't manage cloud storage credentials/mounts - configure
   those at the cluster or Unity Catalog external-location level as usual.
+- `.cache()`/`.persist()` are not supported on Databricks serverless
+  compute - avoid relying on them in any custom extensions; see
+  `docs/testing_directory_ingestion.md` for how folder-as-table works
+  around this constraint.
