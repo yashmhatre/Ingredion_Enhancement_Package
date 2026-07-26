@@ -1,5 +1,5 @@
 import pytest
-from bronze_json_loader.config import IngestionConfig
+from bronze_ingest.config import IngestionConfig
 
 
 def test_requires_source_path_and_table():

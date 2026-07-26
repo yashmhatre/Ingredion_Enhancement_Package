@@ -8,7 +8,7 @@ external system) without changing call sites.
 import logging
 import sys
 
-_LOGGER_NAME = "bronze_json_loader"
+_LOGGER_NAME = "bronze_ingest"
 
 
 def get_logger(level=logging.INFO) -> logging.Logger:

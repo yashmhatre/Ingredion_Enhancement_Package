@@ -36,7 +36,7 @@ changes.
 ```bash
 # 1. Clone the repo
 git clone https://github.com/yashmhatre/Ingredion_Enhancement_Package.git
-cd Ingredion_Enhancement_Package/bronze_json_loader
+cd Ingredion_Enhancement_Package/bronze_layer
 
 # 2. Create a virtual environment
 python -m venv venv
@@ -81,6 +81,7 @@ feature/<short-description>     e.g. feature/multi-format-reader
 fix/<short-description>         e.g. fix/jsonl-discovery
 test/<short-description>        e.g. test/json-reader-validation
 docs/<short-description>        e.g. docs/update-readme
+refactor/<short-description>    e.g. refactor/rename-bronze-layer
 ```
 
 ## Commit Message Guidelines
@@ -133,19 +134,20 @@ retrying forever with no signal that a human needs to intervene.
 
 This project has two layers of testing — know which one your change needs:
 
-**1. Local pytest suite** (`bronze_json_loader/tests/`)
+**1. Local pytest suite** (`bronze_layer/tests/`)
 ```bash
-cd bronze_json_loader
+cd bronze_layer
 pytest
 ```
 Covers config validation, flatten/quality logic, directory ingestion,
-file archival, and retry-limit behavior. Uses a local `SparkSession` —
-no Databricks connection needed, and the suite is also environment-aware
-enough to run directly on a Databricks cluster if needed (see
-`conftest.py`'s `spark` and `json_test_dir` fixtures for how that works).
+file archival, retry-limit behavior, folder-as-table, and the run-level
+audit trail. Uses a local, Delta-enabled `SparkSession` — no Databricks
+connection needed, and the suite is also environment-aware enough to run
+directly on a Databricks cluster if needed (see `conftest.py`'s `spark`
+and `json_test_dir` fixtures for how that works).
 
-**2. Real-environment validation** (`bronze_json_loader/docs/` +
-associated notebooks), needed when a change touches:
+**2. Real-environment validation** (`bronze_layer/docs/` + associated
+notebooks), needed when a change touches:
 - Reading behavior against real cloud storage (see
   `notebooks/validate_json_reader.py` and
   [testing_json_reader.md](docs/testing_json_reader.md))
@@ -180,16 +182,16 @@ actually happened, why, and how it was resolved.
    ```
 2. Open a PR against `main` — the PR template will auto-populate; fill it out completely
 3. Link the related issue using `Closes #<issue-number>` in the PR description
-4. Ensure CI checks pass (once CI enforcement lands — see the enterprise
-   hardening roadmap; until then, confirm tests pass locally and note it
-   in the PR)
-5. Request review
+4. CI runs automatically via GitHub Actions on every PR
+   (`.github/workflows/ci.yml`) — the full pytest suite must pass.
+   Branch protection on `main` requires this check before merge.
+5. Request review — at least 1 approval required before merging
 
 ## Code Review Process
 
-- At least one approving review is required before merging (adjust based on your team's actual process)
+- At least one approving review is required before merging
 - Address review comments with additional commits rather than force-pushing, unless asked to squash
-- Once approved and checks pass, a maintainer will merge the PR
+- Once approved and CI passes, a maintainer will merge the PR
 
 ## Questions
 

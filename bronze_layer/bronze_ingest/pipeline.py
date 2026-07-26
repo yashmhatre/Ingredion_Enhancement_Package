@@ -183,7 +183,7 @@ def ingest_json_to_bronze(spark, config: Optional[Dict[str, Any]] = None, config
     """
     One-shot convenience function for the simplest plug-and-play usage:
 
-        from bronze_json_loader import ingest_json_to_bronze
+        from bronze_ingest import ingest_json_to_bronze
         ingest_json_to_bronze(
             spark,
             source_path="abfss://raw@mystorage.dfs.core.windows.net/orders/",

@@ -14,12 +14,12 @@ dbutils.library.restartPython()
 # COMMAND ----------
 
 import sys
-sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader")
+sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer")
 
 # COMMAND ----------
 
-from bronze_json_loader.config import IngestionConfig
-from bronze_json_loader.json_reader import read_json
+from bronze_ingest.config import IngestionConfig
+from bronze_ingest.json_reader import read_json
 
 BASE = "abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON"
 

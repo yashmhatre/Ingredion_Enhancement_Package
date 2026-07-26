@@ -1,6 +1,6 @@
 import pytest
-from bronze_json_loader.config import IngestionConfig
-from bronze_json_loader.quality import enforce_quality, split_good_bad, DataQualityError
+from bronze_ingest.config import IngestionConfig
+from bronze_ingest.quality import enforce_quality, split_good_bad, DataQualityError
 
 
 def _df(spark):

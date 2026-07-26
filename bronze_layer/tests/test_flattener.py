@@ -1,7 +1,7 @@
 from pyspark.sql import Row
-from bronze_json_loader.flattener import flatten_dataframe, _max_struct_depth
-from bronze_json_loader.config import IngestionConfig
-from bronze_json_loader.flattener import apply_flatten_mode
+from bronze_ingest.flattener import flatten_dataframe, _max_struct_depth
+from bronze_ingest.config import IngestionConfig
+from bronze_ingest.flattener import apply_flatten_mode
 
 
 def _sample_df(spark):

@@ -1,4 +1,4 @@
-# End-to-End Deployment Validation — bronze_json_loader
+# End-to-End Deployment Validation — bronze_ingest
 
 ## Purpose
 
@@ -16,7 +16,7 @@ deployed product actually works."
 
 - `databricks bundle validate` / `deploy` against the `dev` target
 - `bronze_orders_ingestion` job (single-table, config-driven via
-  `order_bronze.yaml`)
+  `order_bronze.yaml`) — see status note below, since disabled
 - `bronze_directory_ingestion` job (multi-file, one-table-per-file),
   including file archival and the retry-limit-before-quarantine feature
 - Real fixture files, reused from `docs/testing_json_reader.md`'s
@@ -42,9 +42,8 @@ deployed product actually works."
    actual volume name (`ext-ingredion-dev`) and jumping straight to a
    folder name that was never real (`ingredion` is the *ADLS container*
    name, not the *volume* name — a different layer). Corrected to:
-   ```
    /Volumes/${var.catalog}/ingredion_dev/ext-ingredion-dev/raw/JSON/
-   ```
+
    Confirmed the Unity Catalog external volume and the ADLS container are
    the same underlying storage — the same fixture files uploaded for
    `json_reader.py` validation were visible and usable here.
@@ -64,7 +63,8 @@ deployed product actually works."
 - `duplicate_keys.json` — expected (documented Spark limitation, see
   `docs/testing_json_reader.md`)
 - `duplicate_keys_no_crash.json` — a stray leftover file from an earlier
-  fixture-naming iteration, not part of the intended fixture set
+  fixture-naming iteration, not part of the intended fixture set (since
+  deleted — see Follow-up items)
 - `malformed.json` — expected (deliberately broken JSON syntax)
 
 Each failure was isolated to its own file — the batch continued
@@ -128,15 +128,22 @@ merged table. Re-running this end-to-end test today would produce a
 deliberate, documented behavior change, not a regression; noted here so
 this doc's original finding isn't read as still-current.
 
-## Follow-up items noted, not blocking
+### `bronze_orders_ingestion` — later disabled
 
-- `duplicate_keys_no_crash.json` — stray fixture file, worth deleting
-  from `raw/JSON/` so the fixture set matches what's documented in
-  `docs/testing_json_reader.md` exactly
-- `bronze_orders_ingestion` (single-table job) results not detailed here
-  as extensively as `bronze_directory_ingestion` — worth a quick spot
-  check if not already done, though the underlying `read_json`/pipeline
-  logic is the same code path already validated elsewhere
+This job (validated above) was a sample/test job for the single-table
+ingestion path. It has since been commented out in `databricks.yml` and
+undeployed to avoid unnecessary scheduling cost — the reference
+notebook (`run_ingestion.py`) and config (`config/order_bronze.yaml`)
+are kept as-is for anyone building a similar single-table job later.
+`bronze_directory_ingestion` remains the actively used production job.
+
+## Follow-up items (resolved)
+
+- ~~`duplicate_keys_no_crash.json` — stray fixture file~~ — **resolved**,
+  file deleted, fixture set now matches `docs/testing_json_reader.md` exactly
+- ~~`bronze_orders_ingestion` results not detailed as extensively~~ —
+  **superseded**, job disabled entirely (see status note above), no
+  longer applicable
 
 ## Related docs
 

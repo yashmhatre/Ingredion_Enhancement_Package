@@ -37,7 +37,7 @@ def spark():
 
     spark = (
         SparkSession.builder
-        .appName("bronze_json_loader-tests")
+        .appName("bronze_ingest-tests")
         .master("local[2]")
         .config("spark.sql.shuffle.partitions", "2")
         .getOrCreate()
@@ -83,25 +83,22 @@ Test functions were updated to write files via a small helper instead of
 directly into `tmp_path`, and to use `json_test_dir`'s `source_dir` (a
 real path/URI in both environments) instead of a hardcoded `file://` URI.
 
-## Real Unity Catalog path — do not trust `azure_setup.md`'s example names
+## Unity Catalog path
 
-The actual catalog/schema/volume in this workspace differ from the
-placeholder names originally documented in `azure_setup.md`:
+Catalog/schema/volume for this workspace:
 
-| | Documented (azure_setup.md) | Actual |
-|---|---|---|
-| Catalog | `workspace` | `ingredion_en_dev` |
-| Schema | `bronze` | `ingredion_dev` |
-| Volume | `ingredion` | `ext-ingredion-dev` |
+| | Value |
+|---|---|
+| Catalog | `ingredion_en_dev` |
+| Schema | `ingredion_dev` |
+| Volume | `ext-ingredion-dev` |
 
-Confirmed via **Catalog Explorer** in the Databricks UI (catalog → schema
-→ Volumes tab). `azure_setup.md` should be corrected to match — filed as
-a follow-up, not yet done as of this writing.
+Confirmed via **Catalog Explorer** in the Databricks UI. `azure_setup.md`
+has been corrected to reflect these values (previously had placeholder
+names — see that doc's own changelog for detail).
 
 Full working scratch path used by the `json_test_dir` fixture:
-```
 /Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/pytest_scratch
-```
 
 If this ever needs to point elsewhere, override without touching code:
 ```python
@@ -154,9 +151,39 @@ except Exception as exc:
     raise
 ```
 
-## Status
+## Retry limit before quarantine (permanently-failing files)
 
-**All tests passing, both locally and on Databricks (serverless).**
+Files that fail *ingestion* (not just the archival move) are tracked
+across runs via a persisted retry counter, instead of being retried
+forever with no escape hatch.
+
+**Behavior:**
+- State stored at `{source_dir}/_state/retry_state.json` — a simple
+  `{file_path: consecutive_failure_count}` map
+- On each ingestion failure, the counter increments. Below
+  `max_ingestion_retries` (default 3), the file is left in place for the
+  next run to retry
+- At the threshold, the file is moved to `quarantine_files/` (same
+  folder/purpose as the existing move-failure quarantine path) and its
+  counter entry is cleared
+- On a successful ingestion, any existing counter for that file is
+  cleared — a file that fails once or twice but later succeeds is never
+  quarantined
+- The `_state/` subfolder is naturally invisible to `list_json_files`
+  (non-recursive, `.json`/`.jsonl` filter only) — confirmed with a
+  dedicated test
+
+**Why this was added:** found during end-to-end deployment testing —
+permanently broken files (bad syntax, unsupported structures) would
+otherwise fail identically on every future run forever, with no signal
+that a human needs to intervene.
+
+**Gotcha hit while testing:** file paths returned by `list_json_files`
+include Databricks' `dbfs:` scheme prefix (e.g.
+`dbfs:/Volumes/.../flaky.json`), not just the plain path. Tests that
+reconstruct an expected key manually (e.g. `f"{source_dir}/file.json"`)
+will mismatch the actual dictionary key. Fixed by reading the real path
+back from the `results` list rather than reconstructing it.
 
 ## Folder-as-table (subfolder merging)
 
@@ -214,12 +241,38 @@ every folder — recommended when a folder's files might have inconsistent
 inferred types, since `unionByName` on independently-inferred schemas can
 silently coerce mismatched types.
 
+### Gotcha: test fixture folders left in source_dir get auto-ingested
+
+Confirmed in practice: a `schema_hint/` fixture folder (built for the
+schema-hint enforcement task, containing `type_mismatch.json` with an
+intentionally mistyped `id` field) was left inside the real `raw/JSON/`
+source directory. Since folder-as-table treats *any* subfolder as a
+table automatically, it was auto-discovered and ingested as
+`schema_hint_bronze` on the next real run.
+
+Because no `schema_hint_ddl` was passed for that run, each file's schema
+was inferred independently — `id` came out as BIGINT for three files and
+STRING for `type_mismatch.json`. `unionByName` merged them without
+forcing a single type, and the mismatch only surfaced later, at the
+actual Delta write, as a hard `CAST_INVALID_INPUT` failure — not the
+"safely rescued via `_rescued_data`" behavior documented for
+`schema_hint_ddl`-enforced reads (that rescue behavior only applies when
+an explicit schema hint is provided; plain schema inference has no such
+safety net).
+
+**Fix:** keep test/fixture folders outside any real `source_dir` used for
+production ingestion — folder-as-table has no way to distinguish
+intentional test data from real source folders. If a folder's files are
+known to have inconsistent types on purpose, pass `schema_hint_ddl`
+explicitly so every file is read against one consistent schema.
+
 ### Status
 All 3 folder-as-table tests passing (merge into one table, one bad file
 doesn't block the rest, folder structure preserved in archival) —
 locally and on Databricks (serverless).
 
-## Related issues
+## Status (overall)
 
-- `azure_setup.md` needs correcting — documented catalog/schema/volume
-  names don't match the actual workspace (see table above)
+**All tests passing, both locally and on Databricks (serverless)** —
+file discovery, `.jsonl` support, file archival, retry-limit quarantine,
+and folder-as-table.

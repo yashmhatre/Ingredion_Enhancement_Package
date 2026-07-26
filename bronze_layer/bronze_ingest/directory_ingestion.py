@@ -5,7 +5,7 @@ via a configurable template (e.g. "{filename}_bronze" or "bronze_{filename}").
 
 Usage (notebook):
 
-    from bronze_json_loader import ingest_directory_to_bronze
+    from bronze_ingest import ingest_directory_to_bronze
 
     results = ingest_directory_to_bronze(
         spark,

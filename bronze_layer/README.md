@@ -1,9 +1,14 @@
-# bronze-json-loader
+# bronze-ingest
 
-Plug-and-play package for reading nested JSON (from any location) and
-loading it into a Delta **bronze** table on Databricks. Built so any user
-on your workspace can reuse it just by installing the package and pointing
-it at a config.
+Plug-and-play package for reading nested data (currently JSON, with
+multi-format support planned) and loading it into a Delta **bronze**
+table on Databricks. Built so any user on your workspace can reuse it
+just by installing the package and pointing it at a config.
+
+This package lives inside the `bronze_layer/` folder of this repo — a
+self-contained unit (package, tests, docs, deployment config) that
+parallels future `silver_layer` / `gold_layer` folders as those layers
+are built.
 
 ## Architecture
 
@@ -13,23 +18,23 @@ async AI-assisted metadata layer.
 
 ## Install (on a Databricks cluster)
 
-Upload the `bronze_json_loader` folder as a workspace file, or build a wheel
+Upload the `bronze_layer` folder as a workspace file, or build a wheel
 and install it as a cluster/notebook-scoped library:
 
 ```bash
-cd bronze_json_loader
+cd bronze_layer
 python setup.py bdist_wheel
-# upload dist/bronze_json_loader-0.1.0-py3-none-any.whl to DBFS/Volumes,
+# upload dist/bronze_ingest-0.4.0-py3-none-any.whl to DBFS/Volumes,
 # then in a notebook: %pip install /dbfs/path/to/that.whl
 ```
 
 Or, for quick iteration, just `%pip install pyyaml` and `sys.path.append(...)`
-to the repo folder containing `bronze_json_loader/`.
+to the repo folder containing `bronze_ingest/` (i.e. `bronze_layer/`).
 
 ## Quick start (one-liner)
 
 ```python
-from bronze_json_loader import ingest_json_to_bronze
+from bronze_ingest import ingest_json_to_bronze
 
 result = ingest_json_to_bronze(
     spark,
@@ -46,7 +51,7 @@ print(result)
 ## Config-driven usage (recommended for reuse across pipelines)
 
 ```python
-from bronze_json_loader import BronzeIngestion
+from bronze_ingest import BronzeIngestion
 
 job = BronzeIngestion.from_yaml(spark, "/Volumes/main/configs/orders_bronze.yaml")
 result = job.run()
@@ -62,7 +67,7 @@ package code itself never changes.
 ## Directory ingestion (multi-file sources)
 
 ```python
-from bronze_json_loader import ingest_directory_to_bronze
+from bronze_ingest import ingest_directory_to_bronze
 
 results = ingest_directory_to_bronze(
     spark,
@@ -116,6 +121,15 @@ every run forever with no signal that a human needs to intervene. A file
 that fails once or twice but later succeeds has its retry counter
 cleared automatically.
 
+### Run-level audit trail
+
+Every ingestion run — single file, directory batch, streaming
+micro-batch, or folder-as-table merge — writes exactly one record to a
+dedicated audit table (`enable_run_audit: true`, the default), independent
+of any single bronze table. Answers "did this run succeed, how many
+rows, how long did it take" without needing to inspect any specific
+table. See `bronze_ingest/audit.py`.
+
 ## Handling nested JSON
 
 Set `flatten_mode` per source:
@@ -147,7 +161,7 @@ configured - this package does not manage auth.
 - `merge` - upsert using `merge_keys`; requires `delta-spark`'s `DeltaTable`
   API (available by default on Databricks runtimes).
 
-## Audit columns
+## Audit columns (per-row lineage)
 
 When `add_audit_columns: true` (default), every load adds:
 - `_ingested_at` - ingestion timestamp
@@ -155,34 +169,40 @@ When `add_audit_columns: true` (default), every load adds:
 - `_batch_id` - a batch identifier (auto-generated UTC timestamp unless you
   pass `batch_id` explicitly, e.g. from a job run ID)
 
+These are separate from the run-level audit trail described above —
+per-row columns describe individual rows within a table; the audit
+trail describes the run itself.
+
 ## Package layout
 
 ```
-bronze_json_loader/
-  __init__.py          # public API
-  config.py            # IngestionConfig dataclass + yaml/json loaders
-  json_reader.py        # batch JSON read (PERMISSIVE mode, corrupt-record capture)
-  streaming_reader.py    # Auto Loader (cloudFiles) incremental read
-  flattener.py          # raw / flatten / auto nested-field handling
-  quality.py            # required-column validation + quarantine split
-  bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
-  directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
-  retry.py              # exponential-backoff retry decorator
-  logging_utils.py       # structured logging
-  pipeline.py           # BronzeIngestion orchestrator (run() / run_streaming() / run_on_dataframe())
-notebooks/
-  run_ingestion.py             # parameterized Databricks notebook entrypoint (widgets)
-  run_directory_ingestion.py    # directory/multi-file ingestion entrypoint
-  validate_json_reader.py        # ADLS-based validation notebook (not part of pytest)
-docs/
-  architecture.md                    # target-state architecture (multi-format + async AI layer)
-  testing_json_reader.md              # JSON reader validation notes + findings
-  testing_directory_ingestion.md       # directory ingestion, archival, retry-limit, folder-as-table testing
-  testing_end_to_end_deployment.md     # full deployed-bundle validation
-tests/                # pytest suite (config, flatten, quality, directory ingestion, archival, retry-limit, folder-as-table)
-databricks.yml        # Databricks Asset Bundle - scheduled job deployment
-setup.py
-sample_config.yaml
+bronze_layer/
+  bronze_ingest/
+    __init__.py          # public API
+    config.py            # IngestionConfig dataclass + yaml/json loaders
+    json_reader.py        # batch JSON read (PERMISSIVE mode, corrupt-record capture)
+    streaming_reader.py    # Auto Loader (cloudFiles) incremental read
+    flattener.py          # raw / flatten / auto nested-field handling
+    quality.py            # required-column validation + quarantine split
+    bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
+    directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
+    audit.py               # run-level audit trail (audited_run context manager)
+    retry.py              # exponential-backoff retry decorator
+    logging_utils.py       # structured logging
+    pipeline.py           # BronzeIngestion orchestrator (run() / run_streaming() / run_on_dataframe())
+  notebooks/
+    run_ingestion.py             # parameterized Databricks notebook entrypoint (widgets)
+    run_directory_ingestion.py    # directory/multi-file ingestion entrypoint
+    validate_json_reader.py        # ADLS-based validation notebook (not part of pytest)
+  docs/
+    architecture.md                    # target-state architecture (multi-format + async AI layer)
+    testing_json_reader.md              # JSON reader validation notes + findings
+    testing_directory_ingestion.md       # directory ingestion, archival, retry-limit, folder-as-table testing
+    testing_end_to_end_deployment.md     # full deployed-bundle validation
+  tests/                # pytest suite (config, flatten, quality, directory ingestion, archival, retry-limit, folder-as-table, audit)
+  databricks.yml        # Databricks Asset Bundle - scheduled job deployment
+  setup.py
+  sample_config.yaml
 ```
 
 ## Production features
@@ -222,9 +242,12 @@ isolation, automatic archival of successfully-ingested files, retry-limit
 tracking before quarantining permanently-broken files, and folder-as-table
 merging for subfolders - see the Directory ingestion section above.
 
-**Logging.** All pipeline stages log through `bronze_json_loader.logging_utils`,
+**Run-level audit trail.** Every ingestion path writes one audit record
+per run, success or failure - see above.
+
+**Logging.** All pipeline stages log through `bronze_ingest.logging_utils`,
 which shows up in Databricks driver/job-run logs. Get the same logger in your
-own code with `from bronze_json_loader import get_logger`.
+own code with `from bronze_ingest import get_logger`.
 
 **Deployment.** `databricks.yml` is a ready-to-adapt Databricks Asset Bundle:
 job-compute cluster (not an always-on cluster, for cost control), a cron
@@ -235,11 +258,13 @@ file per table/source rather than duplicating the notebook.
 
 **Testing.** `tests/` has a pytest suite covering config validation,
 flatten/raw/auto behavior, the quality gate, directory ingestion, file
-archival, retry-limit quarantine, and folder-as-table merging, using a
-local `SparkSession` (no Databricks connection needed) - the suite is also
-environment-aware and runs correctly directly on a Databricks cluster.
-Run with:
+archival, retry-limit quarantine, folder-as-table merging, and the
+run-level audit trail, using a local `SparkSession` (Delta-enabled) - no
+Databricks connection needed. The suite is also environment-aware and
+runs correctly directly on a Databricks cluster. Runs automatically via
+GitHub Actions CI on every PR. Run locally with:
 ```bash
+cd bronze_layer
 pip install -e ".[dev]"
 pytest
 ```
@@ -268,3 +293,6 @@ validation (real Databricks jobs, real Unity Catalog environment) is in
   compute - avoid relying on them in any custom extensions; see
   `docs/testing_directory_ingestion.md` for how folder-as-table works
   around this constraint.
+- Folder-as-table treats *any* subfolder in `source_dir` as ingestible -
+  keep test/fixture folders outside real source directories, or they'll
+  be auto-ingested on the next run (see `docs/testing_directory_ingestion.md`).

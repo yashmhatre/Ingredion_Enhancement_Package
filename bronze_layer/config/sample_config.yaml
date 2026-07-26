@@ -1,4 +1,4 @@
-# Sample config for bronze_json_loader
+# Sample config for bronze_ingest
 # Any Spark-readable path works: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/
 source_path: "/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/orders.json"
 multiline: true

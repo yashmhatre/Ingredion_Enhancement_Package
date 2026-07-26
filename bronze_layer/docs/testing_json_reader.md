@@ -8,37 +8,45 @@ schema-hint (`schema_hint_ddl`) enforcement. This is **not** part of the
 local `pytest` suite — it requires a live Databricks cluster with Unity
 Catalog access to the `ingredion` container.
 
-Notebook: `bronze_json_loader/notebooks/validate_json_reader.py`
+Notebook: `bronze_layer/notebooks/validate_json_reader.py`
 
-## Fixture location
-
-```
+## Fixture location (as validated)
 abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON/
-  single_object.json
-  array_of_objects.json
-  lines.jsonl
-  nested_one_level.json
-  nested_three_level.json
-  array_field.json
-  array_of_arrays.json
-  malformed.json
-  empty_file.json
-  empty_object.json
-  empty_array.json
-  mixed_valid_malformed.jsonl
-  nulls.json
-  unicode.json
-  duplicate_keys.json
-  numeric_as_string.json
-  multi_file/
-    orders_a.json
-    orders_b.json
-  schema_hint/
-    full_match.json
-    extra_fields.json
-    missing_optional.json
-    type_mismatch.json
-```
+single_object.json
+array_of_objects.json
+lines.jsonl
+nested_one_level.json
+nested_three_level.json
+array_field.json
+array_of_arrays.json
+malformed.json
+empty_file.json
+empty_object.json
+empty_array.json
+mixed_valid_malformed.jsonl
+nulls.json
+unicode.json
+duplicate_keys.json
+numeric_as_string.json
+multi_file/
+orders_a.json
+orders_b.json
+schema_hint/
+full_match.json
+extra_fields.json
+missing_optional.json
+type_mismatch.json
+
+**Note:** the `schema_hint/` subfolder listed above was present when this
+validation was originally run, but has since been **removed** from the
+live `raw/JSON/` directory. Once folder-as-table shipped (see
+`docs/testing_directory_ingestion.md`), any subfolder in a real
+`source_dir` gets auto-ingested — and this fixture folder's
+intentionally-inconsistent types (built to test `schema_hint_ddl`
+behavior) caused an unintended real ingestion failure when left in place.
+The findings below remain accurate; the fixture files themselves should
+be re-created in a location outside any real `source_dir` if this
+validation needs to be re-run.
 
 Storage account: `ingredionenpkgdev` (container name `ingredion` is
 different from the account name — easy to confuse, see gotchas below).
@@ -65,9 +73,9 @@ Schema-hint cases are all validated against the same DDL:
    folders — the deployed workspace path changed, and Databricks
    auto-adds the repo root to `sys.path` *before* any manual
    `sys.path.append(...)` runs. The package has a nesting quirk (real
-   code lives one level deeper, in `bronze_json_loader/bronze_json_loader/`
-   — the outer folder has no `__init__.py`), so Python finds the empty
-   outer folder first and treats it as a namespace package, producing
+   code lives one level deeper, in `bronze_layer/bronze_ingest/` — the
+   outer folder has no `__init__.py`), so Python finds the empty outer
+   folder first and treats it as a namespace package, producing
    `ImportError: cannot import name 'IngestionConfig'` even though the
    correct path is also present later in `sys.path`.
 
@@ -76,11 +84,11 @@ Schema-hint cases are all validated against the same DDL:
    namespace import is cached in memory and won't self-correct just from
    fixing `sys.path`).
 
-   ```python
+```python
    import sys
-   sys.path.insert(0, "/Workspace/Users/<your-user>/Ingredion_Enhancement_Package/bronze_json_loader")
+   sys.path.insert(0, "/Workspace/Users/<your-user>/Ingredion_Enhancement_Package/bronze_layer")
    dbutils.library.restartPython()
-   ```
+```
 
 4. **Missing fixture files produce confusing test failures**, not obvious
    "file not found" errors, if the file was never uploaded. Always verify
@@ -97,10 +105,8 @@ approach and reads the row without error.
 **Actual behavior:** Spark's schema inference scans the file, detects two
 fields both named `name`, and raises:
 
-```
-AnalysisException: [COLUMN_ALREADY_EXISTS] The column `name` already
+AnalysisException: [COLUMN_ALREADY_EXISTS] The column name already
 exists. Choose another name or rename the existing column. SQLSTATE: 42711
-```
 
 This happens during **schema resolution**, before `PERMISSIVE` mode's
 corrupt-record handling ever gets a chance to run — so this is not
@@ -128,10 +134,8 @@ against schema hint `"id INT, name STRING, age INT"`.
 **Actual behavior:** the mistyped field (`id`) is set to `NULL` in its
 typed column, but the original raw value is preserved in `_rescued_data`:
 
-```
 id=NULL, name=Dave, age=40,
 _rescued_data={"id":"not_a_number","_file_path":".../type_mismatch.json"}
-```
 
 The read succeeds cleanly — no exception, no corrupt-record routing.
 
@@ -144,24 +148,32 @@ duplicate-keys case above (a full read failure) — worth keeping in mind
 when reasoning about how different kinds of malformed source data will
 actually surface downstream.
 
+**Important caveat confirmed later:** this rescue behavior only applies
+when `schema_hint_ddl` is explicitly provided. Without it, independently-
+inferred schemas across multiple files can silently produce a hard write
+failure instead — see the folder-as-table gotcha in
+`docs/testing_directory_ingestion.md` for a real production instance of
+this happening.
+
 ## How to run
 
 1. Confirm fixture files exist at the path above:
-   ```python
+```python
    display(dbutils.fs.ls("abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON/"))
    display(dbutils.fs.ls("abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON/schema_hint/"))
-   ```
+```
 2. Open `notebooks/validate_json_reader.py`, attach to a serverless cluster
 3. Confirm `sys.path.insert(0, ...)` points at your current deployed path
 4. Run all cells
 5. Read the final report cell:
-   ```python
+```python
    report_df[report_df["status"] != "PASS"]
-   ```
+```
 
 ## Status
 
-**24/24 passing.**
+**24/24 passing** (at time of validation — `schema_hint/` fixtures have
+since been removed from the live source directory, see note above).
 
 - 19/19 base JSON reader cases (structural variety, multi-file, bad data,
   edge cases) — including `duplicate_keys_documented_limitation`, which
@@ -171,9 +183,10 @@ actually surface downstream.
   `schema_hint_extra_fields_rescued`, `schema_hint_missing_field_is_null`,
   `schema_hint_absent_regression`, `schema_hint_type_mismatch_nulls_and_rescues`)
 
-## Related issues
+## Related issues (resolved)
 
-- `.jsonl` files not discovered by `directory_ingestion.py`'s file
-  listing — separate bug, filed
-- Move/archive processed files after ingestion — separate task, filed,
-  deferred (streaming/Auto Loader evaluation deferred within it)
+- ~~`.jsonl` files not discovered by `directory_ingestion.py`'s file
+  listing~~ — **fixed**, see `docs/testing_directory_ingestion.md`
+- ~~Move/archive processed files after ingestion~~ — **implemented** as
+  automatic file archival + retry-limit-before-quarantine, see
+  `docs/testing_directory_ingestion.md`
