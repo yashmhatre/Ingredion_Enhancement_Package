@@ -1,6 +1,6 @@
-# Azure Databricks setup — bronze_json_loader
+# Azure Databricks setup — bronze_ingest (bronze_layer)
 
-Living runbook for the dev/validation environment used to test `bronze_json_loader`
+Living runbook for the dev/validation environment used to test `bronze_ingest`
 against real Azure infrastructure (Unity Catalog, ADLS Gen2, serverless compute).
 
 Built and validated incrementally — each step below was confirmed working in the
@@ -27,13 +27,22 @@ for actual values (`ingredion_en_dev.ingredion_dev.ext-ingredion-dev`, not
 and directory ingestion validation work (see `docs/testing_json_reader.md` and
 `docs/testing_directory_ingestion.md`).
 
+**Package rename note:** the package/folder was renamed
+`bronze_json_loader` → `bronze_layer` (outer folder) / `bronze_ingest`
+(inner importable package), to reflect planned multi-format ingestion
+beyond JSON. Any `bronze_json_loader` path references below are historical
+context from when the environment was originally set up — substitute
+`bronze_layer` for the current repo structure.
+
 **Status as of last session:** Steps 1-6 done and validated — resource group,
 budget alert, ADLS Gen2 storage (`ingredion` container), Databricks serverless
 workspace, Unity Catalog wiring (Access Connector, storage credential,
 external location with file events), and a dedicated schema + external volume
 (see corrected Step 6 for actual names). Paused before Step 7 (CLI/bundle
-setup). One pending action item: the config file edits listed under Step 6
-haven't been applied to the repo yet — tracked as a separate task.
+setup). The config file edits listed under Step 6 have since been **applied**
+to the repo (`order_bronze.yaml`, `sample_config.yaml`, `databricks.yml` all
+updated to the real catalog/schema/volume values — see closed task in the
+issue tracker).
 
 ---
 
@@ -220,7 +229,7 @@ Validated: EventGrid provider registered; `ext-ingredion` external location crea
 Originally planned to reuse the `default` schema under a `workspace` catalog
 (zero config changes). Decided instead to create a dedicated schema — matches
 the medallion-layer naming already used throughout the project
-(`bronze_json_loader`, `bronze_writer.py`, etc.) and keeps `default` untouched
+(`bronze_ingest`, `bronze_writer.py`, etc.) and keeps `default` untouched
 for other work.
 
 **Actual names created** (confirmed via Catalog Explorer UI —
@@ -245,15 +254,19 @@ returned successfully with no error. Also confirmed working in practice —
 used as the pytest scratch location for `tests/test_directory_ingestion.py`
 (see `docs/testing_directory_ingestion.md`).
 
-**Config files must use these real values, not the originally-planned
-`workspace`/`bronze`/`ingredion` names — tracked as a separate task, not yet
-applied to the repo:**
+**Config files updated to use these real values** (previously tracked as a
+pending task — now applied):
 - `config/order_bronze.yaml`: `schema_name: "ingredion_dev"`,
   `source_path: "/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/"`
 - `sample_config.yaml`: same two fields
 - `databricks.yml`: `catalog` variable default → `ingredion_en_dev`,
   `schema_name` base_parameter for `bronze_directory_ingestion` →
   `ingredion_dev`
+
+**Note:** `bronze_orders_ingestion` (the job that originally used
+`order_bronze.yaml`) has since been disabled (commented out in
+`databricks.yml`) — it was a sample/test job, not needed for ongoing
+production use. See `docs/testing_end_to_end_deployment.md`.
 
 ---
 
@@ -278,6 +291,6 @@ done as Step 7 — it'll be picked up later as its own step once you're ready.)
 - `databricks current-user me --profile bronze-json-loader-dev` → should return user JSON
 
 **Validate the bundle (no deploy yet, no cost)**
-- `cd bronze_json_loader && databricks bundle validate -t dev --profile bronze-json-loader-dev`
+- `cd bronze_layer && databricks bundle validate -t dev --profile bronze-json-loader-dev`
 
 *(checkpoint pending)*

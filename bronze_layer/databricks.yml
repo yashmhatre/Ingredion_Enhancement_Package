@@ -1,10 +1,9 @@
-# Databricks Asset Bundle definition for deploying bronze_json_loader as a
+# Databricks Asset Bundle definition for deploying bronze_ingest as a
 # scheduled production job. Deploy with:
 #   databricks bundle deploy -t prod
-#   databricks bundle run bronze_orders_ingestion -t prod
 
 bundle:
-  name: bronze_json_loader
+  name: bronze_ingest
 
 variables:
   catalog:
@@ -19,7 +18,7 @@ targets:
   prod:
     mode: production
     workspace:
-      root_path: /Shared/.bundle/bronze_json_loader/${bundle.target}
+      root_path: /Shared/.bundle/bronze_ingest/${bundle.target}
 
 resources:
   jobs:
@@ -35,9 +34,9 @@ resources:
     #     - task_key: ingest_orders
 
     #       notebook_task:
-    #         notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/notebooks/run_ingestion
+    #         notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer/notebooks/run_ingestion
     #         base_parameters:
-    #           config_path: /Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/config/order_bronze.yaml
+    #           config_path: /Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer/config/order_bronze.yaml
 
     #   email_notifications:
     #     on_failure:
@@ -54,7 +53,7 @@ resources:
         - task_key: ingest_directory
 
           notebook_task:
-            notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader/notebooks/run_directory_ingestion
+            notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer/notebooks/run_directory_ingestion
             base_parameters:
               source_dir: /Volumes/${var.catalog}/ingredion_dev/ext-ingredion-dev/raw/JSON/
               catalog: ${var.catalog}

@@ -1,12 +1,12 @@
 import json
 import os
 import pytest
-from bronze_json_loader.directory_ingestion import (
+from bronze_ingest.directory_ingestion import (
     sanitize_table_name,
     build_table_name,
     list_json_files,
 )
-from bronze_json_loader.directory_ingestion import (
+from bronze_ingest.directory_ingestion import (
     _move_file,
     _archive_ingested_file,
 )
@@ -88,7 +88,7 @@ def test_list_json_files_missing_dir_raises(spark, json_test_dir):
 # ---- file archival tests (real filesystem, local or Databricks Volume) ----
 
 
-import bronze_json_loader.directory_ingestion as di
+import bronze_ingest.directory_ingestion as di
 
 
 def test_move_file_relocates_to_subfolder(json_test_dir):
@@ -153,7 +153,7 @@ def test_archive_ingested_file_leaves_file_in_place_when_all_moves_fail(json_tes
 
 # ---- retry-limit before quarantine tests ----
 
-from bronze_json_loader.directory_ingestion import ingest_directory_to_bronze
+from bronze_ingest.directory_ingestion import ingest_directory_to_bronze
 
 
 def _make_failing_config_class(fail_on_filenames):
@@ -173,8 +173,8 @@ def test_retry_state_persists_across_calls_and_quarantines_at_limit(spark, json_
     _write(write_dir, "bad.json", json.dumps({"x": 1}))
     _write(write_dir, "good.json", json.dumps({"x": 2}))
 
-    import bronze_json_loader.directory_ingestion as di
-    from bronze_json_loader.pipeline import BronzeIngestion
+    import bronze_ingest.directory_ingestion as di
+    from bronze_ingest.pipeline import BronzeIngestion
 
     monkeypatch.setattr(BronzeIngestion, "run", _make_failing_config_class(["bad.json"]))
 
@@ -213,8 +213,8 @@ def test_retry_state_cleared_on_eventual_success(spark, json_test_dir, monkeypat
     write_dir, source_dir = json_test_dir
     _write(write_dir, "flaky.json", json.dumps({"x": 1}))
 
-    import bronze_json_loader.directory_ingestion as di
-    from bronze_json_loader.pipeline import BronzeIngestion
+    import bronze_ingest.directory_ingestion as di
+    from bronze_ingest.pipeline import BronzeIngestion
 
     monkeypatch.setattr(BronzeIngestion, "run", _make_failing_config_class(["flaky.json"]))
     results = di.ingest_directory_to_bronze(
@@ -242,7 +242,7 @@ def test_retry_state_file_never_treated_as_data(spark, json_test_dir):
     write_dir, source_dir = json_test_dir
     _write(write_dir, "a.json", json.dumps({"x": 1}))
 
-    di_module = __import__("bronze_json_loader.directory_ingestion", fromlist=["_write_retry_state"])
+    di_module = __import__("bronze_ingest.directory_ingestion", fromlist=["_write_retry_state"])
     di_module._write_retry_state(source_dir, {"some/file.json": 1})
 
     files = di_module.list_json_files(spark, source_dir)
@@ -259,7 +259,7 @@ def test_folder_as_table_merges_files_into_one_table(spark, json_test_dir, monke
     _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
     _write(write_dir, "orders/order2.json", json.dumps({"id": 2}))
 
-    from bronze_json_loader.pipeline import BronzeIngestion
+    from bronze_ingest.pipeline import BronzeIngestion
 
     def fake_run_on_dataframe(self, df):
         return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}
@@ -283,8 +283,8 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     _write(write_dir, "orders/good1.json", json.dumps({"id": 1}))
     _write(write_dir, "orders/good2.json", json.dumps({"id": 2}))
 
-    from bronze_json_loader.pipeline import BronzeIngestion
-    from bronze_json_loader import json_reader as jr
+    from bronze_ingest.pipeline import BronzeIngestion
+    from bronze_ingest import json_reader as jr
 
     real_read_json = jr.read_json
 
@@ -319,7 +319,7 @@ def test_folder_as_table_archives_files_with_folder_name_preserved(spark, json_t
     os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
     _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
 
-    from bronze_json_loader.pipeline import BronzeIngestion
+    from bronze_ingest.pipeline import BronzeIngestion
 
     def fake_run_on_dataframe(self, df):
         return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}

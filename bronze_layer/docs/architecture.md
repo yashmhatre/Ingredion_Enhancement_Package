@@ -3,10 +3,11 @@
 ## Overview
 
 This document describes the proposed target-state architecture for
-`bronze_json_loader`, extending the current bronze ingestion pipeline to
-(a) support multiple source formats beyond JSON, and (b) incorporate
-AI-assisted metadata generation — without introducing risk to the
-ingestion pipeline's reliability guarantees.
+`bronze_ingest` (part of the `bronze_layer/` folder), extending the
+current bronze ingestion pipeline to (a) support multiple source formats
+beyond JSON, and (b) incorporate AI-assisted metadata generation —
+without introducing risk to the ingestion pipeline's reliability
+guarantees.
 
 ![Ingestion architecture with async AI layer](images/ingestion_architecture.png)
 
@@ -45,18 +46,20 @@ to the core ingestion SLA.
 ## Delivery Sequencing
 
 This architecture represents the target state, not the immediate
-roadmap. Current priority remains the enterprise-hardening phases
-already in progress:
+roadmap. Current status on the enterprise-hardening phases:
 
-1. Run-level audit trail + CI enforcement *(in progress)*
+1. Run-level audit trail + CI enforcement ✅ **done** — `audited_run()`
+   context manager wired into all ingestion paths, `.github/workflows/ci.yml`
+   enforcing tests on every PR, branch protection active on `main`
 2. Control-table driven dynamic config
 3. Concurrency locking
 4. Config validation and allowlist governance
 5. Secrets via Databricks secret scopes
 
 Multi-format support and the AI metadata layer are scoped as
-subsequent phases, building on the audit trail infrastructure once it
-is in place.
+subsequent phases, building on the now-completed audit trail
+infrastructure — the audit table is the metadata backbone the AI layer
+will eventually read from.
 
 ## Open Design Question
 

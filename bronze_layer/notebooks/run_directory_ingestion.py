@@ -11,9 +11,9 @@
 import sys
 
 # Adjust to your deployed path (Repos path if using Git folders).
-sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader")
+sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer")
 
-from bronze_json_loader import ingest_directory_to_bronze, get_logger
+from bronze_ingest import ingest_directory_to_bronze, get_logger
 
 logger = get_logger()
 

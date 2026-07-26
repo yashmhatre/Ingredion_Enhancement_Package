@@ -6,9 +6,9 @@ import sys
 # location instead of a hardcoded workspace path - avoids the recurring
 # stale-path/wrong-identity issue entirely.
 #
-# This file lives at: .../Ingredion_Enhancement_Package/bronze_json_loader/tests/conftest.py
-# The importable package lives at: .../bronze_json_loader/bronze_json_loader/
-# So we need the OUTER bronze_json_loader folder (parent of "tests") on sys.path.
+# This file lives at: .../Ingredion_Enhancement_Package/bronze_layer/tests/conftest.py
+# The importable package lives at: .../bronze_layer/bronze_ingest/
+# So we need the OUTER bronze_layer folder (parent of "tests") on sys.path.
 _package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _package_parent not in sys.path:
     sys.path.insert(0, _package_parent)
@@ -41,7 +41,7 @@ def spark():
 
     builder = (
         SparkSession.builder
-        .appName("bronze_json_loader-tests")
+        .appName("bronze_layer-tests")
         .master("local[2]")
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")

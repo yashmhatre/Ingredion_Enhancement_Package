@@ -2,8 +2,8 @@ import uuid
 
 import pytest
 
-from bronze_json_loader.config import IngestionConfig
-from bronze_json_loader.audit import audited_run, AUDIT_SCHEMA
+from bronze_ingest.config import IngestionConfig
+from bronze_ingest.audit import audited_run, AUDIT_SCHEMA
 
 
 def _cfg(spark, tmp_path, table_suffix, **overrides):

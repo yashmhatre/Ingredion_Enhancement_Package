@@ -1,9 +1,9 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="bronze-json-loader",
-    version="0.1.0",
-    description="Plug-and-play nested JSON -> Databricks Delta bronze table ingestion",
+    name="bronze-ingest",
+    version="0.4.0",
+    description="Plug-and-play multi-format data ingestion into Databricks Delta bronze tables",
     packages=find_packages(),
     python_requires=">=3.8",
     install_requires=[

@@ -14,17 +14,17 @@
 
 import sys
 
-sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader")  # adjust to your deployed path
+sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer")  # adjust to your deployed path
 
 sys.path.insert(
     0,
-    "/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_json_loader"
+    "/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer"
 )
 
 # COMMAND ----------
 
 
-from bronze_json_loader import BronzeIngestion, IngestionConfig, get_logger
+from bronze_ingest import BronzeIngestion, IngestionConfig, get_logger
 
 logger = get_logger()
 
