@@ -114,6 +114,20 @@ just the pytest simulation using a mocked `BronzeIngestion.run()`.
 - Archival and retry-limit-quarantine both confirmed working in a real,
   repeated production job context
 
+### `multi_file/` subfolder correctly ignored — superseded
+
+At the time of this end-to-end test, `list_json_files` was non-recursive
+and `multi_file/` was correctly invisible to directory ingestion — see
+above for the original finding.
+
+**This behavior has since changed.** The folder-as-table feature (see
+`docs/testing_directory_ingestion.md`) means any subfolder directly
+inside `source_dir` — including `multi_file/` — is now treated as one
+merged table. Re-running this end-to-end test today would produce a
+`multi_file_bronze` table where none existed before. This is a
+deliberate, documented behavior change, not a regression; noted here so
+this doc's original finding isn't read as still-current.
+
 ## Follow-up items noted, not blocking
 
 - `duplicate_keys_no_crash.json` — stray fixture file, worth deleting

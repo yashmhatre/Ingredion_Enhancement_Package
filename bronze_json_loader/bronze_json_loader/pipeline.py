@@ -47,6 +47,42 @@ class BronzeIngestion:
         df = add_audit_columns(df, self.config)
         return df
 
+    def run_on_dataframe(self, raw_df) -> Dict[str, Any]:
+            """
+            Same as run(), but skips the read step and uses raw_df directly -
+            used by directory ingestion's folder-as-table path, where files
+            inside a folder are read and unioned individually beforehand
+            (so one bad file doesn't break the whole folder's read), rather
+            than letting this method read config.source_path itself.
+            """
+            logger.info(
+                "Starting batch ingestion from pre-loaded DataFrame -> %s",
+                self.config.full_table_name,
+            )
+
+            transformed_df = apply_flatten_mode(raw_df, self.config)
+
+            good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
+            final_df = add_audit_columns(good_df, self.config)
+
+            if bad_count > 0:
+                write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
+
+            table_name = write_bronze(self.spark, final_df, self.config)
+            row_count = final_df.count()
+
+            logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
+
+            return {
+                "table": table_name,
+                "row_count": row_count,
+                "quarantined_row_count": bad_count,
+                "quarantine_table": self.config.resolved_quarantine_table if bad_count > 0 else None,
+                "columns": final_df.columns,
+                "write_mode": self.config.write_mode,
+                "flatten_mode": self.config.flatten_mode,
+            }
+
     def run(self) -> Dict[str, Any]:
         """
         Executes the full read -> transform -> quality-gate -> write pipeline

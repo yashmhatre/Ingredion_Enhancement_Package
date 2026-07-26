@@ -122,10 +122,10 @@ def test_archive_ingested_file_falls_back_to_quarantine_on_move_failure(json_tes
 
     real_move_file = di._move_file
 
-    def flaky_move(source_dir, file_path, dest_subfolder):
+    def flaky_move(source_dir, file_path, dest_subfolder, relative_subpath=""):
         if dest_subfolder.startswith("processed/"):
             raise OSError("simulated failure archiving to processed/")
-        return real_move_file(source_dir, file_path, dest_subfolder)
+        return real_move_file(source_dir, file_path, dest_subfolder, relative_subpath=relative_subpath)
 
     monkeypatch.setattr(di, "_move_file", flaky_move)
 
@@ -141,7 +141,7 @@ def test_archive_ingested_file_leaves_file_in_place_when_all_moves_fail(json_tes
     _write(write_dir, "orders.json", json.dumps({"id": 1}))
     src_path = f"{source_dir}/orders.json"
 
-    def always_fails(source_dir, file_path, dest_subfolder):
+    def always_fails(source_dir, file_path, dest_subfolder, relative_subpath=""):
         raise OSError(f"simulated total failure for {dest_subfolder}")
 
     monkeypatch.setattr(di, "_move_file", always_fails)
@@ -249,3 +249,88 @@ def test_retry_state_file_never_treated_as_data(spark, json_test_dir):
     names = [f.split("/")[-1] for f in files]
     assert "retry_state.json" not in names
     assert names == ["a.json"]
+
+
+# ---- folder-as-table tests ----
+
+def test_folder_as_table_merges_files_into_one_table(spark, json_test_dir, monkeypatch):
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+    _write(write_dir, "orders/order2.json", json.dumps({"id": 2}))
+
+    from bronze_json_loader.pipeline import BronzeIngestion
+
+    def fake_run_on_dataframe(self, df):
+        return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}
+
+    monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default"
+    )
+
+    folder_result = next(r for r in results if r["table"].endswith("orders_bronze"))
+    assert folder_result["status"] == "success"
+    assert folder_result["rows"] == 2
+    assert len(folder_result["file_results"]) == 2
+    assert all(fr["status"] == "success" for fr in folder_result["file_results"])
+
+
+def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_dir, monkeypatch):
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/good1.json", json.dumps({"id": 1}))
+    _write(write_dir, "orders/good2.json", json.dumps({"id": 2}))
+
+    from bronze_json_loader.pipeline import BronzeIngestion
+    from bronze_json_loader import json_reader as jr
+
+    real_read_json = jr.read_json
+
+    def flaky_read_json(spark, config):
+        if "good2" in config.source_path:
+            raise ValueError("simulated bad file")
+        return real_read_json(spark, config)
+
+    monkeypatch.setattr(di, "read_json", flaky_read_json)
+
+    def fake_run_on_dataframe(self, df):
+        return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}
+
+    monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, max_ingestion_retries=3, catalog=None, schema_name="default"
+    )
+
+    folder_result = next(r for r in results if r["table"].endswith("orders_bronze"))
+    assert folder_result["status"] == "success"
+    assert folder_result["rows"] == 1  # only good1.json contributed
+    good_result = next(fr for fr in folder_result["file_results"] if "good1" in fr["file"])
+    bad_result = next(fr for fr in folder_result["file_results"] if "good2" in fr["file"])
+    assert good_result["status"] == "success"
+    assert bad_result["status"] == "failed"
+    assert bad_result["attempts"] == 1
+
+
+def test_folder_as_table_archives_files_with_folder_name_preserved(spark, json_test_dir, monkeypatch):
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    from bronze_json_loader.pipeline import BronzeIngestion
+
+    def fake_run_on_dataframe(self, df):
+        return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}
+
+    monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
+
+    di.ingest_directory_to_bronze(spark, source_dir, catalog=None, schema_name="default")
+
+    # file should be archived under processed/{date}/orders/order1.json,
+    # not processed/{date}/order1.json - folder context preserved
+    today = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d")
+    expected_path = os.path.join(write_dir, "processed", today, "orders", "order1.json")
+    assert os.path.exists(expected_path)
+    assert not os.path.exists(os.path.join(write_dir, "orders", "order1.json"))
