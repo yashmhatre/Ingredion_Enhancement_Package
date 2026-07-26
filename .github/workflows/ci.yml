@@ -26,11 +26,11 @@ jobs:
           java-version: "17"
 
       - name: Install dependencies
-        working-directory: bronze_json_loader
+        working-directory: bronze_layer
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
       - name: Run tests
-        working-directory: bronze_json_loader
+        working-directory: bronze_layer
         run: pytest -v
