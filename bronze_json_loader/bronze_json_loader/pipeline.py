@@ -14,6 +14,7 @@ from .flattener import apply_flatten_mode
 from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
 from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
+from .audit import audited_run
 
 
 class BronzeIngestion:
@@ -48,13 +49,14 @@ class BronzeIngestion:
         return df
 
     def run_on_dataframe(self, raw_df) -> Dict[str, Any]:
-            """
-            Same as run(), but skips the read step and uses raw_df directly -
-            used by directory ingestion's folder-as-table path, where files
-            inside a folder are read and unioned individually beforehand
-            (so one bad file doesn't break the whole folder's read), rather
-            than letting this method read config.source_path itself.
-            """
+        """
+        Same as run(), but skips the read step and uses raw_df directly -
+        used by directory ingestion's folder-as-table path, where files
+        inside a folder are read and unioned individually beforehand
+        (so one bad file doesn't break the whole folder's read), rather
+        than letting this method read config.source_path itself.
+        """
+        with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
             logger.info(
                 "Starting batch ingestion from pre-loaded DataFrame -> %s",
                 self.config.full_table_name,
@@ -70,6 +72,9 @@ class BronzeIngestion:
 
             table_name = write_bronze(self.spark, final_df, self.config)
             row_count = final_df.count()
+
+            audit["row_count"] = row_count
+            audit["quarantined_row_count"] = bad_count
 
             logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
 
@@ -92,31 +97,35 @@ class BronzeIngestion:
         if self.config.ingestion_mode != "batch":
             raise ValueError("run() is for ingestion_mode='batch'. Use run_streaming() for streaming.")
 
-        logger.info("Starting batch ingestion from %s -> %s", self.config.source_path, self.config.full_table_name)
+        with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
+            logger.info("Starting batch ingestion from %s -> %s", self.config.source_path, self.config.full_table_name)
 
-        raw_df = self.read()
-        transformed_df = apply_flatten_mode(raw_df, self.config)
+            raw_df = self.read()
+            transformed_df = apply_flatten_mode(raw_df, self.config)
 
-        good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
-        final_df = add_audit_columns(good_df, self.config)
+            good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
+            final_df = add_audit_columns(good_df, self.config)
 
-        if bad_count > 0:
-            write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
+            if bad_count > 0:
+                write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
 
-        table_name = write_bronze(self.spark, final_df, self.config)
-        row_count = final_df.count()
+            table_name = write_bronze(self.spark, final_df, self.config)
+            row_count = final_df.count()
 
-        logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
+            audit["row_count"] = row_count
+            audit["quarantined_row_count"] = bad_count
 
-        return {
-            "table": table_name,
-            "row_count": row_count,
-            "quarantined_row_count": bad_count,
-            "quarantine_table": self.config.resolved_quarantine_table if bad_count > 0 else None,
-            "columns": final_df.columns,
-            "write_mode": self.config.write_mode,
-            "flatten_mode": self.config.flatten_mode,
-        }
+            logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
+
+            return {
+                "table": table_name,
+                "row_count": row_count,
+                "quarantined_row_count": bad_count,
+                "quarantine_table": self.config.resolved_quarantine_table if bad_count > 0 else None,
+                "columns": final_df.columns,
+                "write_mode": self.config.write_mode,
+                "flatten_mode": self.config.flatten_mode,
+            }
 
     def run_streaming(self, await_termination: bool = True):
         """
@@ -143,14 +152,18 @@ class BronzeIngestion:
         stream_df = read_json_stream(self.spark, self.config)
 
         def _process_batch(micro_batch_df, batch_id):
-            transformed_df = apply_flatten_mode(micro_batch_df, self.config)
-            good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
-            final_df = add_audit_columns(good_df, self.config)
+            with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
+                transformed_df = apply_flatten_mode(micro_batch_df, self.config)
+                good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
+                final_df = add_audit_columns(good_df, self.config)
 
-            if bad_count > 0:
-                write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
+                if bad_count > 0:
+                    write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
 
-            write_bronze_micro_batch(self.spark, final_df, batch_id, self.config)
+                write_bronze_micro_batch(self.spark, final_df, batch_id, self.config)
+
+                audit["row_count"] = final_df.count()
+                audit["quarantined_row_count"] = bad_count
 
         query = (
             stream_df.writeStream
