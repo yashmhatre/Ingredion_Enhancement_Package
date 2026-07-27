@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-Render a pytest JSON report into a PNG "evidence card" for attaching to PR comments.
+Render a pytest JSON report into a PNG "evidence card" plus a GitHub Job
+Summary, for CI reporting.
 
 Usage:
     python render_test_report.py report.json out.png \
-        --pr 12 --sha abc1234 --branch fix/issue-46 --run-url https://...
+        --pr 12 --sha abc1234 --branch fix/issue-46 --run-id 123
 
 Reads the JSON produced by `pytest --json-report` (pytest-json-report plugin),
-builds a self-contained HTML card, and screenshots it with Playwright.
+builds a self-contained HTML card, screenshots it with Playwright, and writes
+a markdown summary to $GITHUB_STEP_SUMMARY when running in Actions.
+
+Note on GitHub Job Summary: GitHub renders markdown, and sanitizes most inline
+CSS/HTML styling. The summary therefore uses markdown tables + emoji rather
+than the styled HTML card - the PNG artifact carries the full visual fidelity.
 """
 
 import argparse
@@ -71,7 +77,6 @@ def failed_tests(report, limit=8):
     for test in report.get("tests", []):
         if test.get("outcome") in ("failed", "error"):
             nodeid = test.get("nodeid", "")
-            msg = ""
             call = test.get("call") or test.get("setup") or {}
             crash = (call or {}).get("crash") or {}
             msg = crash.get("message", "") or ""
@@ -183,6 +188,62 @@ def build_html(s, groups, failures, meta):
 </body></html>"""
 
 
+def build_job_summary(s, groups, failures, meta):
+    """
+    Markdown for $GITHUB_STEP_SUMMARY. GitHub sanitizes inline CSS, so this
+    uses markdown tables + emoji rather than the styled HTML card. The PNG
+    artifact carries the full visual.
+    """
+    ok = (s["failed"] + s["error"]) == 0
+    status = "✅ **All tests passed**" if ok else "❌ **Tests failed**"
+
+    lines = [
+        "## Test Results",
+        "",
+        status,
+        "",
+        f"PR `#{meta['pr']}` · branch `{meta['branch']}` · commit `{meta['sha'][:7]}`",
+        "",
+        "| Passed | Failed | Skipped | Total | Duration |",
+        "|-------:|-------:|--------:|------:|---------:|",
+        f"| {s['passed']} | {s['failed'] + s['error']} | {s['skipped']} | "
+        f"{s['total']} | {s['duration']:.1f}s |",
+        "",
+        "### By file",
+        "",
+        "| | File | Tests | Detail |",
+        "|---|------|------:|--------|",
+    ]
+
+    for fname, counts in groups:
+        total = sum(counts.values())
+        bad = counts["failed"] + counts["error"]
+        icon = "🟢" if bad == 0 else "🔴"
+        detail = f"{counts['passed']} passed"
+        if bad:
+            detail += f" · {bad} failed"
+        if counts["skipped"]:
+            detail += f" · {counts['skipped']} skipped"
+        lines.append(f"| {icon} | `{fname}` | {total} | {detail} |")
+
+    if failures:
+        lines += ["", "### Failures", ""]
+        for nodeid, msg in failures:
+            lines.append(f"- **`{nodeid}`**")
+            if msg:
+                lines.append(f"  <br>`{msg}`")
+
+    lines += [
+        "",
+        "---",
+        "",
+        "_The full visual report card is attached to this run as the "
+        "`test-report-card` artifact._",
+    ]
+
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("report")
@@ -212,6 +273,22 @@ def main():
     html_path = pathlib.Path(args.out).with_suffix(".html")
     html_path.write_text(doc)
 
+    # Job Summary - rendered on the Actions run page, no hosting needed.
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write(build_job_summary(s, groups, failures, meta))
+            f.write("\n")
+
+    # Emit counts for the workflow to reuse in the PR comment.
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"passed={s['passed']}\n")
+            f.write(f"failed={s['failed'] + s['error']}\n")
+            f.write(f"skipped={s['skipped']}\n")
+            f.write(f"total={s['total']}\n")
+            f.write(f"duration={s['duration']:.1f}\n")
+            f.write(f"ok={'true' if (s['failed'] + s['error']) == 0 else 'false'}\n")
+
     if args.html_only:
         print(f"wrote {html_path}")
         return
@@ -229,14 +306,6 @@ def main():
         browser.close()
 
     print(f"wrote {args.out}")
-    # Emit a compact summary for the workflow to reuse
-    if os.environ.get("GITHUB_OUTPUT"):
-        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"passed={s['passed']}\n")
-            f.write(f"failed={s['failed'] + s['error']}\n")
-            f.write(f"total={s['total']}\n")
-            f.write(f"duration={s['duration']:.1f}\n")
-            f.write(f"ok={'true' if (s['failed'] + s['error']) == 0 else 'false'}\n")
 
 
 if __name__ == "__main__":
