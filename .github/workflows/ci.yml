@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 permissions:
-  contents: write        # to push the evidence image to the ci-evidence branch
-  pull-requests: write   # to post/update the evidence comment
+  contents: read
+  pull-requests: write
 
 jobs:
   test:
@@ -34,109 +34,48 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install pytest-json-report
-
-      # Single test run. --json-report captures structured results so the
-      # evidence card below reuses this run rather than executing pytest twice.
-      - name: Run tests
-        id: pytest
-        working-directory: bronze_layer
-        continue-on-error: true
-        run: pytest -v --json-report --json-report-file=../pytest-report.json
-
-      # ---- Evidence card (PR only) ----------------------------------------
-
-      - name: Install renderer dependencies
-        if: github.event_name == 'pull_request'
-        run: |
-          pip install playwright
+          pip install pytest-json-report playwright
           playwright install --with-deps chromium
 
-      - name: Render test evidence card
-        if: github.event_name == 'pull_request'
+      - name: Run tests
+        working-directory: bronze_layer
+        run: pytest -v --json-report --json-report-file=report.json
+        continue-on-error: true
+
+      - name: Render report card
         id: render
+        working-directory: bronze_layer
         run: |
-          python .github/scripts/render_test_report.py \
-            pytest-report.json evidence.png \
-            --pr "${{ github.event.pull_request.number }}" \
-            --sha "${{ github.event.pull_request.head.sha }}" \
-            --branch "${{ github.event.pull_request.head.ref }}" \
+          python ../.github/scripts/render_test_report.py \
+            report.json test-report-card.png \
+            --pr "${{ github.event.pull_request.number || 'n/a' }}" \
+            --sha "${{ github.sha }}" \
+            --branch "${{ github.head_ref || github.ref_name }}" \
             --run-id "${{ github.run_id }}" \
             --timestamp "$(date -u '+%Y-%m-%d %H:%M UTC')"
 
-      # Images can't be uploaded to comments via the API, so the PNG is
-      # committed to an orphan `ci-evidence` branch and referenced by raw URL.
-      - name: Publish evidence image
-        if: github.event_name == 'pull_request'
-        id: publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          DEST="pr-${PR}/run-${{ github.run_id }}.png"
-          WORK=$(mktemp -d)
-          cp evidence.png "$WORK/image.png"
-          cd "$WORK"
-          git init -q
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          if git fetch -q --depth 1 origin ci-evidence 2>/dev/null; then
-            git checkout -qb ci-evidence FETCH_HEAD
-          else
-            git checkout -qb ci-evidence
-            echo "CI evidence artifacts. Auto-generated; safe to prune." > README.md
-          fi
-          mkdir -p "$(dirname "$DEST")"
-          mv image.png "$DEST"
-          git add -A
-          git commit -qm "ci: evidence for PR #${PR} run ${{ github.run_id }}"
-          git push -q origin ci-evidence
-          echo "url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/ci-evidence/${DEST}" >> "$GITHUB_OUTPUT"
-
-      - name: Post evidence comment
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        env:
-          IMAGE_URL: ${{ steps.publish.outputs.url }}
-          OK: ${{ steps.render.outputs.ok }}
-          PASSED: ${{ steps.render.outputs.passed }}
-          FAILED: ${{ steps.render.outputs.failed }}
-          TOTAL: ${{ steps.render.outputs.total }}
-          DURATION: ${{ steps.render.outputs.duration }}
+      - name: Upload report card
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const marker = '<!-- ci-test-evidence -->';
-            const ok = process.env.OK === 'true';
-            const headline = ok
-              ? `✅ **All ${process.env.PASSED} tests passed** in ${process.env.DURATION}s`
-              : `❌ **${process.env.FAILED} of ${process.env.TOTAL} tests failed** — see the card below`;
+          name: test-report-card
+          path: |
+            bronze_layer/test-report-card.png
+            bronze_layer/test-report-card.html
 
-            const body = [
-              marker,
-              '### Test evidence',
-              '',
-              headline,
-              '',
-              `![pytest results](${process.env.IMAGE_URL})`,
-              '',
-              `<sub>Generated from the CI run for commit \`${context.payload.pull_request.head.sha.slice(0,7)}\` · [full log](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})</sub>`,
-            ].join('\n');
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: test-results
+          message: |
+            ${{ steps.render.outputs.ok == 'true' && '✅ **All tests passed**' || '❌ **Tests failed**' }}
 
-            const { data: comments } = await github.rest.issues.listComments({
-              ...context.repo, issue_number: context.issue.number, per_page: 100,
-            });
-            const existing = comments.find(c => c.body && c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
-            } else {
-              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
-            }
+            | Passed | Failed | Skipped | Total | Duration |
+            |-------:|-------:|--------:|------:|---------:|
+            | ${{ steps.render.outputs.passed }} | ${{ steps.render.outputs.failed }} | ${{ steps.render.outputs.skipped }} | ${{ steps.render.outputs.total }} | ${{ steps.render.outputs.duration }}s |
 
-      # Fail the job if the suite failed — keeps branch protection meaningful.
-      - name: Enforce test result
-        if: steps.pytest.outcome == 'failure'
-        run: |
-          echo "::error::pytest failed - see the evidence card on the PR"
-          exit 1
+            📊 [**View full visual report**](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) — per-file breakdown and failure details on the run summary, plus a downloadable report card image.
+
+      - name: Fail if tests failed
+        if: steps.render.outputs.ok != 'true'
+        run: exit 1
