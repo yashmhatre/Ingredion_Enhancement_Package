@@ -88,6 +88,25 @@ def test_write_quarantine_writes_rows_when_bad_count_positive(spark):
     assert spark.read.table(cfg.resolved_quarantine_table).count() == 1
 
 
+def test_write_quarantine_adds_unique_quarantine_id(spark):
+    """#60: replay needs a stable per-row identifier to know exactly which
+    quarantined rows were successfully re-promoted to bronze."""
+    table = f"quality_quarantine_id_{uuid.uuid4().hex[:8]}"
+    cfg = IngestionConfig(
+        source_path="x", table=table, schema_name="default", catalog=None,
+        required_columns=["name"], fail_on_quality_error=False,
+    )
+    df = spark.createDataFrame([(1, None), (2, None)], "id INT, name STRING")
+    good, bad, bad_count = enforce_quality(df, cfg)
+
+    write_quarantine(spark, bad, bad_count, cfg)
+
+    rows = spark.read.table(cfg.resolved_quarantine_table).collect()
+    ids = {r["_quarantine_id"] for r in rows}
+    assert len(ids) == 2
+    assert all(qid is not None for qid in ids)
+
+
 def test_write_quarantine_skips_when_bad_count_zero(spark):
     table = f"quality_quarantine_skip_{uuid.uuid4().hex[:8]}"
     cfg = IngestionConfig(
