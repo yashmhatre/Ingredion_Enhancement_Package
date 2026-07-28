@@ -276,3 +276,54 @@ locally and on Databricks (serverless).
 **All tests passing, both locally and on Databricks (serverless)** —
 file discovery, `.jsonl` support, file archival, retry-limit quarantine,
 and folder-as-table.
+
+## Archival performance characteristics (benchmarked)
+
+Measured on Databricks serverless, folder-as-table ingestion, JSON files
+of ~100 bytes each.
+
+| Files | Total | Read+validate | Write | Archival |
+|------:|------:|--------------:|------:|---------:|
+| 10 | 40.8s | ~16s | ~13s | ~5s |
+| 100 | 161.3s | ~66s | ~44s | ~47s |
+
+**Archival is the linear component** — ~0.45s per file, scaling 9.4x for
+10x files. Read+validate scaled only 4.1x, meaning fixed startup cost
+(~10s+) dominates at small volumes and amortizes as file count grows.
+
+### Finding: dbutils.fs.mv does not parallelize on serverless
+
+Archival was parallelized with a `ThreadPoolExecutor` (10 workers) to
+address the linear cost above. **It produced no improvement** — 163.0s
+vs 161.3s.
+
+The logs show archival still running strictly sequentially: files
+completing in exact input order at consistent ~0.45s intervals. With 10
+concurrent workers, completion order would be jumbled and files would
+land in bursts. The threads are created correctly but serialize below,
+most likely in the Spark Connect gRPC client, which appears to handle
+one request at a time per session.
+
+**This is a platform constraint, not a code defect.** The parallel
+implementation was kept — it's correct, costs nothing, and would help on
+any filesystem where moves genuinely parallelize (local execution, or if
+Databricks changes this behavior).
+
+**Untested alternative:** bypassing `dbutils` for Unity Catalog Volume
+paths and using `shutil.move` via the FUSE mount, which does release the
+GIL. Plausible but unverified — FUSE metadata operations have their own
+performance profile and may be no faster.
+
+### Sizing guidance
+
+| Files per folder | Est. total | Of which archival |
+|-----------------:|-----------:|------------------:|
+| 100 | ~163s | ~45s |
+| 500 | ~8-10 min | ~4 min |
+| 1,000 | 15+ min | 7+ min |
+
+**Beyond roughly 100 files per folder, switch the source to Auto Loader
+(`ingestion_mode: streaming`) rather than optimizing folder-as-table
+further.** Auto Loader handles high-volume ingestion by design —
+incremental discovery, batched processing, checkpoint-based tracking —
+and avoids per-file archival entirely.
