@@ -187,7 +187,13 @@ configured - this package does not manage auth.
   row on every run. Config construction raises a `ValueError` if a merge
   key isn't covered by `required_columns`, and the write itself raises
   `NullMergeKeyError` as a last-line-of-defense if a NULL slips through
-  anyway.
+  anyway. The target table is created via an atomic `CREATE TABLE IF NOT
+  EXISTS` (not a check-then-act `tableExists()` probe) and every load -
+  including the first - always runs through `MERGE`; merging into a
+  freshly-created empty table is equivalent to insert-all, and it means
+  two concurrent first-runs against the same not-yet-existing table can
+  no longer both "win" the existence check and both append the whole
+  batch as duplicates.
 
 ## Audit columns (per-row lineage)
 

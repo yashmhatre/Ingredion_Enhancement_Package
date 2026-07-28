@@ -66,18 +66,6 @@ def _assert_no_null_merge_keys(df, merge_keys):
         )
 
 
-def _table_exists(spark, full_table_name: str) -> bool:
-    try:
-        return spark.catalog.tableExists(full_table_name)
-    except Exception:
-        # Older runtimes without tableExists - fall back to a DESCRIBE probe.
-        try:
-            spark.sql(f"DESCRIBE TABLE {full_table_name}")
-            return True
-        except Exception:
-            return False
-
-
 def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     schema_ref = f"{config.catalog}.{config.schema_name}" if config.catalog else config.schema_name
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
@@ -104,19 +92,29 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
 
         _assert_no_null_merge_keys(df, config.merge_keys)
 
-        if not _table_exists(spark, full_name):
-            # Nothing to merge into yet - first load is just a write.
-            writer.mode("append").saveAsTable(full_name)
-        else:
-            target = DeltaTable.forName(spark, full_name)
-            condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in config.merge_keys)
-            (
-                target.alias("target")
-                .merge(df.alias("source"), condition)
-                .whenMatchedUpdateAll()
-                .whenNotMatchedInsertAll()
-                .execute()
-            )
+        # Atomic create-if-not-exists instead of a check-then-act on table
+        # existence - two concurrent first-runs against the same
+        # not-yet-existing table could otherwise both observe "doesn't
+        # exist" and both take an append path, duplicating the entire
+        # first batch (#46). Merging into a freshly-created empty table is
+        # equivalent to insert-all, so there's no separate "first load"
+        # branch needed - and it makes a retried first load idempotent
+        # too, since MERGE on merge_keys can't duplicate rows the way a
+        # retried append could.
+        creator = DeltaTable.createIfNotExists(spark).tableName(full_name).addColumns(df.schema)
+        if config.partition_by:
+            creator = creator.partitionedBy(*config.partition_by)
+        creator.execute()
+
+        target = DeltaTable.forName(spark, full_name)
+        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in config.merge_keys)
+        (
+            target.alias("target")
+            .merge(df.alias("source"), condition)
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
     else:
         raise ValueError(f"Unknown write_mode: {config.write_mode}")
 
