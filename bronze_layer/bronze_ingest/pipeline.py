@@ -14,6 +14,7 @@ from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_b
 from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
 from .audit import audited_run
+from .schema_registry import record_schema
 
 
 class BronzeIngestion:
@@ -71,7 +72,7 @@ class BronzeIngestion:
 
             audit["row_count"] = row_count
             audit["quarantined_row_count"] = bad_count
-
+            record_schema(self.spark, self.config, final_df)
             logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
 
             return {
@@ -108,7 +109,7 @@ class BronzeIngestion:
 
             audit["row_count"] = row_count
             audit["quarantined_row_count"] = bad_count
-
+            record_schema(self.spark, self.config, final_df)
             logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
 
             return {
