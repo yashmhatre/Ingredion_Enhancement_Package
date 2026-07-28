@@ -9,6 +9,7 @@ function just centralizes the read options driven by config.
 """
 
 from .config import IngestionConfig
+from .retry import with_retry
 
 
 def read_json(spark, config: IngestionConfig):
@@ -24,6 +25,10 @@ def read_json(spark, config: IngestionConfig):
         (extra/renamed fields), so nothing is silently lost on drift.
       - Adds `_input_file_name` for lineage, used later for the audit
         `_source_file` column.
+      - The actual load (which triggers schema inference / file listing,
+        and can hit transient cloud-storage errors) is wrapped in the same
+        exponential-backoff retry as the write path, via
+        `retry_attempts` / `retry_delay_seconds`.
     """
     reader = (
         spark.read.format("json")
@@ -45,12 +50,14 @@ def read_json(spark, config: IngestionConfig):
 
     from pyspark.sql.functions import col
 
-    # Track provenance regardless of flatten mode - cheap and always useful in bronze.
-    # Uses _metadata.file_path (works on Unity Catalog shared clusters,
-    # unlike input_file_name()).
-    df = (
-        reader.load(config.source_path)
-            .select("*", col("_metadata.file_path").alias("_input_file_name"))
-    )
+    @with_retry(attempts=config.retry_attempts, delay_seconds=config.retry_delay_seconds)
+    def _do_read():
+        # Track provenance regardless of flatten mode - cheap and always useful in bronze.
+        # Uses _metadata.file_path (works on Unity Catalog shared clusters,
+        # unlike input_file_name()).
+        return (
+            reader.load(config.source_path)
+                .select("*", col("_metadata.file_path").alias("_input_file_name"))
+        )
 
-    return df
+    return _do_read()
