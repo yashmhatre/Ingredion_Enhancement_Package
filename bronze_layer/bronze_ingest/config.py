@@ -57,10 +57,15 @@ class IngestionConfig:
     table: str = ""                        # target table name (required)
     write_mode: str = "append"             # "append" | "overwrite" | "merge"
     merge_keys: Optional[List[str]] = None  # required when write_mode == "merge"
-    partition_by: Optional[List[str]] = None
+    partition_by: Optional[List[str]] = None  # hive-style partitioning - discouraged for new tables, see cluster_by
     merge_schema: bool = True              # allow schema evolution on write (mergeSchema)
     dedupe_before_merge: bool = True        # keep one row per merge key before MERGE (else raise on duplicates)
     dedupe_order_by: Optional[str] = None   # column to break ties by, highest wins; defaults to audit_ingest_ts_col
+
+    # --- Table layout: liquid clustering (recommended) vs. partition_by (legacy) ---
+    cluster_by: Optional[List[str]] = None     # explicit liquid-clustering columns; mutually exclusive with partition_by/cluster_by_auto
+    cluster_by_auto: bool = False               # CLUSTER BY AUTO - Databricks Runtime only, not supported by OSS/local Delta
+    table_properties: Dict[str, str] = field(default_factory=dict)  # e.g. {"delta.enableChangeDataFeed": "true"}
 
     # --- Audit / lineage columns added automatically ---
     add_audit_columns: bool = True
@@ -100,6 +105,19 @@ class IngestionConfig:
                     "row on every run. Add these columns to required_columns so the quality "
                     "gate guarantees non-null values before the write."
                 )
+        if self.cluster_by is not None and len(self.cluster_by) == 0:
+            raise ValueError("cluster_by, if provided, must be a non-empty list of column names.")
+        if self.cluster_by and self.cluster_by_auto:
+            raise ValueError(
+                "cluster_by and cluster_by_auto are mutually exclusive - specify either "
+                "explicit clustering columns or cluster_by_auto=True, not both."
+            )
+        if self.partition_by and (self.cluster_by or self.cluster_by_auto):
+            raise ValueError(
+                "partition_by cannot be combined with cluster_by/cluster_by_auto - liquid "
+                "clustering replaces hive-style partitioning as the table's layout strategy, "
+                "they're mutually exclusive."
+            )
         if self.ingestion_mode not in VALID_INGESTION_MODES:
             raise ValueError(f"ingestion_mode must be one of {VALID_INGESTION_MODES}, got {self.ingestion_mode!r}")
         if self.schema_evolution_mode not in VALID_SCHEMA_EVOLUTION_MODES:

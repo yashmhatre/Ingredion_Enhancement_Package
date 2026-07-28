@@ -10,8 +10,16 @@ schema_name: "ingredion_dev"
 table: "orders_raw"
 write_mode: "append"           # append | overwrite | merge
 # merge_keys: ["order_id"]
-partition_by: null
 merge_schema: true
+
+# --- Table layout: liquid clustering (recommended) vs. partition_by (legacy) ---
+# cluster_by: ["order_id"]       # liquid clustering - mutually exclusive with partition_by
+# cluster_by_auto: true          # CLUSTER BY AUTO - Databricks Runtime only, lets predictive
+                                 # optimization pick clustering keys automatically
+partition_by: null              # discouraged for new tables - prefer cluster_by; kept for
+                                 # backward compat with existing hive-partitioned tables
+# table_properties:
+#   delta.enableChangeDataFeed: "true"
 
 add_audit_columns: true
 audit_ingest_ts_col: "_ingested_at"
