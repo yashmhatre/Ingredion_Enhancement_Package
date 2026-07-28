@@ -78,3 +78,13 @@ def test_cluster_by_and_cluster_by_auto_mutually_exclusive():
 def test_cluster_by_empty_list_rejected():
     with pytest.raises(ValueError):
         IngestionConfig(source_path="s3://x", table="t", cluster_by=[])
+
+
+def test_unique_columns_empty_list_rejected():
+    with pytest.raises(ValueError):
+        IngestionConfig(source_path="s3://x", table="t", unique_columns=[])
+
+
+def test_unique_columns_none_or_populated_is_valid():
+    IngestionConfig(source_path="s3://x", table="t")
+    IngestionConfig(source_path="s3://x", table="t", unique_columns=["order_id"])

@@ -43,6 +43,7 @@ class IngestionConfig:
 
     # --- Data quality ---
     required_columns: List[str] = field(default_factory=list)   # columns that must be non-null in every row
+    unique_columns: Optional[List[str]] = None  # columns whose combination must be unique within a batch; duplicates (all but the first, by dedupe_order_by) are treated as bad rows
     fail_on_quality_error: bool = True      # if False, bad rows are quarantined instead of failing the run
     quarantine_table: Optional[str] = None  # e.g. "bronze.orders_raw_quarantine" - defaults to f"{table}_quarantine"
 
@@ -61,7 +62,7 @@ class IngestionConfig:
     partition_by: Optional[List[str]] = None  # hive-style partitioning - discouraged for new tables, see cluster_by
     merge_schema: bool = True              # allow schema evolution on write (mergeSchema)
     dedupe_before_merge: bool = True        # keep one row per merge key before MERGE (else raise on duplicates)
-    dedupe_order_by: Optional[str] = None   # column to break ties by, highest wins; defaults to audit_ingest_ts_col
+    dedupe_order_by: Optional[str] = None   # column to break ties by, highest wins; defaults to audit_ingest_ts_col for merge dedupe, or an arbitrary-but-deterministic order for the unique_columns quality check (which runs before audit columns exist)
 
     # --- Table layout: liquid clustering (recommended) vs. partition_by (legacy) ---
     cluster_by: Optional[List[str]] = None     # explicit liquid-clustering columns; mutually exclusive with partition_by/cluster_by_auto
@@ -106,6 +107,8 @@ class IngestionConfig:
                     "row on every run. Add these columns to required_columns so the quality "
                     "gate guarantees non-null values before the write."
                 )
+        if self.unique_columns is not None and len(self.unique_columns) == 0:
+            raise ValueError("unique_columns, if provided, must be a non-empty list of column names.")
         if self.cluster_by is not None and len(self.cluster_by) == 0:
             raise ValueError("cluster_by, if provided, must be a non-empty list of column names.")
         if self.cluster_by and self.cluster_by_auto:

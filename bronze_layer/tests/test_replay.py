@@ -87,7 +87,7 @@ def test_reprocess_quarantine_promotes_now_passing_and_leaves_still_failing(spar
     remaining = spark.read.table(replay_cfg.resolved_quarantine_table).collect()
     assert len(remaining) == 1
     assert remaining[0]["id"] == 2
-    assert remaining[0]["_quarantine_reason"] == "required_column_null"  # untouched
+    assert remaining[0]["_quarantine_reason"] == "null:email"  # untouched, specific to the still-null column
 
 
 def test_reprocess_quarantine_is_idempotent_on_rerun(spark):

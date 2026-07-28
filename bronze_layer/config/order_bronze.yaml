@@ -29,6 +29,9 @@ audit_batch_id_col: "_batch_id"
 
 # --- Data quality ---
 required_columns: []            # e.g. ["order_id", "customer_id"]
+# unique_columns: ["order_id"]  # combination must be unique within a batch;
+                                # duplicates are quarantined/failed like null violations.
+                                # Set dedupe_order_by to a SOURCE column to pick which row wins.
 fail_on_quality_error: true      # false = quarantine bad rows instead of failing the job
 # quarantine_table: "main.bronze.orders_raw_quarantine"
 
