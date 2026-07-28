@@ -196,6 +196,44 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
 
 
+def _resolve_idempotent_txn_version(config: IngestionConfig):
+    """
+    Derives a numeric Delta txnVersion from config.batch_id for the batch
+    write path's idempotent-write options (#63) - mirrors the mechanism
+    write_bronze_micro_batch already uses for streaming.
+
+    Returns None (meaning: skip idempotent protection for this write) when
+    a *stable* version can't be derived:
+      - batch_id is None. An auto-generated batch_id (see add_audit_columns)
+        is a fresh timestamp on every call, including every retry attempt -
+        it cannot provide retry protection no matter how it's converted,
+        since txnVersion would then also differ on every attempt just like
+        the value it's derived from. Only an explicitly-set, externally
+        stable batch_id (e.g. a Databricks job run ID via #52) can make
+        this guarantee real.
+      - batch_id is an arbitrary string that's neither an integer nor the
+        package's own auto-generated timestamp format.
+
+    batch_id that parses as an integer (e.g. a job run ID) is used
+    directly. A string in the auto-generated format (%Y%m%dT%H%M%S%fZ) -
+    e.g. if a caller explicitly passes one - converts to a stable
+    microsecond-epoch integer.
+    """
+    if config.batch_id is None:
+        return None
+
+    try:
+        return int(config.batch_id)
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        dt = datetime.strptime(config.batch_id, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1_000_000)
+    except (TypeError, ValueError):
+        return None
+
+
 def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     schema_ref = f"{config.catalog}.{config.schema_name}" if config.catalog else config.schema_name
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
@@ -209,7 +247,7 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         writer = writer.option("mergeSchema", "true")
     if config.partition_by:
         writer = writer.partitionBy(*config.partition_by)
-    if txn_options:  # idempotent-write options for streaming foreachBatch (txnAppId/txnVersion)
+    if txn_options:  # idempotent-write options (txnAppId/txnVersion) - streaming foreachBatch or batch retry-safety (#63)
         for k, v in txn_options.items():
             writer = writer.option(k, v)
 
@@ -271,10 +309,40 @@ def write_bronze(spark, df, config: IngestionConfig):
     Writes df to the configured Delta bronze table (batch mode). Creates the
     schema (database) if it doesn't exist. Retries on transient failures
     (throttling, concurrent-write conflicts). Returns the full table name.
+
+    For append/overwrite, wraps the write in Delta's idempotent-write
+    transaction options (txnAppId/txnVersion) when
+    config.idempotent_batch_writes=True (default) and a stable txnVersion
+    can be derived from config.batch_id (#63) - a retried batch job
+    (write succeeded, a downstream step then failed) re-running with the
+    same batch_id converges to one copy of the data instead of duplicating
+    it. Not applied to write_mode="merge" - Delta's MERGE doesn't accept
+    txn options, but re-running the same batch is naturally safe there via
+    merge_keys upsert semantics anyway.
     """
+    txn_options = None
+    if config.idempotent_batch_writes and config.write_mode in ("append", "overwrite"):
+        txn_version = _resolve_idempotent_txn_version(config)
+        if txn_version is not None:
+            txn_options = {"txnAppId": config.full_table_name, "txnVersion": str(txn_version)}
+        elif config.batch_id is not None:
+            logger.warning(
+                "idempotent_batch_writes=True but batch_id=%r isn't an integer or a "
+                "recognized timestamp format - can't derive a stable txnVersion, so this "
+                "write is not idempotent-protected. Pass an integer batch_id (e.g. a "
+                "Databricks job run ID) for retry-safe batch writes.", config.batch_id,
+            )
+        else:
+            logger.debug(
+                "idempotent_batch_writes=True but no explicit batch_id is set - an "
+                "auto-generated batch_id changes on every attempt and can't provide retry "
+                "protection. Pass a stable batch_id (e.g. a Databricks job run ID) to get "
+                "this guarantee."
+            )
+
     @with_retry(attempts=config.retry_attempts, delay_seconds=config.retry_delay_seconds)
     def _do_write():
-        return _write_core(spark, df, config)
+        return _write_core(spark, df, config, txn_options=txn_options)
 
     return _do_write()
 

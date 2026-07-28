@@ -49,6 +49,7 @@ class IngestionConfig:
     # --- Reliability ---
     retry_attempts: int = 3
     retry_delay_seconds: float = 10.0
+    idempotent_batch_writes: bool = True   # txnAppId/txnVersion for batch append/overwrite when batch_id is explicit (see #63)
 
 
     # --- Target table ---

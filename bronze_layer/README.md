@@ -419,7 +419,51 @@ is 0 - no separate probe re-scans the source to re-derive that.
 **Idempotent, exactly-once writes.** Streaming micro-batches are written
 using Delta Lake's `txnAppId`/`txnVersion` idempotent-write options (keyed
 by checkpoint location + batch id), so a retried/replayed micro-batch after
-a job failure doesn't duplicate rows.
+a job failure doesn't duplicate rows. The **batch** append/overwrite path
+gets the same protection when `idempotent_batch_writes: true` (default)
+*and* an explicit, stable `batch_id` is set (e.g. a Databricks job run
+ID) - see the retry-safety matrix below for exactly what's covered and
+what isn't.
+
+### Retry-safety matrix
+
+| Write mode | Retry-safe across a job retry? | Mechanism |
+|---|---|---|
+| `append` (batch) | Only if `batch_id` is explicit and stable (e.g. job run ID) | `txnAppId=full_table_name` / `txnVersion` derived from `batch_id` |
+| `overwrite` (batch) | Same as `append` | same |
+| `merge` (batch) | Yes, always | MERGE upsert via `merge_keys` - re-running the same batch just re-applies the same updates; Delta's MERGE doesn't accept txn options at all |
+| any write mode (streaming) | Yes, always | `txnAppId=checkpoint_location` / `txnVersion` = Structured Streaming's own micro-batch counter (stable regardless of `batch_id`) |
+
+An **auto-generated `batch_id`** (the default - a fresh UTC timestamp
+string on every call) cannot make append/overwrite retry-safe no matter
+how it's converted internally, since it differs on every attempt,
+including retries of the "same" logical run - there's nothing stable to
+key a transaction on. `idempotent_batch_writes=True` with no explicit
+`batch_id` logs a DEBUG note and falls back to a plain (non-idempotent)
+write rather than pretending to protect something it can't. A
+`batch_id` that's neither an integer nor the package's own generated
+timestamp format similarly can't be converted to a stable `txnVersion` -
+logs a WARNING and falls back the same way. **This is why job run ID
+wiring (#52) is what makes batch idempotency airtight in practice** -
+pass `batch_id=<job run id>` (an integer, or convertible to one) from
+your job/notebook parameters to get the guarantee for real. Set
+`idempotent_batch_writes: false` to opt out entirely.
+
+`notebooks/run_ingestion.py` and `notebooks/run_directory_ingestion.py`
+both expose `batch_id`/`run_id` as job-task widgets for exactly this
+purpose, and `databricks.yml`'s `bronze_directory_ingestion` job wires
+them from the job's own run context:
+
+```yaml
+base_parameters:
+  batch_id: "{{job.run_id}}"
+  run_id: "{{job.id}}-{{job.run_id}}"
+```
+
+With this in place, `audit_table` rows, bronze `_batch_id` values, and
+Databricks job runs all join on the same identifier - no more fuzzy
+timestamp matching during incident triage. Leave both blank to keep the
+auto-generated defaults (a fresh timestamp / UUID per run).
 
 **Retries.** Both read and write paths wrap transient failures (throttling,
 concurrent-write conflicts) in exponential-backoff retries via

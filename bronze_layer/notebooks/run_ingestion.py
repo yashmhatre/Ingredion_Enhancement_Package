@@ -39,6 +39,13 @@ dbutils.widgets.dropdown("write_mode", "append", ["append", "overwrite", "merge"
 dbutils.widgets.dropdown("ingestion_mode", "batch", ["batch", "streaming"], "Ingestion mode")
 dbutils.widgets.text("checkpoint_location", "", "Checkpoint location (streaming only)")
 dbutils.widgets.text("schema_location", "", "Schema location (streaming only)")
+# batch_id/run_id: pass {{job.run_id}} / {{job.id}}-{{job.run_id}} as the
+# base_parameters value in databricks.yml so audit rows and idempotent
+# batch writes (#63) can be joined back to a specific Databricks job run
+# instead of fuzzy timestamp matching (#52). Left blank, both fall back
+# to their usual defaults (auto-generated timestamp / UUID).
+dbutils.widgets.text("batch_id", "", "Batch ID (e.g. {{job.run_id}} - blank = auto-generated timestamp)")
+dbutils.widgets.text("run_id", "", "Audit run ID (e.g. {{job.id}}-{{job.run_id}} - blank = auto-generated UUID)")
 
 # COMMAND ----------
 
@@ -46,7 +53,8 @@ config_path = dbutils.widgets.get("config_path").strip()
 
 overrides = {}
 for key in ("source_path", "catalog", "schema_name", "table",
-            "write_mode", "ingestion_mode", "checkpoint_location", "schema_location"):
+            "write_mode", "ingestion_mode", "checkpoint_location", "schema_location",
+            "batch_id", "run_id"):
     val = dbutils.widgets.get(key).strip()
     if val:
         overrides[key] = val

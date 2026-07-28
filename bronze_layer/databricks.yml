@@ -37,6 +37,8 @@ resources:
     #         notebook_path: /Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer/notebooks/run_ingestion
     #         base_parameters:
     #           config_path: /Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer/config/order_bronze.yaml
+    #           batch_id: "{{job.run_id}}"
+    #           run_id: "{{job.id}}-{{job.run_id}}"
 
     #   email_notifications:
     #     on_failure:
@@ -69,6 +71,11 @@ resources:
               # Per-file overrides as a JSON string (filename -> IngestionConfig fields):
               per_file_config_json: >-
                 {"orders_quarantine_test.json": {"required_columns": ["order_id"]}}
+              # Ties every audit row and idempotent batch write (#63) in this
+              # run back to this specific job run instead of fuzzy timestamp
+              # matching (#52).
+              batch_id: "{{job.run_id}}"
+              run_id: "{{job.id}}-{{job.run_id}}"
 
       # Uncomment to run on a schedule instead of manually:
       # schedule:
