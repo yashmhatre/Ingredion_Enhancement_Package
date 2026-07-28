@@ -193,7 +193,14 @@ configured - this package does not manage auth.
 
 When `add_audit_columns: true` (default), every load adds:
 - `_ingested_at` - ingestion timestamp
-- `_source_file` - originating file path per row
+- `_source_file` - originating file path per row. This is genuine per-row
+  lineage whenever the DataFrame already carries an `_input_file_name`
+  column (true for every built-in read path: batch, streaming, and
+  directory/folder-as-table ingestion). If you call
+  `BronzeIngestion.run_on_dataframe()` with your own DataFrame that never
+  attached `_input_file_name`, `_source_file` falls back to the coarser
+  `config.source_path` for every row instead of silently writing NULL -
+  a WARNING is logged when this fallback is used.
 - `_batch_id` - a batch identifier (auto-generated UTC timestamp unless you
   pass `batch_id` explicitly, e.g. from a job run ID)
 

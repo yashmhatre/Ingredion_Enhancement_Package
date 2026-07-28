@@ -3,7 +3,7 @@ import uuid
 import pytest
 
 from bronze_ingest.config import IngestionConfig
-from bronze_ingest.bronze_writer import write_bronze, NullMergeKeyError
+from bronze_ingest.bronze_writer import write_bronze, add_audit_columns, NullMergeKeyError
 
 
 def _cfg(table, **overrides):
@@ -62,3 +62,28 @@ def test_append_mode_does_not_require_merge_keys(spark):
     write_bronze(spark, df, cfg)
 
     assert spark.read.table(_table(table)).count() == 2
+
+
+def test_add_audit_columns_renames_input_file_name(spark):
+    cfg = _cfg("bw_audit_with_lineage")
+    df = spark.createDataFrame(
+        [(1, "a", "abfss://x/orders/f1.json")], ["id", "name", "_input_file_name"]
+    )
+
+    result = add_audit_columns(df, cfg)
+
+    assert "_input_file_name" not in result.columns
+    row = result.collect()[0]
+    assert row[cfg.audit_source_file_col] == "abfss://x/orders/f1.json"
+
+
+def test_add_audit_columns_falls_back_to_source_path_without_lineage(spark, caplog):
+    cfg = _cfg("bw_audit_no_lineage")
+    df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
+
+    with caplog.at_level("WARNING"):
+        result = add_audit_columns(df, cfg)
+
+    rows = result.collect()
+    assert all(r[cfg.audit_source_file_col] == cfg.source_path for r in rows)
+    assert any("_input_file_name" in rec.message for rec in caplog.records)

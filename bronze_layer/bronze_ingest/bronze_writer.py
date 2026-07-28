@@ -25,7 +25,16 @@ def add_audit_columns(df, config: IngestionConfig):
     if "_input_file_name" in df.columns:
         df = df.withColumnRenamed("_input_file_name", config.audit_source_file_col)
     else:
-        df = df.withColumn(config.audit_source_file_col, lit(None).cast("string"))
+        # No per-file lineage on this DataFrame - e.g. a run_on_dataframe()
+        # caller that didn't pre-attach _input_file_name. Falling back to
+        # NULL would silently defeat the point of _source_file, so use the
+        # coarse-but-truthful config.source_path instead and flag the gap.
+        logger.warning(
+            "No _input_file_name column found - %s will be set to config.source_path "
+            "(%r) instead of per-file lineage for every row.",
+            config.audit_source_file_col, config.source_path,
+        )
+        df = df.withColumn(config.audit_source_file_col, lit(config.source_path))
 
     return df
 
