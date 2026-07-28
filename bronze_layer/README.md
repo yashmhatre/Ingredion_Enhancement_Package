@@ -280,6 +280,10 @@ non-null values before writing to bronze. `fail_on_quality_error: true`
 (default) fails the run on any violation - fail fast during onboarding of a
 new source. Set it to `false` once you trust the pipeline enough to instead
 quarantine bad rows to `<table>_quarantine` and let good rows through.
+The good/bad split is computed once into a `_dq_bad` tag column rather
+than each independently rebuilding the same null-check condition, and the
+quarantine write is skipped entirely when the already-known bad-row count
+is 0 - no separate probe re-scans the source to re-derive that.
 
 **Idempotent, exactly-once writes.** Streaming micro-batches are written
 using Delta Lake's `txnAppId`/`txnVersion` idempotent-write options (keyed
