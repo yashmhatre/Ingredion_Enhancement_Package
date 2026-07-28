@@ -1,3 +1,4 @@
+import threading
 import uuid
 
 import pytest
@@ -32,7 +33,7 @@ def test_merge_refuses_null_merge_keys(spark):
     assert not spark.catalog.tableExists(_table(table))
 
 
-def test_merge_first_load_is_a_plain_append(spark):
+def test_merge_first_load_creates_table_and_merges(spark):
     table = f"bw_first_load_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"])
 
@@ -40,6 +41,41 @@ def test_merge_first_load_is_a_plain_append(spark):
     full_name = write_bronze(spark, df, cfg)
 
     assert full_name == _table(table)
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_concurrent_first_loads_do_not_duplicate_rows(spark):
+    """
+    Regression test for #46: two concurrent first-runs against the same
+    not-yet-existing table used to both observe "table doesn't exist" and
+    both take an append path, duplicating the whole first batch. The fix
+    (atomic CREATE TABLE IF NOT EXISTS + always MERGE) should converge to
+    the deduplicated row count no matter how the two writers interleave.
+    """
+    table = f"bw_race_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        retry_attempts=5, retry_delay_seconds=0.1,
+    )
+
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def _run(rows):
+        try:
+            barrier.wait(timeout=10)
+            write_bronze(spark, spark.createDataFrame(rows, ["id", "name"]), cfg)
+        except Exception as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_run, args=([(1, "a"), (2, "b")],))
+    t2 = threading.Thread(target=_run, args=([(1, "a"), (2, "b")],))
+    t1.start()
+    t2.start()
+    t1.join(timeout=60)
+    t2.join(timeout=60)
+
+    assert not errors, f"unexpected errors from concurrent first loads: {errors}"
     assert spark.read.table(_table(table)).count() == 2
 
 
