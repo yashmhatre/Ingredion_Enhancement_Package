@@ -29,6 +29,11 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
     """
     Returns (good_df, bad_df). bad_df is empty (0 rows, same schema) if
     there are no required_columns configured or no violations found.
+
+    The bad-row condition is computed once into a _dq_bad tag column, and
+    both good_df/bad_df are derived from that single tagged DataFrame,
+    instead of each independently rebuilding the same null-check OR
+    expression via its own filter() call.
     """
     if not config.required_columns:
         return df, df.limit(0)
@@ -47,8 +52,9 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
         cond = col(f"`{c}`").isNull()
         bad_condition = cond if bad_condition is None else (bad_condition | cond)
 
-    bad_df = df.filter(bad_condition)
-    good_df = df.filter(~bad_condition)
+    tagged = df.withColumn("_dq_bad", bad_condition)
+    good_df = tagged.filter(~col("_dq_bad")).drop("_dq_bad")
+    bad_df = tagged.filter(col("_dq_bad")).drop("_dq_bad")
     return good_df, bad_df
 
 
@@ -72,10 +78,14 @@ def enforce_quality(df, config: IngestionConfig):
     return good_df, bad_df, bad_count
 
 
-def write_quarantine(spark, bad_df, config: IngestionConfig):
-    if bad_df is None:
-        return
-    if bad_df.rdd.isEmpty():
+def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
+    """
+    Writes bad_df to the quarantine table. Skips entirely when bad_count
+    is 0 - enforce_quality() already computed this count, so there's no
+    need for a separate bad_df.rdd.isEmpty() probe (another full scan of
+    the source) to re-derive information the caller already has.
+    """
+    if bad_df is None or bad_count == 0:
         return
 
     schema_ref = f"{config.catalog}.{config.schema_name}" if config.catalog else config.schema_name

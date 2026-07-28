@@ -64,8 +64,7 @@ class BronzeIngestion:
             good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
             final_df = add_audit_columns(good_df, self.config)
 
-            if bad_count > 0:
-                write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
+            write_quarantine(self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config)
 
             table_name = write_bronze(self.spark, final_df, self.config)
             row_count = final_df.count()
@@ -101,8 +100,7 @@ class BronzeIngestion:
             good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
             final_df = add_audit_columns(good_df, self.config)
 
-            if bad_count > 0:
-                write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
+            write_quarantine(self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config)
 
             table_name = write_bronze(self.spark, final_df, self.config)
             row_count = final_df.count()
@@ -150,8 +148,7 @@ class BronzeIngestion:
                 good_df, bad_df, bad_count = enforce_quality(micro_batch_df, self.config)
                 final_df = add_audit_columns(good_df, self.config)
 
-                if bad_count > 0:
-                    write_quarantine(self.spark, add_audit_columns(bad_df, self.config), self.config)
+                write_quarantine(self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config)
 
                 write_bronze_micro_batch(self.spark, final_df, batch_id, self.config)
 
