@@ -12,8 +12,28 @@ def test_requires_source_path_and_table():
 def test_merge_requires_merge_keys():
     with pytest.raises(ValueError):
         IngestionConfig(source_path="s3://x", table="t", write_mode="merge")
-    # should not raise
-    IngestionConfig(source_path="s3://x", table="t", write_mode="merge", merge_keys=["id"])
+    # should not raise - merge_keys is also listed in required_columns
+    IngestionConfig(
+        source_path="s3://x", table="t", write_mode="merge",
+        merge_keys=["id"], required_columns=["id"],
+    )
+
+
+def test_merge_requires_merge_keys_in_required_columns():
+    # merge_keys not covered by required_columns - a NULL merge key would
+    # never match in a MERGE condition and silently duplicate forever (#47)
+    with pytest.raises(ValueError):
+        IngestionConfig(source_path="s3://x", table="t", write_mode="merge", merge_keys=["id"])
+    with pytest.raises(ValueError):
+        IngestionConfig(
+            source_path="s3://x", table="t", write_mode="merge",
+            merge_keys=["id", "region"], required_columns=["id"],
+        )
+    # should not raise - all merge_keys covered
+    IngestionConfig(
+        source_path="s3://x", table="t", write_mode="merge",
+        merge_keys=["id", "region"], required_columns=["id", "region", "other"],
+    )
 
 
 def test_streaming_requires_checkpoint_and_schema_location():

@@ -180,7 +180,14 @@ configured - this package does not manage auth.
 - `append` - straightforward append to the bronze table (default).
 - `overwrite` - full overwrite (with `mergeSchema` if schema changed).
 - `merge` - upsert using `merge_keys`; requires `delta-spark`'s `DeltaTable`
-  API (available by default on Databricks runtimes).
+  API (available by default on Databricks runtimes). Every column in
+  `merge_keys` must also be listed in `required_columns` - `NULL = NULL`
+  is `NULL` (not true) in the generated MERGE condition, so a NULL merge
+  key would never match the target and would be inserted as a duplicate
+  row on every run. Config construction raises a `ValueError` if a merge
+  key isn't covered by `required_columns`, and the write itself raises
+  `NullMergeKeyError` as a last-line-of-defense if a NULL slips through
+  anyway.
 
 ## Audit columns (per-row lineage)
 
