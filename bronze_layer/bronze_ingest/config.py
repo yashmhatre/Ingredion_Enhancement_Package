@@ -88,6 +88,16 @@ class IngestionConfig:
             raise ValueError(f"write_mode must be one of {VALID_WRITE_MODES}, got {self.write_mode!r}")
         if self.write_mode == "merge" and not self.merge_keys:
             raise ValueError("merge_keys must be provided when write_mode='merge'")
+        if self.write_mode == "merge" and self.merge_keys:
+            unguarded = [k for k in self.merge_keys if k not in self.required_columns]
+            if unguarded:
+                raise ValueError(
+                    f"merge_keys {unguarded} must also be listed in required_columns when "
+                    "write_mode='merge' - NULL = NULL is NULL in a SQL MERGE condition, so a "
+                    "NULL merge key never matches the target and gets inserted as a duplicate "
+                    "row on every run. Add these columns to required_columns so the quality "
+                    "gate guarantees non-null values before the write."
+                )
         if self.ingestion_mode not in VALID_INGESTION_MODES:
             raise ValueError(f"ingestion_mode must be one of {VALID_INGESTION_MODES}, got {self.ingestion_mode!r}")
         if self.schema_evolution_mode not in VALID_SCHEMA_EVOLUTION_MODES:

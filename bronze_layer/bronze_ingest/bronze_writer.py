@@ -30,6 +30,33 @@ def add_audit_columns(df, config: IngestionConfig):
     return df
 
 
+class NullMergeKeyError(Exception):
+    pass
+
+
+def _assert_no_null_merge_keys(df, merge_keys):
+    """
+    NULL = NULL evaluates to NULL (not true) in a SQL MERGE condition, so a
+    row with a NULL merge key never matches the target and gets inserted as
+    a new row on every run - silently duplicating forever. Config validation
+    (merge_keys must be a subset of required_columns) should already prevent
+    this via the quality gate, but this is a cheap last-line-of-defense
+    check directly on the DataFrame about to be merged.
+    """
+    null_condition = None
+    for k in merge_keys:
+        cond = col(f"`{k}`").isNull()
+        null_condition = cond if null_condition is None else (null_condition | cond)
+
+    if df.filter(null_condition).take(1):
+        raise NullMergeKeyError(
+            f"Refusing to MERGE: found NULL value(s) in merge_keys={merge_keys}. "
+            "These rows would never match the target and would be inserted as "
+            "duplicates on every run. Add these columns to required_columns so "
+            "the quality gate filters/fails on them before the write."
+        )
+
+
 def _table_exists(spark, full_table_name: str) -> bool:
     try:
         return spark.catalog.tableExists(full_table_name)
@@ -65,6 +92,8 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
 
     elif config.write_mode == "merge":
         from delta.tables import DeltaTable
+
+        _assert_no_null_merge_keys(df, config.merge_keys)
 
         if not _table_exists(spark, full_name):
             # Nothing to merge into yet - first load is just a write.
