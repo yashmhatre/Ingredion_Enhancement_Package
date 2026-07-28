@@ -2,7 +2,9 @@
 
 Audit of the actual code against the claims in `bronze_layer/README.md`,
 for issue #6. Validated by reading each module and by executing the
-existing pytest suite (50/50 passing) plus targeted ad-hoc checks against
+existing pytest suite (48/48 passing at the time of the original audit,
+now 50/50 after the retry-gap fix below added 2 tests) plus targeted
+ad-hoc checks against
 a local Spark session (JSON with a malformed record, a null in a
 `required_columns` field, and a flaky function wrapped in `with_retry`).
 
@@ -91,7 +93,7 @@ Verified with two new tests in `tests/test_json_reader.py`: one where
 the underlying Spark load fails once then succeeds (confirms retry
 recovers and returns data), one where it always fails (confirms the
 configured `retry_attempts` is respected and the exception still
-propagates once exhausted). Full suite: 50 → 52 tests, all passing.
+propagates once exhausted). Full suite: 48 → 50 tests, all passing.
 (This is distinct from directory ingestion's separate
 retry-limit-before-quarantine mechanism, which counts failures *across
 separate runs* via a persisted JSON state file — not an in-process
@@ -112,13 +114,18 @@ README's documented required fields. Confirmed via the existing
 ## Test suite validation
 
 Ran the full existing suite (`pip install -e ".[dev]"` + `pytest`) against
-a local Delta-enabled `SparkSession`: **50 passed, 0 failed.** Confirms
-`config`, `quality`, `directory_ingestion` (archival, retry-limit
-quarantine, folder-as-table), `audit`, and `schema_registry` behave as
-their own docstrings/tests claim. No dedicated test files exist for
+a local Delta-enabled `SparkSession`: originally **48 passed, 0 failed**
+at the time of this audit. Confirms `config`, `quality`,
+`directory_ingestion` (archival, retry-limit quarantine,
+folder-as-table), `audit`, and `schema_registry` behave as their own
+docstrings/tests claim. At that point no dedicated test file existed for
 `json_reader.py`, `bronze_writer.py`, or `retry.py` individually — the
-README doesn't claim otherwise, but this is the gap this issue's parent
-epic (writing tests against confirmed behavior) should close next.
+README didn't claim otherwise, but it was a gap this issue's parent epic
+(writing tests against confirmed behavior) should close.
+
+`tests/test_json_reader.py` was added as part of the retry-gap fix below
+(2 tests), bringing the suite to **50 passed, 0 failed**.
+`bronze_writer.py` and `retry.py` still have no dedicated test file.
 
 ## Gaps found (tracked separately)
 
