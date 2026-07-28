@@ -4,8 +4,9 @@
 
 This document describes the proposed target-state architecture for
 `bronze_ingest` (part of the `bronze_layer/` folder), extending the
-current bronze ingestion pipeline to (a) support multiple source formats
-beyond JSON, and (b) incorporate AI-assisted metadata generation —
+current Bronze ingestion pipeline to support multiple source formats
+beyond JSON while preserving source fidelity, and to incorporate
+AI-assisted metadata generation —
 without introducing risk to the ingestion pipeline's reliability
 guarantees.
 
@@ -17,14 +18,19 @@ The design is partitioned into two isolated execution lanes.
 
 ### 1. Deterministic ingestion path (unchanged in behavior)
 
-Sources → format-aware reader dispatch → existing pipeline (flatten,
-data quality gate, audit, write) → Delta bronze table.
+Sources → format-aware reader dispatch → existing pipeline (data
+quality gate, audit, write) → Delta bronze table.
+
+Each reader preserves the source structure as faithfully as possible.
+Nested formats (such as JSON and XML) retain their native nested
+structures, while tabular formats (such as CSV, Parquet, and Excel) are
+loaded without reshaping.
 
 Format support (CSV, XML, Parquet, Excel, alongside existing JSON) is
-added via a config-driven reader dispatch, consistent with the
-package's existing pattern for `flatten_mode` and `write_mode`. No
-change to write semantics, quality enforcement, or existing test
-coverage.
+added through a config-driven reader dispatch. Regardless of source
+format, the Bronze layer remains responsible only for ingestion,
+lineage, validation, and persistence. Any flattening, normalization, or
+business-specific transformations are deferred to the Silver layer.
 
 ### 2. Asynchronous AI-assisted metadata layer
 
@@ -42,6 +48,8 @@ and quarantine decisions remain governed exclusively by the existing
 deterministic quality logic (`quality.py`). This satisfies the
 requirement that AI adoption introduce no bottleneck or deadlock risk
 to the core ingestion SLA.
+
+
 
 ## Delivery Sequencing
 
@@ -63,6 +71,10 @@ will eventually read from.
 
 ## Open Design Question
 
-Whether `source_format` should be explicitly declared per config
-(consistent with the framework's config-first philosophy) or
-auto-inferred from file extension during directory ingestion.
+Whether `source_format` should be explicitly declared in each
+configuration (consistent with the framework's config-first philosophy)
+or automatically inferred from the source during directory ingestion.
+
+Since the Bronze layer no longer performs source-specific transformation
+or flattening, this decision now affects only reader selection and
+validation rather than downstream processing semantics.

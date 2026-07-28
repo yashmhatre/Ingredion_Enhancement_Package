@@ -41,7 +41,6 @@ result = ingest_json_to_bronze(
     source_path="abfss://raw@mystorage.dfs.core.windows.net/orders/",
     schema_name="bronze",
     table="orders_raw",
-    flatten_mode="flatten",     # "raw" | "flatten" | "auto"
     write_mode="append",        # "append" | "overwrite" | "merge"
 )
 print(result)
@@ -75,7 +74,6 @@ results = ingest_directory_to_bronze(
     catalog="main",
     schema_name="bronze",
     table_name_template="{filename}_bronze",   # or "bronze_{filename}"
-    flatten_mode="auto",
 )
 ```
 
@@ -132,13 +130,18 @@ table. See `bronze_ingest/audit.py`.
 
 ## Handling nested JSON
 
-Set `flatten_mode` per source:
+The Bronze ingestion package preserves nested JSON structures exactly as
+they are read from the source. Structs and arrays are stored unchanged in
+the Bronze Delta table to maintain source fidelity and support schema
+evolution.
 
-| mode      | behavior |
-|-----------|----------|
-| `raw`     | Struct/array columns are kept nested exactly as read. Classic bronze pattern - preserve source shape, do transformation later in silver. |
-| `flatten` | Structs are recursively expanded into `parent_child_grandchild` columns. Set `explode_arrays: true` to also explode array columns into rows. |
-| `auto`    | Flattens automatically if nesting depth is shallow (`auto_flatten_threshold`, default 5); falls back to raw for deeply/variably nested sources to avoid schema explosion. |
+Any reshaping, flattening, exploding of arrays, or other business-specific
+transformations should be performed in the Silver layer, where data is
+prepared for downstream analytics and consumption.
+
+This separation keeps the Bronze layer focused on reliable ingestion and
+lineage while allowing the Silver layer to apply transformations without
+losing the original source structure.
 
 ## Source paths
 
@@ -182,7 +185,6 @@ bronze_layer/
     config.py            # IngestionConfig dataclass + yaml/json loaders
     json_reader.py        # batch JSON read (PERMISSIVE mode, corrupt-record capture)
     streaming_reader.py    # Auto Loader (cloudFiles) incremental read
-    flattener.py          # raw / flatten / auto nested-field handling
     quality.py            # required-column validation + quarantine split
     bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
     directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
@@ -257,7 +259,7 @@ parameterized entrypoint the job calls - point `config_path` at a config
 file per table/source rather than duplicating the notebook.
 
 **Testing.** `tests/` has a pytest suite covering config validation,
-flatten/raw/auto behavior, the quality gate, directory ingestion, file
+quality validation, directory ingestion, archival, retry-limit quarantine, folder-as-table merging, and run-level audit
 archival, retry-limit quarantine, folder-as-table merging, and the
 run-level audit trail, using a local `SparkSession` (Delta-enabled) - no
 Databricks connection needed. The suite is also environment-aware and

@@ -5,12 +5,6 @@ multiline: true
 # schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
 reader_options: {}
 
-flatten_mode: "raw"          # raw | flatten | auto
-flatten_separator: "_"
-explode_arrays: false
-max_flatten_depth: null
-auto_flatten_threshold: 5
-
 catalog: "ingredion_en_dev"
 schema_name: "ingredion_dev"
 table: "orders_raw"
