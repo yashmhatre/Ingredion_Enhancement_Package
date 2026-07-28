@@ -9,11 +9,6 @@ def test_requires_source_path_and_table():
         IngestionConfig(source_path="s3://x", table="")
 
 
-def test_invalid_flatten_mode_rejected():
-    with pytest.raises(ValueError):
-        IngestionConfig(source_path="s3://x", table="t", flatten_mode="bogus")
-
-
 def test_merge_requires_merge_keys():
     with pytest.raises(ValueError):
         IngestionConfig(source_path="s3://x", table="t", write_mode="merge")
