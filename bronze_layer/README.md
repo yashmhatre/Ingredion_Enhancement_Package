@@ -195,6 +195,19 @@ configured - this package does not manage auth.
   no longer both "win" the existence check and both append the whole
   batch as duplicates.
 
+  Delta's `MERGE` also raises a runtime error ("multiple source rows
+  matched") if the source batch has more than one row per merge key -
+  bronze sources frequently re-send full-file dumps or contain
+  intra-batch duplicates. `dedupe_before_merge: true` (default)
+  deterministically keeps one row per key before the merge, picking the
+  one with the highest `dedupe_order_by` value (defaults to
+  `audit_ingest_ts_col`, so the most-recently-ingested row wins - this
+  requires `add_audit_columns: true`, or an explicit `dedupe_order_by`
+  pointing at a column that exists on the DataFrame). Set
+  `dedupe_before_merge: false` to instead raise a clear
+  `DuplicateMergeKeyError` naming the duplicated key(s) rather than
+  silently deduping or hitting Delta's cryptic error.
+
 ## Audit columns (per-row lineage)
 
 When `add_audit_columns: true` (default), every load adds:
