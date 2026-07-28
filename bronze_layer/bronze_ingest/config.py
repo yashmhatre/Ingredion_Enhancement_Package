@@ -74,6 +74,10 @@ class IngestionConfig:
     audit_schema_name: str = "bronze"        # schema for the audit table
     audit_table: str = "_ingestion_audit"    # dedicated table name
     run_id: Optional[str] = None             # if None, generated at run time (like batch_id)
+    enable_schema_registry: bool = True
+    registry_catalog: Optional[str] = None      # defaults to `catalog` if not set
+    registry_schema_name: str = "bronze"        # schema for the registry table
+    registry_table: str = "_schema_registry"
 
     def __post_init__(self):
         if not self.source_path:
@@ -117,6 +121,12 @@ class IngestionConfig:
     def resolved_audit_table(self) -> str:
         parts = [p for p in (self.audit_catalog or self.catalog, self.audit_schema_name, self.audit_table) if p]
         return ".".join(parts)
+
+    @property
+    def resolved_registry_table(self) -> str:
+        parts = [p for p in (self.registry_catalog or self.catalog, self.registry_schema_name, self.registry_table) if p]
+        return ".".join(parts)
+    
 
     # ---- constructors ----
     @classmethod

@@ -128,6 +128,24 @@ of any single bronze table. Answers "did this run succeed, how many
 rows, how long did it take" without needing to inspect any specific
 table. See `bronze_ingest/audit.py`.
 
+### Schema registry
+
+Every ingestion records its target table's current schema to a dedicated
+registry table (`enable_schema_registry: true`, the default) — one row
+per bronze table, upserted **only when the schema actually changes**. A
+table ingesting daily with a stable schema stays at exactly one row.
+
+Detect drift by querying the table; recover the history of any change
+via Delta versioning:
+
+```sql
+DESCRIBE HISTORY <catalog>.<schema>._schema_registry
+```
+
+Distinct from the audit trail: that records one row per *run*, this
+records one row per *table's schema state*. Registry failures never fail
+an ingestion run. See `bronze_ingest/schema_registry.py`.
+
 ## Handling nested JSON
 
 The Bronze ingestion package preserves nested JSON structures exactly as
