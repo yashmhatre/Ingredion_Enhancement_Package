@@ -394,3 +394,58 @@ def test_archive_files_parallel_preserves_folder_subpath(json_test_dir):
 
     for _, r in results:
         assert "/orders/" in r["move_detail"]
+
+
+def test_directory_ingestion_rejects_overwrite_by_default(spark, json_test_dir):
+    """
+    #55: write_mode='overwrite' silently loses history in directory
+    ingestion - each freshly-discovered, same-named file replaces the
+    whole table on every run since prior files are archived out of
+    source_dir. Must fail fast before touching any file, for both
+    per-file and folder-as-table modes.
+    """
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.json", json.dumps({"id": 1}))
+
+    with pytest.raises(ValueError, match="write_mode='overwrite'"):
+        di.ingest_directory_to_bronze(
+            spark, source_dir, catalog=None, schema_name="default", write_mode="overwrite",
+        )
+
+    # Nothing should have been touched - the file must still be sitting
+    # untouched in source_dir, not archived/moved.
+    assert os.path.exists(os.path.join(write_dir, "orders.json"))
+
+
+def test_directory_ingestion_rejects_overwrite_for_folder_as_table(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/a.json", json.dumps({"id": 1}))
+
+    with pytest.raises(ValueError, match="write_mode='overwrite'"):
+        di.ingest_directory_to_bronze(
+            spark, source_dir, catalog=None, schema_name="default", write_mode="overwrite",
+        )
+
+
+def test_directory_ingestion_allows_overwrite_with_explicit_opt_in(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default",
+        write_mode="overwrite", allow_overwrite_in_directory_mode=True,
+    )
+
+    assert results[0]["status"] == "success"
+
+
+def test_directory_ingestion_default_write_mode_is_unaffected(spark, json_test_dir):
+    """Sanity check the guard only triggers on an explicit write_mode='overwrite' -
+    the default (append) must keep working with no extra flag."""
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(spark, source_dir, catalog=None, schema_name="default")
+
+    assert results[0]["status"] == "success"
