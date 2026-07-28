@@ -4,7 +4,9 @@ import uuid
 import pytest
 
 from bronze_ingest.config import IngestionConfig
-from bronze_ingest.bronze_writer import write_bronze, add_audit_columns, NullMergeKeyError
+from bronze_ingest.bronze_writer import (
+    write_bronze, add_audit_columns, NullMergeKeyError, DuplicateMergeKeyError,
+)
 
 
 def _cfg(table, **overrides):
@@ -23,7 +25,10 @@ def _table(table):
 
 def test_merge_refuses_null_merge_keys(spark):
     table = f"bw_null_key_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"])
+    # retry_attempts=1: this is a deterministic config error, not a
+    # transient failure - no point burning the default 10s/20s backoff
+    # retrying something that will fail identically every time.
+    cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"], retry_attempts=1)
 
     df = spark.createDataFrame([(1, "a"), (None, "b")], ["id", "name"])
 
@@ -35,7 +40,12 @@ def test_merge_refuses_null_merge_keys(spark):
 
 def test_merge_first_load_creates_table_and_merges(spark):
     table = f"bw_first_load_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"])
+    # dedupe_before_merge is orthogonal to this test - disable it so this
+    # test doesn't depend on audit columns being present (see #48 tests).
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        dedupe_before_merge=False,
+    )
 
     df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
     full_name = write_bronze(spark, df, cfg)
@@ -55,7 +65,7 @@ def test_concurrent_first_loads_do_not_duplicate_rows(spark):
     table = f"bw_race_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
         table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
-        retry_attempts=5, retry_delay_seconds=0.1,
+        retry_attempts=5, retry_delay_seconds=0.1, dedupe_before_merge=False,
     )
 
     barrier = threading.Barrier(2)
@@ -81,13 +91,64 @@ def test_concurrent_first_loads_do_not_duplicate_rows(spark):
 
 def test_merge_updates_matched_and_inserts_new_rows(spark):
     table = f"bw_merge_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"])
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        dedupe_before_merge=False,
+    )
 
     write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
     write_bronze(spark, spark.createDataFrame([(1, "a-updated"), (3, "c")], ["id", "name"]), cfg)
 
     rows = {r["id"]: r["name"] for r in spark.read.table(_table(table)).collect()}
     assert rows == {1: "a-updated", 2: "b", 3: "c"}
+
+
+def test_merge_dedupes_duplicate_keys_before_merge(spark):
+    """#48: a source batch with more than one row per merge key used to
+    make Delta MERGE throw a cryptic 'multiple source rows matched' error.
+    dedupe_before_merge=True (default) should keep exactly one row per key,
+    picking the highest dedupe_order_by value."""
+    table = f"bw_dedupe_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        dedupe_order_by="version",
+    )
+
+    df = spark.createDataFrame(
+        [(1, "a-v1", 1), (1, "a-v2", 2), (2, "b", 1)],
+        ["id", "name", "version"],
+    )
+    write_bronze(spark, df, cfg)
+
+    rows = {r["id"]: r["name"] for r in spark.read.table(_table(table)).collect()}
+    assert rows == {1: "a-v2", 2: "b"}
+
+
+def test_merge_raises_clear_error_on_duplicates_when_dedupe_disabled(spark):
+    table = f"bw_dupe_fail_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        dedupe_before_merge=False, retry_attempts=1,
+    )
+
+    df = spark.createDataFrame([(1, "a"), (1, "a-again"), (2, "b")], ["id", "name"])
+
+    with pytest.raises(DuplicateMergeKeyError, match=r"\{'id': 1\}"):
+        write_bronze(spark, df, cfg)
+
+    assert not spark.catalog.tableExists(_table(table))
+
+
+def test_merge_dedupe_missing_order_column_raises_clear_error(spark):
+    table = f"bw_dedupe_missing_col_{uuid.uuid4().hex[:8]}"
+    # dedupe_before_merge defaults True, and dedupe_order_by defaults to
+    # audit_ingest_ts_col ("_ingested_at"), which isn't present here since
+    # add_audit_columns() was never called on this raw DataFrame.
+    cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"], retry_attempts=1)
+    df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
+
+    with pytest.raises(ValueError, match="_ingested_at"):
+        write_bronze(spark, df, cfg)
 
 
 def test_append_mode_does_not_require_merge_keys(spark):

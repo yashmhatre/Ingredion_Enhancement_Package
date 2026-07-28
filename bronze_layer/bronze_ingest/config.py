@@ -59,6 +59,8 @@ class IngestionConfig:
     merge_keys: Optional[List[str]] = None  # required when write_mode == "merge"
     partition_by: Optional[List[str]] = None
     merge_schema: bool = True              # allow schema evolution on write (mergeSchema)
+    dedupe_before_merge: bool = True        # keep one row per merge key before MERGE (else raise on duplicates)
+    dedupe_order_by: Optional[str] = None   # column to break ties by, highest wins; defaults to audit_ingest_ts_col
 
     # --- Audit / lineage columns added automatically ---
     add_audit_columns: bool = True

@@ -6,7 +6,8 @@ schema evolution.
 
 from datetime import datetime, timezone
 
-from pyspark.sql.functions import lit, current_timestamp, col
+from pyspark.sql.functions import lit, current_timestamp, col, row_number
+from pyspark.sql.window import Window
 
 from .config import IngestionConfig
 from .retry import with_retry
@@ -66,6 +67,53 @@ def _assert_no_null_merge_keys(df, merge_keys):
         )
 
 
+class DuplicateMergeKeyError(Exception):
+    pass
+
+
+def _dedupe_for_merge(df, config: IngestionConfig):
+    """
+    Delta MERGE raises "Cannot perform Merge as multiple source rows
+    matched..." when the source has more than one row per merge key.
+    Bronze sources frequently re-send full-file dumps or contain
+    intra-batch duplicates, so deterministically keep one row per key -
+    the one with the highest dedupe_order_by value (defaults to the
+    ingestion timestamp, so the most-recently-ingested row wins).
+    """
+    order_col = config.dedupe_order_by or config.audit_ingest_ts_col
+    if order_col not in df.columns:
+        raise ValueError(
+            f"dedupe_before_merge=True but the order-by column {order_col!r} is not "
+            "present on the DataFrame being merged. Pass dedupe_order_by explicitly, "
+            "or leave add_audit_columns=True so the default (audit_ingest_ts_col) exists."
+        )
+
+    w = Window.partitionBy(*config.merge_keys).orderBy(col(f"`{order_col}`").desc())
+    return (
+        df.withColumn("_dedupe_rn", row_number().over(w))
+        .filter(col("_dedupe_rn") == 1)
+        .drop("_dedupe_rn")
+    )
+
+
+def _assert_no_duplicate_merge_keys(df, merge_keys):
+    dup_keys = (
+        df.groupBy(*[col(f"`{k}`") for k in merge_keys])
+        .count()
+        .filter(col("count") > 1)
+        .drop("count")
+        .limit(20)
+        .collect()
+    )
+    if dup_keys:
+        raise DuplicateMergeKeyError(
+            f"Refusing to MERGE: found duplicate merge_keys={merge_keys} within the "
+            f"source batch (Delta MERGE would raise 'multiple source rows matched'). "
+            f"Example duplicated key(s): {[r.asDict() for r in dup_keys]}. Set "
+            "dedupe_before_merge=True (default) to auto-dedupe instead of failing."
+        )
+
+
 def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     schema_ref = f"{config.catalog}.{config.schema_name}" if config.catalog else config.schema_name
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
@@ -91,6 +139,11 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         from delta.tables import DeltaTable
 
         _assert_no_null_merge_keys(df, config.merge_keys)
+
+        if config.dedupe_before_merge:
+            df = _dedupe_for_merge(df, config)
+        else:
+            _assert_no_duplicate_merge_keys(df, config.merge_keys)
 
         # Atomic create-if-not-exists instead of a check-then-act on table
         # existence - two concurrent first-runs against the same
