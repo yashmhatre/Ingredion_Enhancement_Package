@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from pyspark.sql import Row
 from pyspark.sql.types import (
-    StructType, StructField, StringType, LongType, TimestampType,
+    StructType, StructField, StringType, LongType, BooleanType, TimestampType,
 )
 
 from .config import IngestionConfig
@@ -29,6 +29,9 @@ AUDIT_SCHEMA = StructType([
     StructField("status", StringType(), nullable=False),
     StructField("row_count", LongType(), nullable=True),
     StructField("quarantined_row_count", LongType(), nullable=True),
+    StructField("failure_stage", StringType(), nullable=True),
+    StructField("schema_fingerprint", StringType(), nullable=True),
+    StructField("schema_changed", BooleanType(), nullable=True),
     StructField("started_at", TimestampType(), nullable=False),
     StructField("finished_at", TimestampType(), nullable=True),
     StructField("error_message", StringType(), nullable=True),
@@ -37,9 +40,22 @@ AUDIT_SCHEMA = StructType([
 
 AUDIT_SCHEMA_DDL = (
     "run_id STRING, table STRING, status STRING, row_count LONG, "
-    "quarantined_row_count LONG, started_at TIMESTAMP, "
-    "finished_at TIMESTAMP, error_message STRING, source_path STRING"
+    "quarantined_row_count LONG, failure_stage STRING, "
+    "schema_fingerprint STRING, schema_changed BOOLEAN, "
+    "started_at TIMESTAMP, finished_at TIMESTAMP, error_message STRING, "
+    "source_path STRING"
 )
+
+
+def tag_failure_stage(exc: Exception, stage: str) -> None:
+    """
+    Attaches a failure_stage ("read" | "quality" | "write") to an
+    exception so the failed audit row records which stage failed without
+    needing to parse error_message text. Idempotent - re-raising through
+    a nested handler won't overwrite a stage an inner handler already set.
+    """
+    if not hasattr(exc, "failure_stage"):
+        exc.failure_stage = stage
 
 
 def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
@@ -83,9 +99,14 @@ def audited_run(spark, config: IngestionConfig, source_path: str = None):
             audit["row_count"] = summary["row_count"]
             audit["quarantined_row_count"] = summary["quarantined_row_count"]
 
-    The yielded dict is mutable - the caller fills in row_count and
-    quarantined_row_count on success. Status/timestamps/error_message are
-    handled automatically by this context manager.
+    The yielded dict is mutable - the caller fills in row_count,
+    quarantined_row_count, schema_fingerprint and schema_changed on
+    success. Status/timestamps/error_message are handled automatically by
+    this context manager. On failure, quarantined_row_count and
+    failure_stage are recovered from the raised exception's `bad_count`
+    /`failure_stage` attributes if present (see quality.DataQualityError
+    and tag_failure_stage()), so a failed run's audit row still carries
+    those numbers instead of leaving them None.
     """
     if not config.enable_run_audit:
         yield {}
@@ -93,7 +114,10 @@ def audited_run(spark, config: IngestionConfig, source_path: str = None):
 
     run_id = config.run_id or str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
-    result = {"row_count": None, "quarantined_row_count": None}
+    result = {
+        "row_count": None, "quarantined_row_count": None,
+        "schema_fingerprint": None, "schema_changed": None,
+    }
 
     try:
         yield result
@@ -104,6 +128,9 @@ def audited_run(spark, config: IngestionConfig, source_path: str = None):
             "status": "success",
             "row_count": result.get("row_count"),
             "quarantined_row_count": result.get("quarantined_row_count"),
+            "failure_stage": None,
+            "schema_fingerprint": result.get("schema_fingerprint"),
+            "schema_changed": result.get("schema_changed"),
             "started_at": started_at,
             "finished_at": finished_at,
             "error_message": None,
@@ -111,12 +138,18 @@ def audited_run(spark, config: IngestionConfig, source_path: str = None):
         })
     except Exception as exc:
         finished_at = datetime.now(timezone.utc)
+        bad_count = getattr(exc, "bad_count", None)
+        if bad_count is not None and result.get("quarantined_row_count") is None:
+            result["quarantined_row_count"] = bad_count
         _write_audit_row(spark, config, {
             "run_id": run_id,
             "table": config.full_table_name,
             "status": "failed",
             "row_count": result.get("row_count"),
             "quarantined_row_count": result.get("quarantined_row_count"),
+            "failure_stage": getattr(exc, "failure_stage", None),
+            "schema_fingerprint": result.get("schema_fingerprint"),
+            "schema_changed": result.get("schema_changed"),
             "started_at": started_at,
             "finished_at": finished_at,
             "error_message": str(exc),

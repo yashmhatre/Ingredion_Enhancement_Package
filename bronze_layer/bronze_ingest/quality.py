@@ -9,7 +9,7 @@ Checks that configured `required_columns` are non-null. Depending on
              re-processed later once the source data is fixed.
 """
 
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 from pyspark.sql.functions import col, lit
 
@@ -18,7 +18,15 @@ from .logging_utils import logger
 
 
 class DataQualityError(Exception):
-    pass
+    """
+    Carries bad_count (when known) so a failed audited_run can record how
+    many rows failed the quality gate, instead of leaving
+    quarantined_row_count None on the failure audit row (#50).
+    """
+
+    def __init__(self, message: str, bad_count: Optional[int] = None):
+        super().__init__(message)
+        self.bad_count = bad_count
 
 
 def _missing_required_columns(df, required_columns: List[str]) -> List[str]:
@@ -72,7 +80,7 @@ def enforce_quality(df, config: IngestionConfig):
             f"(null in one of required_columns={config.required_columns})"
         )
         if config.fail_on_quality_error:
-            raise DataQualityError(msg)
+            raise DataQualityError(msg, bad_count=bad_count)
         logger.warning("%s - quarantining to %s", msg, config.resolved_quarantine_table)
 
     return good_df, bad_df, bad_count
