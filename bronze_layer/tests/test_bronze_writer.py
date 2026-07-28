@@ -6,6 +6,7 @@ import pytest
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.bronze_writer import (
     write_bronze, add_audit_columns, NullMergeKeyError, DuplicateMergeKeyError,
+    _resolve_idempotent_txn_version,
 )
 
 
@@ -298,3 +299,111 @@ def test_cluster_by_auto_degrades_gracefully_when_unsupported(spark, caplog):
 
     assert spark.read.table(_table(table)).count() == 1
     assert any("cluster_by_auto=True" in rec.message for rec in caplog.records)
+
+
+# ---- idempotent batch writes (#63) ----
+
+def test_resolve_idempotent_txn_version_cases():
+    cfg_int_str = _cfg("t", batch_id="12345")
+    assert _resolve_idempotent_txn_version(cfg_int_str) == 12345
+
+    cfg_timestamp = _cfg("t", batch_id="20260728T120000000000Z")
+    version = _resolve_idempotent_txn_version(cfg_timestamp)
+    assert isinstance(version, int) and version > 0
+    # Same string must always resolve to the same version (stable, not wall-clock-dependent).
+    assert _resolve_idempotent_txn_version(cfg_timestamp) == version
+
+    cfg_arbitrary = _cfg("t", batch_id="not-a-number-or-timestamp")
+    assert _resolve_idempotent_txn_version(cfg_arbitrary) is None
+
+    cfg_none = _cfg("t")
+    assert _resolve_idempotent_txn_version(cfg_none) is None
+
+
+def test_idempotent_batch_writes_prevents_duplicate_append_on_retry(spark):
+    """
+    #63: a retried batch job (write succeeded, a downstream step then
+    failed) re-running with the SAME explicit batch_id must converge to
+    one copy of the data, not duplicate it.
+    """
+    table = f"bw_idempotent_append_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", batch_id="1001")
+
+    df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
+    write_bronze(spark, df, cfg)
+    write_bronze(spark, df, cfg)  # simulated retry - same batch_id, same data
+
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_idempotent_batch_writes_different_batch_ids_append_normally(spark):
+    table = f"bw_idempotent_diff_batch_{uuid.uuid4().hex[:8]}"
+    cfg1 = _cfg(table, write_mode="append", batch_id="2001")
+    cfg2 = _cfg(table, write_mode="append", batch_id="2002")
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg1)
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg2)
+
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_idempotent_batch_writes_skipped_when_batch_id_none(spark, caplog):
+    """An auto-generated (None) batch_id can't provide retry protection,
+    since it's a fresh value on every attempt - document this rather than
+    pretending it's protected. The write itself must still succeed."""
+    table = f"bw_idempotent_no_batch_id_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append")
+
+    with caplog.at_level("DEBUG"):
+        write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    assert spark.read.table(_table(table)).count() == 1
+
+
+def test_idempotent_batch_writes_warns_on_unparseable_batch_id(spark, caplog):
+    table = f"bw_idempotent_bad_batch_id_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", batch_id="release-2026-07-28")
+
+    with caplog.at_level("WARNING"):
+        write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    assert spark.read.table(_table(table)).count() == 1
+    assert any("can't derive a stable txnVersion" in rec.message for rec in caplog.records)
+
+
+def test_idempotent_batch_writes_disabled_via_config(spark):
+    """Opt-out must be honored - the same batch_id written twice with
+    idempotent_batch_writes=False duplicates, as a plain append would."""
+    table = f"bw_idempotent_disabled_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", batch_id="3001", idempotent_batch_writes=False)
+
+    df = spark.createDataFrame([(1, "a")], ["id", "name"])
+    write_bronze(spark, df, cfg)
+    write_bronze(spark, df, cfg)
+
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_idempotent_batch_writes_not_applied_to_merge(spark, monkeypatch):
+    """Delta MERGE doesn't accept txn options - write_bronze must not pass
+    any for write_mode='merge', even with a stable batch_id configured."""
+    import bronze_ingest.bronze_writer as bw
+
+    table = f"bw_idempotent_merge_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        batch_id="4001", dedupe_before_merge=False,
+    )
+
+    captured = {}
+    real_write_core = bw._write_core
+
+    def spy(spark_arg, df_arg, config_arg, txn_options=None):
+        captured["txn_options"] = txn_options
+        return real_write_core(spark_arg, df_arg, config_arg, txn_options=txn_options)
+
+    monkeypatch.setattr(bw, "_write_core", spy)
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    assert captured["txn_options"] is None
