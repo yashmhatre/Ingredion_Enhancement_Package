@@ -324,7 +324,7 @@ reprocess_quarantined_files(spark, source_dir="/Volumes/main/default/raw_json/")
 **Row replay** (`reprocess_quarantine`) reads `{table}_quarantine`, drops
 `_quarantine_reason` and the stale `_ingested_at`/`_batch_id` (the rule
 that quarantined a row may have changed since), and re-runs the rows
-through `required_columns` as currently configured. Rows that now pass
+through `required_columns`/`unique_columns` as currently configured. Rows that now pass
 are written to the bronze table with a fresh `_batch_id` of the form
 `replay-<timestamp>` (so replayed rows are identifiable in the bronze
 table itself) and removed from quarantine; rows that still fail are left
@@ -406,15 +406,50 @@ Loader reacts to new/changed fields (`addNewColumns` is the sane default).
 `corrupt_record_column` instead of failing the whole read (Spark
 `PERMISSIVE` mode).
 
-**Data quality gate.** Set `required_columns: ["order_id", ...]` to assert
-non-null values before writing to bronze. `fail_on_quality_error: true`
-(default) fails the run on any violation - fail fast during onboarding of a
-new source. Set it to `false` once you trust the pipeline enough to instead
-quarantine bad rows to `<table>_quarantine` and let good rows through.
-The good/bad split is computed once into a `_dq_bad` tag column rather
-than each independently rebuilding the same null-check condition, and the
+**Data quality gate.** Two *structural* checks run before the bronze write:
+
+| Config | Check |
+|---|---|
+| `required_columns: ["order_id", ...]` | every listed column must be non-null in every row |
+| `unique_columns: ["order_id"]` | the listed column combination must be unique within the batch; all but one row per group is flagged |
+
+`fail_on_quality_error: true` (default) fails the run on any violation -
+fail fast during onboarding of a new source. Set it to `false` once you
+trust the pipeline enough to instead quarantine bad rows to
+`<table>_quarantine` and let good rows through.
+
+Both checks are evaluated into a single `_dq_bad` tag column on one pass
+rather than each independently rebuilding its own condition, and the
 quarantine write is skipped entirely when the already-known bad-row count
 is 0 - no separate probe re-scans the source to re-derive that.
+
+Quarantined rows carry a specific `_quarantine_reason` naming what failed
+(`null:email`, `duplicate:order_id,customer_id`, or both joined with `|`),
+so quarantine and replay (#60) are queryable per failure type:
+
+```sql
+SELECT _quarantine_reason, count(*) FROM bronze.orders_raw_quarantine GROUP BY 1
+```
+
+For `unique_columns`, the row **kept** is the one with the highest
+`dedupe_order_by` value. This quality gate runs before audit columns are
+added, so `dedupe_order_by` must name a **source** column (e.g. an upstream
+`updated_at`) to control which duplicate survives. If it's unset or not
+present on the source data, ties break on `monotonically_increasing_id()` -
+deterministic for a given DataFrame, but not reflecting any real ordering.
+
+> **Scope note.** Only structural checks belong in bronze. Range, regex,
+> set-membership, cross-column expression and freshness rules all require
+> knowing what "valid" means for *your business*, which is a Silver-layer
+> concern - see `silver_layer/_archive/README.md` for the same reasoning
+> applied to the flattener, and #59 for the full discussion.
+
+`unique_columns` is independent of `dedupe_before_merge` (see the merge
+section): the quality gate runs first and quarantines duplicates as bad
+rows, so by the time a MERGE happens there is nothing left for the writer's
+dedupe to remove. Configure `unique_columns` when you want duplicates
+*visible and reviewable* in quarantine; rely on `dedupe_before_merge` alone
+when you just want them silently collapsed.
 
 **Idempotent, exactly-once writes.** Streaming micro-batches are written
 using Delta Lake's `txnAppId`/`txnVersion` idempotent-write options (keyed
