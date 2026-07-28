@@ -23,7 +23,6 @@ dbutils.widgets.text("source_dir", "", "Directory containing JSON files")
 dbutils.widgets.text("catalog", "workspace", "Catalog")
 dbutils.widgets.text("schema_name", "default", "Target schema")
 dbutils.widgets.text("table_name_template", "{filename}_bronze", "Table name template")
-dbutils.widgets.dropdown("flatten_mode", "raw", ["raw", "flatten", "auto"], "Flatten mode")
 dbutils.widgets.dropdown("write_mode", "append", ["append", "overwrite", "merge"], "Write mode")
 dbutils.widgets.dropdown("multiline", "true", ["true", "false"], "Multiline JSON")
 dbutils.widgets.text("max_files", "", "Max files (blank = no limit)")
@@ -57,7 +56,6 @@ results = ingest_directory_to_bronze(
     per_file_config=per_file_config,
     catalog=dbutils.widgets.get("catalog").strip() or None,
     schema_name=dbutils.widgets.get("schema_name").strip(),
-    flatten_mode=dbutils.widgets.get("flatten_mode"),
     write_mode=dbutils.widgets.get("write_mode"),
     multiline=dbutils.widgets.get("multiline") == "true",
     required_columns=required_columns,

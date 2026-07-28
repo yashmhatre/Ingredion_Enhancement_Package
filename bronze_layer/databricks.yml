@@ -59,7 +59,6 @@ resources:
               catalog: ${var.catalog}
               schema_name: ingredion_dev
               table_name_template: "{filename}_bronze"
-              flatten_mode: raw
               write_mode: append
               multiline: "true"
               max_files: "50"

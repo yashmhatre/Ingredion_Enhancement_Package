@@ -2,7 +2,7 @@
 Top-level orchestrator: BronzeIngestion.
 
 This is the single entry point most users need. It wires together:
-  json_reader.read_json -> flattener.apply_flatten_mode -> bronze_writer.write_bronze
+  json_reader.read_json -> add audit columns -> bronze_writer.write_bronze
 """
 
 from typing import Optional, Dict, Any
@@ -10,7 +10,6 @@ from typing import Optional, Dict, Any
 from .config import IngestionConfig
 from .json_reader import read_json
 from .streaming_reader import read_json_stream, get_trigger_kwargs
-from .flattener import apply_flatten_mode
 from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
 from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
@@ -44,7 +43,6 @@ class BronzeIngestion:
         return read_json(self.spark, self.config)
 
     def transform(self, df):
-        df = apply_flatten_mode(df, self.config)
         df = add_audit_columns(df, self.config)
         return df
 
@@ -62,9 +60,7 @@ class BronzeIngestion:
                 self.config.full_table_name,
             )
 
-            transformed_df = apply_flatten_mode(raw_df, self.config)
-
-            good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
+            good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
             final_df = add_audit_columns(good_df, self.config)
 
             if bad_count > 0:
@@ -85,7 +81,6 @@ class BronzeIngestion:
                 "quarantine_table": self.config.resolved_quarantine_table if bad_count > 0 else None,
                 "columns": final_df.columns,
                 "write_mode": self.config.write_mode,
-                "flatten_mode": self.config.flatten_mode,
             }
 
     def run(self) -> Dict[str, Any]:
@@ -101,9 +96,8 @@ class BronzeIngestion:
             logger.info("Starting batch ingestion from %s -> %s", self.config.source_path, self.config.full_table_name)
 
             raw_df = self.read()
-            transformed_df = apply_flatten_mode(raw_df, self.config)
 
-            good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
+            good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
             final_df = add_audit_columns(good_df, self.config)
 
             if bad_count > 0:
@@ -124,7 +118,6 @@ class BronzeIngestion:
                 "quarantine_table": self.config.resolved_quarantine_table if bad_count > 0 else None,
                 "columns": final_df.columns,
                 "write_mode": self.config.write_mode,
-                "flatten_mode": self.config.flatten_mode,
             }
 
     def run_streaming(self, await_termination: bool = True):
@@ -132,7 +125,7 @@ class BronzeIngestion:
         Executes incremental ingestion using Auto Loader. New/changed files
         under source_path are picked up automatically via the checkpoint at
         config.checkpoint_location; each micro-batch goes through the same
-        flatten -> quality -> audit -> write logic as batch mode.
+        quality -> audit -> write logic as batch mode.
 
         Returns the StreamingQuery. If await_termination=True (default),
         blocks until the stream finishes (e.g. under trigger_mode
@@ -153,8 +146,7 @@ class BronzeIngestion:
 
         def _process_batch(micro_batch_df, batch_id):
             with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
-                transformed_df = apply_flatten_mode(micro_batch_df, self.config)
-                good_df, bad_df, bad_count = enforce_quality(transformed_df, self.config)
+                good_df, bad_df, bad_count = enforce_quality(micro_batch_df, self.config)
                 final_df = add_audit_columns(good_df, self.config)
 
                 if bad_count > 0:
@@ -189,7 +181,6 @@ def ingest_json_to_bronze(spark, config: Optional[Dict[str, Any]] = None, config
             source_path="abfss://raw@mystorage.dfs.core.windows.net/orders/",
             schema_name="bronze",
             table="orders_raw",
-            flatten_mode="flatten",
         )
 
     You can also pass a dict via `config=`, or a path to a .yaml/.json file

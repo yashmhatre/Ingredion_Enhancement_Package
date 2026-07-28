@@ -35,7 +35,6 @@ dbutils.widgets.text("source_path", "", "Source path (overrides config)")
 dbutils.widgets.text("catalog", "", "Catalog (optional)")
 dbutils.widgets.text("schema_name", "bronze", "Target schema")
 dbutils.widgets.text("table", "", "Target table")
-dbutils.widgets.dropdown("flatten_mode", "auto", ["raw", "flatten", "auto"], "Flatten mode")
 dbutils.widgets.dropdown("write_mode", "append", ["append", "overwrite", "merge"], "Write mode")
 dbutils.widgets.dropdown("ingestion_mode", "batch", ["batch", "streaming"], "Ingestion mode")
 dbutils.widgets.text("checkpoint_location", "", "Checkpoint location (streaming only)")
@@ -46,7 +45,7 @@ dbutils.widgets.text("schema_location", "", "Schema location (streaming only)")
 config_path = dbutils.widgets.get("config_path").strip()
 
 overrides = {}
-for key in ("source_path", "catalog", "schema_name", "table", "flatten_mode",
+for key in ("source_path", "catalog", "schema_name", "table",
             "write_mode", "ingestion_mode", "checkpoint_location", "schema_location"):
     val = dbutils.widgets.get(key).strip()
     if val:

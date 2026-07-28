@@ -16,7 +16,6 @@ except ImportError:  # pyyaml is optional - only needed if you load .yaml config
     yaml = None
 
 
-VALID_FLATTEN_MODES = ("raw", "flatten", "auto")
 VALID_WRITE_MODES = ("append", "overwrite", "merge")
 VALID_INGESTION_MODES = ("batch", "streaming")
 VALID_SCHEMA_EVOLUTION_MODES = ("addNewColumns", "rescue", "failOnNewColumns", "none")
@@ -51,12 +50,6 @@ class IngestionConfig:
     retry_attempts: int = 3
     retry_delay_seconds: float = 10.0
 
-    # --- Nested field handling ---
-    flatten_mode: str = "raw"              # "raw" | "flatten" | "auto"
-    flatten_separator: str = "_"           # separator used when flattening struct field names
-    explode_arrays: bool = False           # explode array columns during flatten (only used when flatten_mode != "raw")
-    max_flatten_depth: Optional[int] = None  # None = flatten fully; otherwise stop after N levels
-    auto_flatten_threshold: int = 5        # for flatten_mode="auto": flatten if nested depth <= this, else keep raw
 
     # --- Target table ---
     catalog: Optional[str] = None          # Unity Catalog catalog name, omit for hive_metastore
@@ -87,8 +80,6 @@ class IngestionConfig:
             raise ValueError("source_path is required")
         if not self.table:
             raise ValueError("table is required")
-        if self.flatten_mode not in VALID_FLATTEN_MODES:
-            raise ValueError(f"flatten_mode must be one of {VALID_FLATTEN_MODES}, got {self.flatten_mode!r}")
         if self.write_mode not in VALID_WRITE_MODES:
             raise ValueError(f"write_mode must be one of {VALID_WRITE_MODES}, got {self.write_mode!r}")
         if self.write_mode == "merge" and not self.merge_keys:

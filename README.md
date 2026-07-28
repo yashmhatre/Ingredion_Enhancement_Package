@@ -33,11 +33,17 @@ This package implements an ELT pipeline that ingests raw source data
 layer**, with planned support for transformation into **silver**
 (cleaned/validated) and **gold** (business-ready/aggregated) layers.
 
+The Bronze layer intentionally preserves the original source structure.
+Any flattening, reshaping, or business-specific transformations belong
+in the future Silver layer, keeping ingestion independent from
+transformation.
+
 The bronze layer package is built to be:
 - **Plug-and-play** — any team member reuses it by supplying a config
   file; no code changes needed per source
-- **Config-driven** — every behavior (flatten mode, write mode, quality
-  gates, retries) is controlled via `IngestionConfig`, not hardcoded
+- **Config-driven** — every ingestion behavior (write mode, quality
+  gates, retries, streaming options, schema handling) is controlled via
+  `IngestionConfig`, not hardcoded
 - **Reliable by default** — corrupt records captured (not silently
   dropped or crashed on), bad rows quarantined instead of failing whole
   batches, transient failures retried with backoff
@@ -58,8 +64,8 @@ ingestion decision.
 ## Features
 
 ### Implemented
-- [x] JSON bronze loader — nested JSON, configurable schema flattening
-      (raw/flatten/auto), Unity Catalog integration
+- [x] JSON bronze loader — preserves nested JSON structures as-is,
+      with Unity Catalog integration
 - [x] Data quality gate — required-column validation with automatic
       row-level quarantine
 - [x] Retry logic with exponential backoff (read + write paths)
@@ -142,7 +148,7 @@ config) — each layer independently deployable and versioned.
 The package has two layers of testing:
 
 1. **Local pytest suite** (`bronze_layer/tests/`) — config validation,
-   flatten logic, quality gates, directory ingestion, file archival,
+   quality gates, directory ingestion, file archival,
    retry-limit behavior, folder-as-table, and the run-level audit trail.
    Runs locally at zero cost (Delta-enabled local SparkSession), also
    runs directly on a Databricks cluster (environment-aware fixtures
