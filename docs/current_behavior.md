@@ -67,31 +67,36 @@ Structured Streaming `batch_id`) for idempotent writes, matching the
 
 ## `retry.py`
 
-**Partially confirmed — one gap found.** The `with_retry` decorator
-itself does exactly what's documented: retries up to `attempts` times
-with delay growing by `backoff` each time, re-raising the final
-exception. Verified directly: a function failing twice then succeeding
-was retried with delays of ~0.2s then ~0.4s (2x backoff) before
-returning its result.
+**Confirmed as documented (fixed — see below).** The `with_retry`
+decorator itself does exactly what's documented: retries up to
+`attempts` times with delay growing by `backoff` each time, re-raising
+the final exception. Verified directly: a function failing twice then
+succeeding was retried with delays of ~0.2s then ~0.4s (2x backoff)
+before returning its result.
 
-**Gap:** the README's "Retries" section states *"Both read and write
-paths wrap transient failures ... in exponential-backoff retries via
-`retry_attempts` / `retry_delay_seconds`."* This is only true for the
-write path. `bronze_writer.write_bronze()` and
-`write_bronze_micro_batch()` both wrap their core write in
-`@with_retry(...)`. The read path does not: `json_reader.read_json()` has
-no `with_retry` usage, `pipeline.py`'s `BronzeIngestion.read()` calls
-`read_json()` directly with no wrapping, and
-`directory_ingestion.py`'s per-file `read_json(spark, cfg)` call (line
-~331) is likewise unwrapped. A transient read-side failure (e.g. a
-throttled cloud storage read) is not retried with backoff — it either
-succeeds or propagates immediately. (This is distinct from directory
-ingestion's separate retry-limit-before-quarantine mechanism, which
-counts failures *across separate runs* via a persisted JSON state file —
-not an in-process exponential backoff — and is accurately documented
-separately in the README's "Retry limit before quarantine" section.)
-Filed as its own issue per the acceptance criteria — see "Gaps found"
-below.
+**Originally found a gap, now fixed (#81):** the README's "Retries"
+section states *"Both read and write paths wrap transient failures ...
+in exponential-backoff retries via `retry_attempts` /
+`retry_delay_seconds`."* This was only true for the write path —
+`json_reader.read_json()` had no `with_retry` usage, so a transient
+read-side failure (e.g. a throttled cloud storage read) propagated
+immediately instead of being retried. Fixed by wrapping the actual
+`reader.load(...)` call inside `read_json()` in
+`@with_retry(attempts=config.retry_attempts,
+delay_seconds=config.retry_delay_seconds)`, mirroring the write path's
+pattern. Both `pipeline.py`'s `BronzeIngestion.read()` and
+`directory_ingestion.py`'s per-file `read_json(spark, cfg)` call site
+pick up the retry automatically since they call `read_json()` directly.
+Verified with two new tests in `tests/test_json_reader.py`: one where
+the underlying Spark load fails once then succeeds (confirms retry
+recovers and returns data), one where it always fails (confirms the
+configured `retry_attempts` is respected and the exception still
+propagates once exhausted). Full suite: 50 → 52 tests, all passing.
+(This is distinct from directory ingestion's separate
+retry-limit-before-quarantine mechanism, which counts failures *across
+separate runs* via a persisted JSON state file — not an in-process
+exponential backoff — and is accurately documented separately in the
+README's "Retry limit before quarantine" section.)
 
 ## `config.py`
 
@@ -119,7 +124,8 @@ epic (writing tests against confirmed behavior) should close next.
 
 1. **README overstates read-path retry coverage** — "Retries" section
    claims both read and write paths get exponential-backoff retry; only
-   the write path does. Either add `@with_retry` to `read_json()` /
-   directory-ingestion's per-file read, or correct the README to say
-   "write path only." Tracked as
-   [issue #81](https://github.com/yashmhatre/Ingredion_Enhancement_Package/issues/81).
+   the write path did. Tracked as
+   [issue #81](https://github.com/yashmhatre/Ingredion_Enhancement_Package/issues/81)
+   and **fixed** in this same branch: `read_json()`'s load call is now
+   wrapped in `@with_retry(...)`, matching the README as originally
+   written.
