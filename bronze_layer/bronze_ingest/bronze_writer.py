@@ -114,11 +114,95 @@ def _assert_no_duplicate_merge_keys(df, merge_keys):
         )
 
 
+def _describe_current_layout(spark, full_name):
+    """
+    Returns (clustering_columns, properties) for an existing table, or
+    (None, {}) if it doesn't exist yet or can't be read (never raises -
+    layout introspection failing must not fail the ingestion run).
+    """
+    try:
+        row = (
+            spark.sql(f"DESCRIBE DETAIL {full_name}")
+            .select("clusteringColumns", "properties")
+            .collect()[0]
+        )
+        return row["clusteringColumns"], (row["properties"] or {})
+    except Exception:
+        return None, {}
+
+
+def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig, full_name: str):
+    """
+    Applies cluster_by/cluster_by_auto/table_properties (#57). No-ops
+    entirely when none of the three are configured, so existing
+    partition_by-based tables are completely unaffected.
+
+    DataFrameWriter's own .clusterBy() doesn't reliably map onto Delta's
+    V2 catalog write path in practice (raises DELTA_OPERATION_NOT_ALLOWED
+    when tried against this package's supported delta-spark versions), so
+    this goes through DeltaTableBuilder for creation and raw ALTER TABLE
+    statements to apply/restore settings on an existing table instead.
+
+    Also works around a real Delta quirk: an unqualified `mode("overwrite")
+    .saveAsTable(...)` performs an implicit REPLACE TABLE that silently
+    drops CLUSTER BY unless re-specified on that same write call (which
+    the broken .clusterBy() writer path can't do either) - the overwrite
+    branch in _write_core calls this again immediately after its write to
+    restore it, rather than relying on it surviving the write.
+    """
+    if not (config.cluster_by or config.cluster_by_auto or config.table_properties):
+        return
+
+    from delta.tables import DeltaTable
+
+    if not spark.catalog.tableExists(full_name):
+        creator = DeltaTable.createIfNotExists(spark).tableName(full_name).addColumns(df.schema)
+        if config.cluster_by:
+            creator = creator.clusterBy(*config.cluster_by)
+        elif config.partition_by:
+            creator = creator.partitionedBy(*config.partition_by)
+        for key, value in (config.table_properties or {}).items():
+            creator = creator.property(key, value)
+        creator.execute()
+
+    current_cluster_cols, current_props = _describe_current_layout(spark, full_name)
+
+    if config.cluster_by and current_cluster_cols != list(config.cluster_by):
+        cols = ", ".join(f"`{c}`" for c in config.cluster_by)
+        spark.sql(f"ALTER TABLE {full_name} CLUSTER BY ({cols})")
+        if current_cluster_cols is not None:
+            logger.warning(
+                "Cluster-by columns changed for %s: %s -> %s",
+                full_name, current_cluster_cols, config.cluster_by,
+            )
+
+    if config.cluster_by_auto:
+        try:
+            spark.sql(f"ALTER TABLE {full_name} CLUSTER BY AUTO")
+        except Exception as exc:
+            logger.warning(
+                "cluster_by_auto=True but this engine doesn't support CLUSTER BY AUTO "
+                "(expected outside Databricks Runtime, which manages predictive "
+                "optimization for AUTO-clustered tables): %s", exc,
+            )
+
+    changed_props = {
+        k: v for k, v in (config.table_properties or {}).items()
+        if current_props.get(k) != v
+    }
+    if changed_props:
+        props_clause = ", ".join(f"'{k}' = '{v}'" for k, v in changed_props.items())
+        spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
+        logger.warning("Table properties changed for %s: %s", full_name, changed_props)
+
+
 def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     schema_ref = f"{config.catalog}.{config.schema_name}" if config.catalog else config.schema_name
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 
     full_name = config.full_table_name
+    _ensure_liquid_clustering_and_properties(spark, df, config, full_name)
+
     writer = df.write.format("delta")
 
     if config.merge_schema:
@@ -134,6 +218,14 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
 
     elif config.write_mode == "overwrite":
         writer.mode("overwrite").saveAsTable(full_name)
+        if config.cluster_by:
+            # An unqualified overwrite performs an implicit REPLACE TABLE
+            # that silently drops CLUSTER BY - verified empirically, not
+            # just a defensive guess. Restore it immediately (a cheap,
+            # metadata-only ALTER) so the table is never left unclustered
+            # between runs.
+            cols = ", ".join(f"`{c}`" for c in config.cluster_by)
+            spark.sql(f"ALTER TABLE {full_name} CLUSTER BY ({cols})")
 
     elif config.write_mode == "merge":
         from delta.tables import DeltaTable

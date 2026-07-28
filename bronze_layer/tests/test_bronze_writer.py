@@ -184,3 +184,117 @@ def test_add_audit_columns_falls_back_to_source_path_without_lineage(spark, capl
     rows = result.collect()
     assert all(r[cfg.audit_source_file_col] == cfg.source_path for r in rows)
     assert any("_input_file_name" in rec.message for rec in caplog.records)
+
+
+def _layout(spark, table):
+    """(clusteringColumns, properties) for an already-written table - see #57."""
+    row = spark.sql(f"DESCRIBE DETAIL {_table(table)}").select("clusteringColumns", "properties").collect()[0]
+    return row["clusteringColumns"], (row["properties"] or {})
+
+
+def test_append_creates_liquid_clustered_table(spark):
+    table = f"bw_cluster_append_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", cluster_by=["id"])
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+
+    cluster_cols, _ = _layout(spark, table)
+    assert cluster_cols == ["id"]
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_overwrite_preserves_clustering_across_runs(spark):
+    """
+    Regression test for a real Delta quirk found while implementing #57:
+    an unqualified mode("overwrite").saveAsTable(...) performs an implicit
+    REPLACE TABLE that silently drops CLUSTER BY unless restored - verified
+    empirically against this package's delta-spark version. Clustering
+    must still be in place after every overwrite run, not just the first.
+    """
+    table = f"bw_cluster_overwrite_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="overwrite", cluster_by=["id"])
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    cluster_cols, _ = _layout(spark, table)
+    assert cluster_cols == ["id"], "clustering must survive the first overwrite"
+
+    write_bronze(spark, spark.createDataFrame([(3, "c")], ["id", "name"]), cfg)
+    cluster_cols, _ = _layout(spark, table)
+    assert cluster_cols == ["id"], "clustering must survive a second overwrite too"
+    assert spark.read.table(_table(table)).count() == 1
+
+
+def test_merge_creates_liquid_clustered_table(spark):
+    table = f"bw_cluster_merge_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        cluster_by=["id"], dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    cluster_cols, _ = _layout(spark, table)
+    assert cluster_cols == ["id"]
+
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated"), (3, "c")], ["id", "name"]), cfg)
+    cluster_cols, _ = _layout(spark, table)
+    assert cluster_cols == ["id"], "clustering must survive a subsequent merge too"
+
+
+def test_table_properties_applied_at_creation(spark):
+    table = f"bw_props_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table, write_mode="append",
+        table_properties={"delta.enableChangeDataFeed": "true"},
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+
+
+def test_table_properties_altered_when_config_changes(spark):
+    table = f"bw_props_drift_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", table_properties={"delta.enableChangeDataFeed": "true"})
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    cfg2 = _cfg(
+        table, write_mode="append",
+        table_properties={"delta.enableChangeDataFeed": "true", "delta.logRetentionDuration": "interval 60 days"},
+    )
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg2)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+    assert props.get("delta.logRetentionDuration") == "interval 60 days"
+
+
+def test_cluster_by_alters_existing_table_on_drift(spark, caplog):
+    table = f"bw_cluster_drift_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", cluster_by=["id"])
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+    assert _layout(spark, table)[0] == ["id"]
+
+    cfg2 = _cfg(table, write_mode="append", cluster_by=["name"])
+    with caplog.at_level("WARNING"):
+        write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg2)
+
+    assert _layout(spark, table)[0] == ["name"]
+    assert any("Cluster-by columns changed" in rec.message for rec in caplog.records)
+
+
+def test_cluster_by_auto_degrades_gracefully_when_unsupported(spark, caplog):
+    """
+    CLUSTER BY AUTO is a Databricks Runtime-only SQL extension - verified
+    it isn't parseable against this package's supported delta-spark
+    versions when run outside Databricks Runtime. The write itself must
+    still succeed; only a WARNING should be logged, never a hard failure.
+    """
+    table = f"bw_cluster_auto_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", cluster_by_auto=True)
+
+    with caplog.at_level("WARNING"):
+        write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    assert spark.read.table(_table(table)).count() == 1
+    assert any("cluster_by_auto=True" in rec.message for rec in caplog.records)

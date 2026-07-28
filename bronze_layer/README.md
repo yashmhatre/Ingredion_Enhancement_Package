@@ -219,6 +219,51 @@ configured - this package does not manage auth.
   `DuplicateMergeKeyError` naming the duplicated key(s) rather than
   silently deduping or hitting Delta's cryptic error.
 
+## Table layout: liquid clustering vs. partition_by
+
+`partition_by` (hive-style partitioning) is effectively legacy for new
+Delta tables. Prefer **liquid clustering**:
+
+- `cluster_by: ["col", ...]` - explicit clustering columns.
+- `cluster_by_auto: true` - `CLUSTER BY AUTO`, letting Databricks'
+  predictive optimization pick clustering keys automatically. **This is a
+  Databricks Runtime-only SQL extension** - it isn't parseable against
+  open-source/local Delta at all (verified against this package's
+  supported delta-spark versions), so outside Databricks Runtime it logs
+  a `WARNING` and the write still succeeds unclustered rather than
+  failing the run.
+- `partition_by` remains fully supported for existing hive-partitioned
+  tables (backward compatible), but is discouraged for new ones.
+  `cluster_by`/`cluster_by_auto` and `partition_by` are mutually
+  exclusive - setting both raises a `ValueError` at config construction.
+
+`table_properties: {"delta.enableChangeDataFeed": "true", ...}` passes
+through to the table (e.g. for CDF, retention, or other `delta.*`
+settings) - applied at creation, and re-applied via `ALTER TABLE ... SET
+TBLPROPERTIES` if a later run's config no longer matches what's already
+on the table.
+
+Both `cluster_by` and `table_properties` are applied via `DeltaTable`'s
+builder API and raw `ALTER TABLE` statements rather than
+`DataFrameWriter`'s own `.clusterBy()`, which doesn't reliably map onto
+Delta's table-creation path for this package's supported delta-spark
+versions. One quirk this works around: an unqualified
+`mode("overwrite")` write performs an implicit `REPLACE TABLE` that
+silently drops `CLUSTER BY` unless it's restored immediately afterward -
+verified empirically, not just a defensive guess - so `write_mode:
+overwrite` re-applies clustering via a cheap metadata-only `ALTER TABLE`
+right after every overwrite. `append` and `merge` don't have this
+problem - clustering persists across those write modes without any
+extra step.
+
+**Predictive optimization** (automatic `OPTIMIZE`/`VACUUM` for
+Unity-Catalog-managed tables) is an account/metastore-level setting,
+enabled once by a workspace admin - this package doesn't try to manage
+it, only documents it as the recommended companion to `cluster_by_auto`.
+There's currently no table-lifecycle management (`OPTIMIZE`, `VACUUM`,
+retention policies) in this package beyond what `table_properties` and
+predictive optimization already cover.
+
 ## Audit columns (per-row lineage)
 
 When `add_audit_columns: true` (default), every load adds:
@@ -312,6 +357,11 @@ merging for subfolders - see the Directory ingestion section above.
 
 **Run-level audit trail.** Every ingestion path writes one audit record
 per run, success or failure - see above.
+
+**Table layout.** Liquid clustering (`cluster_by`/`cluster_by_auto`) is
+the recommended replacement for `partition_by` on new tables, plus
+`table_properties` passthrough for CDF/retention/other `delta.*`
+settings - see the "Table layout" section above.
 
 **Logging.** All pipeline stages log through `bronze_ingest.logging_utils`,
 which shows up in Databricks driver/job-run logs. Get the same logger in your

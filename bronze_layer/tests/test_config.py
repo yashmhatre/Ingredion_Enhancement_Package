@@ -57,3 +57,24 @@ def test_full_table_name_and_quarantine_name():
 def test_from_dict_ignores_unknown_keys():
     cfg = IngestionConfig.from_dict({"source_path": "s3://x", "table": "t", "not_a_real_field": 123})
     assert cfg.table == "t"
+
+
+def test_cluster_by_and_partition_by_mutually_exclusive():
+    with pytest.raises(ValueError):
+        IngestionConfig(source_path="s3://x", table="t", partition_by=["date"], cluster_by=["id"])
+    with pytest.raises(ValueError):
+        IngestionConfig(source_path="s3://x", table="t", partition_by=["date"], cluster_by_auto=True)
+    # should not raise - only one of the two layout strategies set
+    IngestionConfig(source_path="s3://x", table="t", partition_by=["date"])
+    IngestionConfig(source_path="s3://x", table="t", cluster_by=["id"])
+    IngestionConfig(source_path="s3://x", table="t", cluster_by_auto=True)
+
+
+def test_cluster_by_and_cluster_by_auto_mutually_exclusive():
+    with pytest.raises(ValueError):
+        IngestionConfig(source_path="s3://x", table="t", cluster_by=["id"], cluster_by_auto=True)
+
+
+def test_cluster_by_empty_list_rejected():
+    with pytest.raises(ValueError):
+        IngestionConfig(source_path="s3://x", table="t", cluster_by=[])
