@@ -34,6 +34,24 @@ def test_enforce_quality_raises_when_fail_on_error(spark):
         enforce_quality(df, cfg)
 
 
+def test_data_quality_error_carries_bad_count(spark):
+    """#50: the failure audit row needs to recover how many rows failed -
+    DataQualityError must carry bad_count when enforce_quality raises it."""
+    df = _df(spark)
+    cfg = IngestionConfig(source_path="x", table="t", required_columns=["name"], fail_on_quality_error=True)
+    with pytest.raises(DataQualityError) as exc_info:
+        enforce_quality(df, cfg)
+    assert exc_info.value.bad_count == 1
+
+
+def test_missing_required_column_error_has_no_bad_count(spark):
+    df = _df(spark)
+    cfg = IngestionConfig(source_path="x", table="t", required_columns=["does_not_exist"], fail_on_quality_error=True)
+    with pytest.raises(DataQualityError) as exc_info:
+        enforce_quality(df, cfg)
+    assert exc_info.value.bad_count is None
+
+
 def test_enforce_quality_quarantines_when_not_failing(spark):
     df = _df(spark)
     cfg = IngestionConfig(source_path="x", table="t", required_columns=["name"], fail_on_quality_error=False)

@@ -3,7 +3,7 @@ import uuid
 import pytest
 
 from bronze_ingest.config import IngestionConfig
-from bronze_ingest.audit import audited_run, AUDIT_SCHEMA
+from bronze_ingest.audit import audited_run, tag_failure_stage, AUDIT_SCHEMA
 
 
 def _cfg(spark, tmp_path, table_suffix, **overrides):
@@ -101,6 +101,51 @@ def test_audit_schema_matches_documented_fields():
     field_names = {f.name for f in AUDIT_SCHEMA.fields}
     expected = {
         "run_id", "table", "status", "row_count", "quarantined_row_count",
+        "failure_stage", "schema_fingerprint", "schema_changed",
         "started_at", "finished_at", "error_message", "source_path",
     }
-    assert field_names == expected, "audit schema drifted from the documented 9-field design"
+    assert field_names == expected, "audit schema drifted from the documented 12-field design"
+
+
+def test_audited_run_failure_recovers_bad_count_and_stage_from_exception(spark, tmp_path):
+    """#50: a DataQualityError-style failure should populate
+    quarantined_row_count and failure_stage on the failed audit row,
+    instead of leaving them None."""
+    cfg = _cfg(spark, tmp_path, "quality_failure")
+
+    class _FakeQualityError(Exception):
+        pass
+
+    with pytest.raises(_FakeQualityError):
+        with audited_run(spark, cfg, source_path=cfg.source_path) as audit:
+            exc = _FakeQualityError("17 rows failed data quality checks")
+            exc.bad_count = 17
+            tag_failure_stage(exc, "quality")
+            raise exc
+
+    row = spark.read.table(cfg.resolved_audit_table).collect()[0]
+    assert row["status"] == "failed"
+    assert row["quarantined_row_count"] == 17
+    assert row["failure_stage"] == "quality"
+
+
+def test_tag_failure_stage_does_not_overwrite_existing_stage(spark):
+    exc = Exception("boom")
+    tag_failure_stage(exc, "read")
+    tag_failure_stage(exc, "write")  # simulates re-raising through a nested handler
+    assert exc.failure_stage == "read"
+
+
+def test_audited_run_success_records_schema_fingerprint(spark, tmp_path):
+    """#51: schema_fingerprint/schema_changed populated on success should
+    land in the run-level audit row, not just the separate registry table."""
+    cfg = _cfg(spark, tmp_path, "schema_fp")
+
+    with audited_run(spark, cfg, source_path=cfg.source_path) as audit:
+        audit["row_count"] = 5
+        audit["schema_fingerprint"] = "abc123"
+        audit["schema_changed"] = True
+
+    row = spark.read.table(cfg.resolved_audit_table).collect()[0]
+    assert row["schema_fingerprint"] == "abc123"
+    assert row["schema_changed"] is True

@@ -104,3 +104,54 @@ def test_registry_schema_matches_documented_fields():
         "table_name", "source_path", "schema_fingerprint",
         "schema_json", "first_seen_at", "last_updated_at",
     }
+
+
+def test_record_schema_returns_fingerprint_and_unchanged_on_first_registration(spark, tmp_path):
+    """#51: callers (e.g. the run-level audit trail) need (fingerprint,
+    changed) back - changed=False on first-ever registration, since
+    there's nothing to have drifted from."""
+    cfg = _cfg(tmp_path, "reg_return_first")
+    fingerprint, changed = record_schema(spark, cfg, _df(spark, ["id", "name"]))
+    assert fingerprint == _fingerprint(_df(spark, ["id", "name"]))
+    assert changed is False
+
+
+def test_record_schema_returns_unchanged_false_on_stable_schema(spark, tmp_path):
+    cfg = _cfg(tmp_path, "reg_return_stable")
+    df = _df(spark, ["id", "name"])
+    record_schema(spark, cfg, df)
+
+    fingerprint, changed = record_schema(spark, cfg, df)
+    assert fingerprint == _fingerprint(df)
+    assert changed is False
+
+
+def test_record_schema_returns_changed_true_on_drift(spark, tmp_path):
+    cfg = _cfg(tmp_path, "reg_return_drift")
+    record_schema(spark, cfg, _df(spark, ["id", "name"]))
+
+    fingerprint, changed = record_schema(spark, cfg, _df(spark, ["id", "name", "email"]))
+    assert fingerprint == _fingerprint(_df(spark, ["id", "name", "email"]))
+    assert changed is True
+
+
+def test_record_schema_disabled_returns_none_false(spark, tmp_path):
+    cfg = _cfg(tmp_path, "reg_return_disabled", enable_schema_registry=False)
+    fingerprint, changed = record_schema(spark, cfg, _df(spark, ["id"]))
+    assert fingerprint is None
+    assert changed is False
+
+
+def test_record_schema_failure_returns_none_false(spark, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, "reg_return_failure")
+
+    import bronze_ingest.schema_registry as sr
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated registry failure")
+
+    monkeypatch.setattr(sr, "_write_row", boom)
+
+    fingerprint, changed = sr.record_schema(spark, cfg, _df(spark, ["id"]))
+    assert fingerprint is None
+    assert changed is False

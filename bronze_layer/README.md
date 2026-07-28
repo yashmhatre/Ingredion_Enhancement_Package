@@ -128,6 +128,11 @@ of any single bronze table. Answers "did this run succeed, how many
 rows, how long did it take" without needing to inspect any specific
 table. See `bronze_ingest/audit.py`.
 
+A failed run's audit row still carries `quarantined_row_count` (recovered
+from the raised `DataQualityError`'s `bad_count`) and `failure_stage`
+(`read` | `quality` | `write`), so an operator can see *how many* rows
+failed and *at which stage* without parsing `error_message` text.
+
 ### Schema registry
 
 Every ingestion records its target table's current schema to a dedicated
@@ -145,6 +150,12 @@ DESCRIBE HISTORY <catalog>.<schema>._schema_registry
 Distinct from the audit trail: that records one row per *run*, this
 records one row per *table's schema state*. Registry failures never fail
 an ingestion run. See `bronze_ingest/schema_registry.py`.
+
+Every successful run also surfaces that same fingerprint check on its own
+run-level audit row (`schema_fingerprint`, `schema_changed`), so drift can
+be correlated with a specific run's row counts and duration without
+joining against the separate registry table. A `WARNING` is logged
+whenever the fingerprint changes from a previously-registered one.
 
 ## Handling nested JSON
 

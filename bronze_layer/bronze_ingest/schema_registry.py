@@ -19,6 +19,7 @@ it; nothing writes here but the pipeline.
 import hashlib
 import json
 from datetime import datetime, timezone
+from typing import Optional, Tuple
 
 from pyspark.sql import Row
 from pyspark.sql.types import (
@@ -114,7 +115,7 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
         )
 
 
-def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -> None:
+def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -> Tuple[Optional[str], bool]:
     """
     Records the current schema for config's target table, but only if it
     differs from what's already registered.
@@ -122,17 +123,24 @@ def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -
     The unchanged path costs one small read and zero writes - this is the
     cost-safety property that keeps per-run overhead negligible.
 
-    No-ops entirely when config.enable_schema_registry is False.
+    Returns (fingerprint, changed) so callers - notably the run-level audit
+    trail (#51) - can cheaply surface per-run schema drift without
+    re-deriving the fingerprint themselves. `changed` is True only when a
+    previously-registered fingerprint existed and differed from this run's;
+    False for the first-ever registration, for an unchanged schema, and
+    when the registry is disabled or the check itself fails (a registry
+    failure must never fail the ingestion run, so this always returns
+    rather than raising).
     """
     if not config.enable_schema_registry:
-        return
+        return None, False
 
     try:
         fingerprint = _fingerprint(df)
         current = _read_current_row(spark, config)
 
         if current is not None and current["schema_fingerprint"] == fingerprint:
-            return  # unchanged - nothing to write
+            return fingerprint, False  # unchanged - nothing to write
 
         now = datetime.now(timezone.utc)
         _write_row(spark, config, {
@@ -146,10 +154,13 @@ def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -
 
         if current is None:
             logger.info("Registered schema for %s (%s)", config.full_table_name, fingerprint)
-        else:
-            logger.info(
-                "Schema drift detected for %s: %s -> %s",
-                config.full_table_name, current["schema_fingerprint"], fingerprint,
-            )
+            return fingerprint, False
+
+        logger.warning(
+            "Schema drift detected for %s: %s -> %s",
+            config.full_table_name, current["schema_fingerprint"], fingerprint,
+        )
+        return fingerprint, True
     except Exception as exc:
         logger.warning("Schema registry check failed for %s: %s", config.full_table_name, exc)
+        return None, False

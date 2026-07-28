@@ -13,7 +13,7 @@ from .streaming_reader import read_json_stream, get_trigger_kwargs
 from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
 from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
-from .audit import audited_run
+from .audit import audited_run, tag_failure_stage
 from .schema_registry import record_schema
 
 
@@ -61,17 +61,27 @@ class BronzeIngestion:
                 self.config.full_table_name,
             )
 
-            good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
+            try:
+                good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
+            except Exception as exc:
+                tag_failure_stage(exc, "quality")
+                raise
             final_df = add_audit_columns(good_df, self.config)
 
             write_quarantine(self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config)
 
-            table_name = write_bronze(self.spark, final_df, self.config)
-            row_count = final_df.count()
+            try:
+                table_name = write_bronze(self.spark, final_df, self.config)
+                row_count = final_df.count()
+            except Exception as exc:
+                tag_failure_stage(exc, "write")
+                raise
 
             audit["row_count"] = row_count
             audit["quarantined_row_count"] = bad_count
-            record_schema(self.spark, self.config, final_df)
+            fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
+            audit["schema_fingerprint"] = fingerprint
+            audit["schema_changed"] = schema_changed
             logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
 
             return {
@@ -95,19 +105,33 @@ class BronzeIngestion:
         with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
             logger.info("Starting batch ingestion from %s -> %s", self.config.source_path, self.config.full_table_name)
 
-            raw_df = self.read()
+            try:
+                raw_df = self.read()
+            except Exception as exc:
+                tag_failure_stage(exc, "read")
+                raise
 
-            good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
+            try:
+                good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
+            except Exception as exc:
+                tag_failure_stage(exc, "quality")
+                raise
             final_df = add_audit_columns(good_df, self.config)
 
             write_quarantine(self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config)
 
-            table_name = write_bronze(self.spark, final_df, self.config)
-            row_count = final_df.count()
+            try:
+                table_name = write_bronze(self.spark, final_df, self.config)
+                row_count = final_df.count()
+            except Exception as exc:
+                tag_failure_stage(exc, "write")
+                raise
 
             audit["row_count"] = row_count
             audit["quarantined_row_count"] = bad_count
-            record_schema(self.spark, self.config, final_df)
+            fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
+            audit["schema_fingerprint"] = fingerprint
+            audit["schema_changed"] = schema_changed
             logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
 
             return {
@@ -145,15 +169,27 @@ class BronzeIngestion:
 
         def _process_batch(micro_batch_df, batch_id):
             with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
-                good_df, bad_df, bad_count = enforce_quality(micro_batch_df, self.config)
+                try:
+                    good_df, bad_df, bad_count = enforce_quality(micro_batch_df, self.config)
+                except Exception as exc:
+                    tag_failure_stage(exc, "quality")
+                    raise
                 final_df = add_audit_columns(good_df, self.config)
 
                 write_quarantine(self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config)
 
-                write_bronze_micro_batch(self.spark, final_df, batch_id, self.config)
+                try:
+                    write_bronze_micro_batch(self.spark, final_df, batch_id, self.config)
+                    row_count = final_df.count()
+                except Exception as exc:
+                    tag_failure_stage(exc, "write")
+                    raise
 
-                audit["row_count"] = final_df.count()
+                audit["row_count"] = row_count
                 audit["quarantined_row_count"] = bad_count
+                fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
+                audit["schema_fingerprint"] = fingerprint
+                audit["schema_changed"] = schema_changed
 
         query = (
             stream_df.writeStream
