@@ -2,7 +2,6 @@ import pytest
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.quality import enforce_quality, split_good_bad, DataQualityError
 
-
 def _df(spark):
     return spark.createDataFrame(
         [(1, "Alice"), (2, None), (3, "Carol")],

@@ -334,3 +334,63 @@ def test_folder_as_table_archives_files_with_folder_name_preserved(spark, json_t
     expected_path = os.path.join(write_dir, "processed", today, "orders", "order1.json")
     assert os.path.exists(expected_path)
     assert not os.path.exists(os.path.join(write_dir, "orders", "order1.json"))
+
+# ---- parallel archival tests ----
+
+def test_archive_files_parallel_preserves_input_order(json_test_dir):
+    write_dir, source_dir = json_test_dir
+    names = [f"file_{i}.json" for i in range(5)]
+    for n in names:
+        _write(write_dir, n, json.dumps({"x": 1}))
+    paths = [f"{source_dir}/{n}" for n in names]
+
+    results = di._archive_files_parallel(source_dir, paths)
+
+    # Order must match input despite concurrent execution - this is what
+    # keeps per-file error attribution correct downstream.
+    assert [fp for fp, _ in results] == paths
+    assert all(r["move_status"] == "moved" for _, r in results)
+
+
+def test_archive_files_parallel_empty_list(json_test_dir):
+    _, source_dir = json_test_dir
+    assert di._archive_files_parallel(source_dir, []) == []
+
+
+def test_archive_files_parallel_attributes_failures_correctly(json_test_dir, monkeypatch):
+    write_dir, source_dir = json_test_dir
+    names = [f"file_{i}.json" for i in range(4)]
+    for n in names:
+        _write(write_dir, n, json.dumps({"x": 1}))
+    paths = [f"{source_dir}/{n}" for n in names]
+
+    real_move = di._move_file
+
+    def selective_fail(source_dir, file_path, dest_subfolder, relative_subpath=""):
+        if "file_2.json" in file_path:
+            raise OSError("simulated move failure")
+        return real_move(source_dir, file_path, dest_subfolder, relative_subpath=relative_subpath)
+
+    monkeypatch.setattr(di, "_move_file", selective_fail)
+
+    results = di._archive_files_parallel(source_dir, paths)
+    by_path = dict(results)
+
+    # The failure must land on file_2 specifically, not bleed onto a
+    # neighbour - the real risk when results come back out of order.
+    assert by_path[f"{source_dir}/file_2.json"]["move_status"] == "failed_left_in_place"
+    for i in (0, 1, 3):
+        assert by_path[f"{source_dir}/file_{i}.json"]["move_status"] == "moved"
+
+
+def test_archive_files_parallel_preserves_folder_subpath(json_test_dir):
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/a.json", json.dumps({"x": 1}))
+    _write(write_dir, "orders/b.json", json.dumps({"x": 2}))
+    paths = [f"{source_dir}/orders/a.json", f"{source_dir}/orders/b.json"]
+
+    results = di._archive_files_parallel(source_dir, paths, relative_subpath="orders")
+
+    for _, r in results:
+        assert "/orders/" in r["move_detail"]
