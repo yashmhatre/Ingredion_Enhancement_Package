@@ -11,7 +11,7 @@ Checks that configured `required_columns` are non-null. Depending on
 
 from typing import Tuple, List, Optional
 
-from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import col, lit, expr
 
 from .config import IngestionConfig
 from .logging_utils import logger
@@ -92,6 +92,11 @@ def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
     is 0 - enforce_quality() already computed this count, so there's no
     need for a separate bad_df.rdd.isEmpty() probe (another full scan of
     the source) to re-derive information the caller already has.
+
+    Each row gets a stable `_quarantine_id` (UUID) - this is the anchor
+    quarantine replay (#60) uses to identify exactly which rows were
+    successfully re-promoted to bronze, so they can be removed from
+    quarantine precisely rather than by a best-effort content match.
     """
     if bad_df is None or bad_count == 0:
         return
@@ -102,6 +107,7 @@ def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
     quarantine_reason = lit("required_column_null")
     (
         bad_df.withColumn("_quarantine_reason", quarantine_reason)
+        .withColumn("_quarantine_id", expr("uuid()"))
         .write.format("delta")
         .mode("append")
         .option("mergeSchema", "true")

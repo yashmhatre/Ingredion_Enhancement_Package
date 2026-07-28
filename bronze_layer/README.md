@@ -296,6 +296,65 @@ These are separate from the run-level audit trail described above —
 per-row columns describe individual rows within a table; the audit
 trail describes the run itself.
 
+## Quarantine replay (operational runbook)
+
+Quarantine without a way back is a graveyard: once an upstream source or
+a quality rule is fixed, someone has to hand-craft reprocessing. Two
+entry points close that loop, in `bronze_ingest.replay` (also exported
+from the top-level package):
+
+```python
+from bronze_ingest import IngestionConfig, reprocess_quarantine, reprocess_quarantined_files
+
+# Row replay: re-run quarantined rows through the CURRENT quality gate.
+config = IngestionConfig.load("/Volumes/main/configs/orders_bronze.yaml")
+result = reprocess_quarantine(spark, config)
+# {'table': 'bronze.orders_raw', 'replayed_row_count': 12,
+#  'still_quarantined_row_count': 3, 'replay_batch_id': 'replay-20260728T...'}
+
+# Optionally scope to a specific original run or time window:
+reprocess_quarantine(spark, config, batch_id="20260101T090000000000Z")
+reprocess_quarantine(spark, config, since="2026-01-01T00:00:00Z")
+
+# File replay: move quarantined files back so the next directory
+# ingestion run picks them up (does not ingest them directly).
+reprocess_quarantined_files(spark, source_dir="/Volumes/main/default/raw_json/")
+```
+
+**Row replay** (`reprocess_quarantine`) reads `{table}_quarantine`, drops
+`_quarantine_reason` and the stale `_ingested_at`/`_batch_id` (the rule
+that quarantined a row may have changed since), and re-runs the rows
+through `required_columns` as currently configured. Rows that now pass
+are written to the bronze table with a fresh `_batch_id` of the form
+`replay-<timestamp>` (so replayed rows are identifiable in the bronze
+table itself) and removed from quarantine; rows that still fail are left
+quarantined, untouched. `_source_file` is preserved as-is throughout -
+it's already genuine original per-row lineage, not regenerated.
+
+Idempotent on the success path: re-running finds nothing left matching
+the filter once a replay has succeeded, so it re-promotes nothing.
+Cross-table transactions aren't available in Delta, so the bronze write
+happens before the quarantine delete; if the delete itself then fails
+after a successful write, the affected `_quarantine_id`(s) are logged
+clearly so they can be reconciled manually rather than silently risking
+a duplicate promotion on the next replay.
+
+Every replay run writes one row to the same run-level audit table as
+normal ingestion, with a distinguishable `status` of `success_replay` -
+query the audit table to see replay runs separately from normal ones.
+
+**File replay** (`reprocess_quarantined_files`) moves files out of
+`quarantine_files/` back into `source_dir`, clearing any leftover
+retry-state entry so the file gets a fresh set of attempts. It doesn't
+ingest directly - the next `ingest_directory_to_bronze()` run picks the
+file up normally, reusing all the usual per-file failure isolation,
+archival, and retry-limit logic for free. Pass `pattern` (an fnmatch-style
+glob) to restore only matching files.
+
+A notebook entrypoint for both (`notebooks/run_quarantine_replay.py`) is
+provided for running replay as an on-demand or scheduled Databricks Job
+task, separate from the normal ingestion schedule.
+
 ## Package layout
 
 ```
@@ -309,12 +368,15 @@ bronze_layer/
     bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
     directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
     audit.py               # run-level audit trail (audited_run context manager)
+    schema_registry.py      # schema fingerprint + drift detection (one row per table)
+    replay.py              # quarantine replay - reprocess_quarantine() / reprocess_quarantined_files()
     retry.py              # exponential-backoff retry decorator
     logging_utils.py       # structured logging
     pipeline.py           # BronzeIngestion orchestrator (run() / run_streaming() / run_on_dataframe())
   notebooks/
     run_ingestion.py             # parameterized Databricks notebook entrypoint (widgets)
     run_directory_ingestion.py    # directory/multi-file ingestion entrypoint
+    run_quarantine_replay.py       # quarantine replay entrypoint (row + file replay)
     validate_json_reader.py        # ADLS-based validation notebook (not part of pytest)
   docs/
     architecture.md                    # target-state architecture (multi-format + async AI layer)
@@ -376,6 +438,11 @@ the recommended replacement for `partition_by` on new tables, plus
 `table_properties` passthrough for CDF/retention/other `delta.*`
 settings - see the "Table layout" section above.
 
+**Quarantine replay.** `reprocess_quarantine()` and
+`reprocess_quarantined_files()` re-promote recoverable rows/files after a
+source or quality rule is fixed, with full lineage and idempotent reruns
+- see the "Quarantine replay" section above.
+
 **Logging.** All pipeline stages log through `bronze_ingest.logging_utils`,
 which shows up in Databricks driver/job-run logs. Get the same logger in your
 own code with `from bronze_ingest import get_logger`.
@@ -388,9 +455,9 @@ parameterized entrypoint the job calls - point `config_path` at a config
 file per table/source rather than duplicating the notebook.
 
 **Testing.** `tests/` has a pytest suite covering config validation,
-quality validation, directory ingestion, archival, retry-limit quarantine, folder-as-table merging, and run-level audit
-archival, retry-limit quarantine, folder-as-table merging, and the
-run-level audit trail, using a local `SparkSession` (Delta-enabled) - no
+quality validation, directory ingestion, archival, retry-limit
+quarantine, folder-as-table merging, the run-level audit trail, and
+quarantine replay, using a local `SparkSession` (Delta-enabled) - no
 Databricks connection needed. The suite is also environment-aware and
 runs correctly directly on a Databricks cluster. Runs automatically via
 GitHub Actions CI on every PR. Run locally with:

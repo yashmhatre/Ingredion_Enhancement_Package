@@ -191,17 +191,37 @@ def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> 
         files = files[:max_files]
     return files
 
+def _move_file_direct(src_path: str, dest_path: str) -> None:
+    """
+    Moves a file from src_path to dest_path directly (both absolute),
+    using dbutils.fs.mv when available (works on all Databricks compute,
+    including UC Volumes and cloud paths), falling back to shutil.move for
+    local/pytest paths. Raises on failure - caller decides how to handle
+    it; this function does not swallow errors.
+    """
+    try:
+        import IPython
+        dbutils = IPython.get_ipython().user_ns["dbutils"]
+        dbutils.fs.mv(src_path, dest_path)
+    except Exception:
+        # No dbutils available (not installed, no active kernel, or missing
+        # from user_ns) - local/pytest environment. Broad catch is
+        # deliberate: any failure to obtain a working dbutils should fall
+        # through to the local move below.
+        local_src = src_path[len("file://"):] if src_path.startswith("file://") else src_path
+        local_dest = dest_path[len("file://"):] if dest_path.startswith("file://") else dest_path
+        os.makedirs(os.path.dirname(local_dest), exist_ok=True)
+        shutil.move(local_src, local_dest)
+
+
 def _move_file(source_dir: str, file_path: str, dest_subfolder: str, relative_subpath: str = "") -> str:
     """
     Moves a single file from its current location into `dest_subfolder`
-    (relative to source_dir), using dbutils.fs.mv when available (works on
-    all Databricks compute, including UC Volumes and cloud paths), falling
-    back to shutil.move for local/pytest paths.
-
-    relative_subpath, if given (e.g. "orders"), is preserved between
-    dest_subfolder and the filename - used for files ingested as part of a
-    folder-as-table unit, so processed/{date}/orders/order1.json keeps its
-    folder context instead of flattening to processed/{date}/order1.json.
+    (relative to source_dir). relative_subpath, if given (e.g. "orders"),
+    is preserved between dest_subfolder and the filename - used for files
+    ingested as part of a folder-as-table unit, so
+    processed/{date}/orders/order1.json keeps its folder context instead
+    of flattening to processed/{date}/order1.json.
 
     Returns the destination path. Raises on failure - caller decides how
     to handle it; this function does not swallow errors.
@@ -209,21 +229,7 @@ def _move_file(source_dir: str, file_path: str, dest_subfolder: str, relative_su
     filename = file_path.rsplit("/", 1)[-1]
     subpath = f"{relative_subpath.strip('/')}/" if relative_subpath else ""
     dest_path = f"{source_dir.rstrip('/')}/{dest_subfolder}/{subpath}{filename}"
-
-    try:
-        import IPython
-        dbutils = IPython.get_ipython().user_ns["dbutils"]
-        dbutils.fs.mv(file_path, dest_path)
-    except Exception:
-        # No dbutils available (not installed, no active kernel, or missing
-        # from user_ns) - local/pytest environment. Broad catch is
-        # deliberate: any failure to obtain a working dbutils should fall
-        # through to the local move below.
-        local_src = file_path[len("file://"):] if file_path.startswith("file://") else file_path
-        local_dest = dest_path[len("file://"):] if dest_path.startswith("file://") else dest_path
-        os.makedirs(os.path.dirname(local_dest), exist_ok=True)
-        shutil.move(local_src, local_dest)
-
+    _move_file_direct(file_path, dest_path)
     return dest_path
 
 

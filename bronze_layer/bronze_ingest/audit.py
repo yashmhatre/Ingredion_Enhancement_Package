@@ -86,6 +86,38 @@ def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
         )
 
 
+def record_replay_run(
+    spark, config: IngestionConfig, *, status: str,
+    row_count, quarantined_row_count, source_path: str = None,
+) -> None:
+    """
+    Writes a single run-level audit row for a quarantine-replay operation
+    (see replay.py, #60) - reuses the same audit table/schema as normal
+    ingestion runs, but with a distinguishable status (e.g.
+    "success_replay") so replays are queryable separately from normal
+    ingestion runs without a dedicated table. No-ops entirely if
+    config.enable_run_audit is False, matching audited_run().
+    """
+    if not config.enable_run_audit:
+        return
+
+    now = datetime.now(timezone.utc)
+    _write_audit_row(spark, config, {
+        "run_id": str(uuid.uuid4()),
+        "table": config.full_table_name,
+        "status": status,
+        "row_count": row_count,
+        "quarantined_row_count": quarantined_row_count,
+        "failure_stage": None,
+        "schema_fingerprint": None,
+        "schema_changed": None,
+        "started_at": now,
+        "finished_at": now,
+        "error_message": None,
+        "source_path": source_path or config.source_path,
+    })
+
+
 @contextmanager
 def audited_run(spark, config: IngestionConfig, source_path: str = None):
     """
