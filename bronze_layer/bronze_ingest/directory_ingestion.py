@@ -467,6 +467,7 @@ def ingest_directory_to_bronze(
         max_files: Optional[int] = None,
         stop_on_error: bool = False,
         max_ingestion_retries: int = 3,
+        allow_overwrite_in_directory_mode: bool = False,
         base_config: Optional[Dict[str, Any]] = None,
         **config_overrides,
     ) -> List[Dict[str, Any]]:
@@ -484,6 +485,17 @@ def ingest_directory_to_bronze(
         stop_on_error: if True, the first failing file raises and stops the
             run; if False (default), failures are recorded per-file and the
             remaining files still load.
+        allow_overwrite_in_directory_mode: write_mode="overwrite" is
+            rejected for directory/folder-as-table ingestion by default -
+            each newly-discovered file (or folder union) is written to its
+            table, and a fresh file lands under the same name on every
+            future run since successfully-ingested files are archived out
+            of source_dir. With overwrite, each such run would silently
+            replace that table's entire contents, so the table only ever
+            holds the most recently ingested file's rows - defeating the
+            point of incrementally discovering files over time. Set True
+            only if you genuinely want full-refresh-per-run semantics
+            (e.g. a folder that's always fully repopulated before a run).
         base_config: optional dict of IngestionConfig fields shared by every
             file (catalog, schema_name, flatten_mode, required_columns, ...).
         **config_overrides: same as base_config, as keyword args (take
@@ -503,6 +515,16 @@ def ingest_directory_to_bronze(
     for forbidden in ("source_path", "table"):
         if forbidden in shared:
             raise ValueError(f"{forbidden!r} is derived per file and cannot be set for directory ingestion")
+
+    if shared.get("write_mode") == "overwrite" and not allow_overwrite_in_directory_mode:
+        raise ValueError(
+            "write_mode='overwrite' is not allowed for directory/folder-as-table ingestion "
+            "by default - each newly-discovered file (or folder union) would silently replace "
+            "its table's entire contents on every run, so the table would only ever hold the "
+            "most recently ingested file's rows. Use write_mode='append' or 'merge' instead, "
+            "or pass allow_overwrite_in_directory_mode=True if you specifically want "
+            "full-refresh-per-run semantics."
+        )
 
     files = list_json_files(spark, source_dir, max_files=max_files)
     subfolders = list_subfolders(spark, source_dir)

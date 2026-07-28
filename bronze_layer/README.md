@@ -82,6 +82,19 @@ loads each one into its own bronze table. One bad file is logged and
 reported in the results list, but does not stop the remaining files from
 loading (`stop_on_error=False`, the default).
 
+`write_mode: overwrite` is rejected by default for both per-file and
+folder-as-table directory ingestion (raises `ValueError` before touching
+any file) - directory ingestion's whole point is discovering files
+incrementally over time, and each successfully-ingested file is archived
+out of `source_dir`, so a fresh same-named file lands under the same
+derived table name on every future run. With `overwrite`, each such run
+would silently replace that table's entire contents, leaving only the
+most recently ingested file's rows. Use `write_mode: append` or `merge`
+instead - `overwrite` is for single-source, full-refresh tables only. If
+you genuinely want directory ingestion to fully replace a table's
+contents with whatever files currently exist on each run, pass
+`allow_overwrite_in_directory_mode=True` explicitly.
+
 ### Folder-as-table (subfolder merging)
 
 Any subfolder found directly inside `source_dir` (one level deep) is
