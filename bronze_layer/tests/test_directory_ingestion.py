@@ -495,3 +495,78 @@ def test_directory_ingestion_default_write_mode_is_unaffected(spark, json_test_d
     results = di.ingest_directory_to_bronze(spark, source_dir, catalog=None, schema_name="default")
 
     assert results[0]["status"] == "success"
+
+# ---- per_file_config (#145) ----
+
+def test_per_file_config_is_applied_to_the_named_file(spark, json_test_dir, monkeypatch):
+    """The deployed job sets a per-file required_columns rule. Before this was
+    a real parameter it was absorbed by **config_overrides and dropped by
+    IngestionConfig.from_dict's unknown-key filter - the rule never ran and
+    the run reported success."""
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "strict.json", json.dumps({"id": 1}))          # missing order_id
+    _write(write_dir, "loose.json", json.dumps({"id": 2}))
+
+    seen = {}
+
+    from bronze_ingest.pipeline import BronzeIngestion
+
+    def fake_run(self):
+        seen[self.config.table] = list(self.config.required_columns)
+        return {"table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0}
+
+    monkeypatch.setattr(BronzeIngestion, "run", fake_run)
+
+    di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default",
+        per_file_config={"strict.json": {"required_columns": ["order_id"]}},
+    )
+
+    assert seen["strict_bronze"] == ["order_id"]   # override applied
+    assert seen["loose_bronze"] == []              # others untouched
+
+
+def test_unknown_config_override_raises_instead_of_being_dropped(spark, json_test_dir):
+    """The root cause of #145: unknown keys vanished silently. A misspelled
+    or unsupported field must fail loudly, not produce a successful-looking
+    run with the setting ignored."""
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.json", json.dumps({"id": 1}))
+
+    with pytest.raises(ValueError, match="Unknown IngestionConfig field"):
+        di.ingest_directory_to_bronze(
+            spark, source_dir, catalog=None, schema_name="default",
+            not_a_real_field=123,
+        )
+
+
+def test_per_file_config_rejects_unknown_fields(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.json", json.dumps({"id": 1}))
+
+    with pytest.raises(ValueError, match="unknown IngestionConfig field"):
+        di.ingest_directory_to_bronze(
+            spark, source_dir, catalog=None, schema_name="default",
+            per_file_config={"orders.json": {"nope": 1}},
+        )
+
+
+def test_per_file_config_warns_when_it_matches_nothing(spark, json_test_dir, monkeypatch, caplog):
+    """An override naming a file that was never discovered is a configured
+    rule that will never run - the same silent-no-op #145 was about."""
+    import logging
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.json", json.dumps({"id": 1}))
+
+    from bronze_ingest.pipeline import BronzeIngestion
+    monkeypatch.setattr(BronzeIngestion, "run", lambda self: {
+        "table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0})
+
+    with caplog.at_level(logging.WARNING):
+        di.ingest_directory_to_bronze(
+            spark, source_dir, catalog=None, schema_name="default",
+            per_file_config={"typo_in_name.json": {"required_columns": ["x"]}},
+        )
+
+    assert "matched no discovered file" in caplog.text
+    assert "typo_in_name.json" in caplog.text
