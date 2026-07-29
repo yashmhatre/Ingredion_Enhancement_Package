@@ -628,14 +628,27 @@ and per-environment audit without paying for multiple workspaces.
 
 | Target | Catalog | Runs as | Schedules | Purpose |
 |---|---|---|---|---|
-| `dev` | `ingredion_en_dev` | the deploying user | auto-paused | Only what local Delta can't exercise — UC Volumes, tags, Auto Loader |
+| `dev` | `ingredion_en_dev` | the deploying user | auto-paused | Full development environment on Databricks |
 | `staging` | `ingredion_en_staging` | staging service principal | as configured | Pre-production validation |
 | `prod` | `ingredion_en_prod` | prod service principal | as configured | Production |
 
-**Local pytest is the real development loop.** The suite runs against local
-Spark + Delta with no Databricks at all, so day-to-day work costs nothing.
-The `dev` *target* exists for the narrow set of behavior local Delta cannot
-reproduce, not for ordinary development.
+**All three environments are real Databricks environments.** `dev` is a
+deployed environment like the others — same code path, same bundle, same UC
+semantics — not a fallback for things local Delta can't do. Developing
+against it means UC-only behavior (Volumes, tags, Auto Loader,
+`information_schema`) is exercised continuously rather than first meeting
+production.
+
+Local pytest remains the **fast inner loop**: 130 tests against local Spark +
+Delta in ~3 minutes with no workspace round-trip, which is where logic bugs
+should be caught. It is a complement to the `dev` environment, not a
+substitute for it — local Delta cannot reproduce the UC surface, so green
+tests alone never prove a deploy will work.
+
+Because `dev` uses `mode: development`, the bundle prefixes every resource
+with the deploying user's name and force-pauses schedules. Multiple people
+can deploy `dev` concurrently without colliding, and nothing runs on a timer
+by accident.
 
 ```bash
 databricks bundle deploy -t dev        # deploys as you, schedules paused
@@ -651,6 +664,28 @@ rather than silently running under a human identity or sending alerts
 nowhere. In `dev`, alerts go to `${workspace.current_user.userName}` — the
 person who deployed — so no shared inbox collects noise from someone else's
 experiment.
+
+### Authentication
+
+The CLI is the tool; OAuth is how it authenticates. They aren't alternatives —
+the CLI uses OAuth. What matters is **which** OAuth flow, and that depends on
+whether a human or a machine is acting:
+
+| Who | Flow | Credential | Used for |
+|---|---|---|---|
+| A person at a terminal | **OAuth U2M** (`databricks auth login`) | Short-lived token in the OS keychain | Deploying `dev`, ad-hoc inspection |
+| CI/CD | **OIDC federation** | No stored credential at all — a per-run token minted from GitHub's identity | Deploying `staging` / `prod` |
+| A running job | Service principal (`run_as`) | Managed by the workspace | Job execution |
+
+OAuth is the enterprise-grade option here, not the shortcut. The thing to
+avoid is a **personal access token** — long-lived, invisible once issued, and
+rotated only when someone remembers.
+
+A human's U2M login is never on the production path. It exists to bootstrap:
+you need an authenticated identity to create service principals in the first
+place, and something has to deploy `dev`. Production deploys come from CI via
+federation, and jobs run as a service principal — neither involves a person's
+browser session.
 
 ### Code is shipped as a versioned wheel
 

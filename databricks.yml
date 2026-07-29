@@ -69,10 +69,16 @@ variables:
       no default for staging/prod; dev runs as the deploying user.
 
 targets:
-  # Local pytest is the real development loop for this repo (the bronze suite
-  # runs against local Spark + Delta with no Databricks at all). This target
-  # exists for the things local Delta cannot exercise - UC Volumes, tags,
-  # Auto Loader - not for day-to-day development.
+  # A full development environment on Databricks - same code path, same
+  # bundle, same Unity Catalog semantics as staging/prod. Local pytest stays
+  # the fast inner loop for logic (130 tests, ~3 min, no workspace
+  # round-trip), but it cannot reproduce the UC surface (Volumes, tags, Auto
+  # Loader, information_schema), so it complements this environment rather
+  # than replacing it.
+  #
+  # mode: development prefixes every resource with the deploying user's name
+  # and force-pauses schedules, so concurrent deploys by different people
+  # don't collide and nothing runs on a timer by accident.
   dev:
     mode: development          # prefixes resources per-user, pauses schedules
     default: true
