@@ -1,10 +1,15 @@
 name: CI
 
+# Every branch in the promotion chain, not just main. Code reaches main
+# only via dev -> staging, so running CI on main alone would leave both
+# earlier gates unchecked - and any branch protection naming `test` or
+# `wheel` as a required status check would block PRs there forever,
+# waiting on a run that never starts.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, staging, dev]
   push:
-    branches: [main]
+    branches: [main, staging, dev]
 
 permissions:
   contents: read
