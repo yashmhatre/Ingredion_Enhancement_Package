@@ -3,8 +3,10 @@
 # file contributes resources only, so the layers can never be deployed
 # against mismatched settings.
 #
-# Paths below are relative to the bundle root (the directory containing the
-# root databricks.yml), not to this file.
+# Paths below are relative to THIS FILE's directory (bronze_layer/resources/),
+# not to the bundle root - hence the leading `../`. Verified against
+# Databricks CLI v1.9.0: bundle-root-relative paths here resolve as
+# bronze_layer/resources/<path> and fail with "notebook ... not found".
 
 resources:
   jobs:
@@ -20,14 +22,14 @@ resources:
     #     - task_key: ingest_orders
 
     #       notebook_task:
-    #         notebook_path: ./bronze_layer/notebooks/run_ingestion.py
+    #         notebook_path: ../notebooks/run_ingestion.py
     #         base_parameters:
     #           config_path: ${workspace.file_path}/bronze_layer/config/order_bronze.yaml
     #           batch_id: "{{job.run_id}}"
     #           run_id: "{{job.id}}-{{job.run_id}}"
 
     #       libraries:
-    #         - whl: ./bronze_layer/dist/*.whl
+    #         - whl: ../dist/*.whl
 
     #   email_notifications:
     #     on_failure:
@@ -44,10 +46,11 @@ resources:
         - task_key: ingest_directory
 
           notebook_task:
-            # Bundle-relative: the bundle syncs this file into the target's
-            # own root_path, so the deployed path differs per environment
-            # and belongs to no individual user.
-            notebook_path: ./bronze_layer/notebooks/run_directory_ingestion.py
+            # Relative to this file's directory (see header). The bundle
+            # syncs the notebook into the target's own root_path, so the
+            # deployed path differs per environment and belongs to no
+            # individual user.
+            notebook_path: ../notebooks/run_directory_ingestion.py
             base_parameters:
               source_dir: ${var.source_volume_path}
               catalog: ${var.catalog}
@@ -73,7 +76,7 @@ resources:
           # `artifacts:` block, so the notebook can `from bronze_ingest
           # import ...` with no sys.path manipulation.
           libraries:
-            - whl: ./bronze_layer/dist/*.whl
+            - whl: ../dist/*.whl
 
       # Uncomment to run on a schedule instead of manually. In `dev` the
       # bundle pauses schedules automatically (mode: development), so this
