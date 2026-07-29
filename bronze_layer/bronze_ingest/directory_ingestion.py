@@ -323,8 +323,17 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
     inner_files = list_json_files(spark, folder_path)
 
     if not inner_files:
+        # A folder with nothing to ingest is not an error - there is no bad
+        # data, no unreadable file, and nothing a human needs to fix. Marking
+        # it "failed" made the job task exit non-zero and fire alerting for a
+        # directory that simply had no JSON in it, which also masked genuine
+        # failures in the same run. Reported as its own status so it is
+        # neither counted as a success nor treated as a failure.
         logger.warning("Folder %s contains no JSON files - skipping.", folder_path)
-        return {"file": folder_path, "table": table, "status": "failed", "error": "empty folder"}
+        return {
+            "file": folder_path, "table": table, "status": "skipped",
+            "reason": "no JSON files in folder",
+        }
 
     validated_dataframes = []
     validated_file_paths = []
@@ -509,8 +518,15 @@ def ingest_directory_to_bronze(
             per-file and cannot be overridden here.
 
     Returns:
-        A list of per-file result dicts:
-        {"file", "table", "status": "success"|"failed", "rows"|"error"}
+        A list of per-unit result dicts (one per file, or one per folder in
+        folder-as-table mode):
+        {"file", "table", "status": "success"|"failed"|"skipped",
+         "rows" | "error" | "reason"}
+
+        "skipped" means there was nothing to ingest and nothing to fix -
+        currently only a folder containing no JSON files. Callers deciding
+        whether to fail a job task should test for "failed" explicitly
+        rather than treating anything that isn't "success" as a failure.
     """
     # Imported here to avoid a circular import (pipeline imports nothing from
     # this module, but keeping the dependency one-directional at import time).
@@ -641,5 +657,10 @@ def ingest_directory_to_bronze(
             results.append(folder_result)
 
     ok = sum(1 for r in results if r["status"] == "success")
-    logger.info("Directory ingestion finished: %d/%d file(s) succeeded", ok, len(results))
+    failed = sum(1 for r in results if r["status"] == "failed")
+    skipped = sum(1 for r in results if r["status"] == "skipped")
+    logger.info(
+        "Directory ingestion finished: %d succeeded, %d failed, %d skipped (of %d unit(s))",
+        ok, failed, skipped, len(results),
+    )
     return results
