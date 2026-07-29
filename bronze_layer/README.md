@@ -82,6 +82,18 @@ loads each one into its own bronze table. One bad file is logged and
 reported in the results list, but does not stop the remaining files from
 loading (`stop_on_error=False`, the default).
 
+**`.jsonl` and `.ndjson` files ignore `multiline` and are always read one
+record per line**, logging a warning if `multiline: true` was configured.
+`multiline` is a single setting shared across every file a directory run
+discovers, but the correct value is a property of each individual file —
+and `multiLine=true` on a JSON-lines file makes Spark return only its
+*first* record, with no error and nothing in `_corrupt_record` (#146). A
+`.json` file is genuinely ambiguous (it may be one pretty-printed document
+or JSON-lines), so it keeps whatever `multiline` says. To force multi-line
+parsing on a `.jsonl` file anyway — it is misnamed, but that is not the
+package's call — set `reader_options: {multiLine: "true"}`, which is
+applied last and wins.
+
 `write_mode: overwrite` is rejected by default for both per-file and
 folder-as-table directory ingestion (raises `ValueError` before touching
 any file) - directory ingestion's whole point is discovering files
@@ -477,9 +489,16 @@ SELECT _quarantine_reason, count(*) FROM bronze.orders_raw_quarantine GROUP BY 1
 For `unique_columns`, the row **kept** is the one with the highest
 `dedupe_order_by` value. This quality gate runs before audit columns are
 added, so `dedupe_order_by` must name a **source** column (e.g. an upstream
-`updated_at`) to control which duplicate survives. If it's unset or not
-present on the source data, ties break on `monotonically_increasing_id()` -
-deterministic for a given DataFrame, but not reflecting any real ordering.
+`updated_at`) to control which duplicate survives. If it's unset, not
+present on the source data, or tied, the tie breaks on a SHA-256 of the
+row's full content — arbitrary, but a function of the data alone, so the
+same input always yields the same survivor.
+
+That last property is load-bearing rather than a nicety (#147). `good_df`
+and `bad_df` are two lazy plans over one tagged DataFrame and Spark
+evaluates each independently, so a tie-break that depended on anything but
+row content could let the two evaluations disagree — putting a row in both
+(written *and* quarantined) or neither (silently dropped).
 
 > **Scope note.** Only structural checks belong in bronze. Range, regex,
 > set-membership, cross-column expression and freshness rules all require

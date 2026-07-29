@@ -196,7 +196,7 @@ def test_duplicate_check_does_not_leak_tag_columns(spark):
 
 def test_duplicate_tie_break_without_dedupe_order_by_is_deterministic(spark):
     """No dedupe_order_by and no matching source column - falls back to the
-    monotonically_increasing_id() tie-break rather than raising."""
+    content-hash tie-break rather than raising."""
     df = spark.createDataFrame([(1, "Alice"), (1, "Bob")], ["id", "name"])
     cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"])
     good, bad = split_good_bad(df, cfg)
@@ -217,3 +217,104 @@ def test_write_quarantine_skips_when_bad_count_zero(spark):
     write_quarantine(spark, bad, bad_count, cfg)
 
     assert not spark.catalog.tableExists(cfg.resolved_quarantine_table)
+
+
+# ---- the split must be a partition of the input (#147) ----
+#
+# good_df and bad_df are two lazy plans over one tagged DataFrame, and Spark
+# evaluates each independently. Every expression feeding _dq_bad therefore
+# has to be a pure function of row content, or the two evaluations can
+# disagree: a row lands in BOTH (written to bronze *and* quarantined) or in
+# NEITHER (silently dropped). The tie-break in _duplicate_flag_column used
+# monotonically_increasing_id(), which encodes partition index and position
+# within the partition - so the disagreement was reachable by nothing more
+# exotic than a different partitioning.
+
+
+def _split_contents(df, cfg):
+    """(sorted good rows, sorted bad rows) as plain tuples."""
+    good, bad = split_good_bad(df, cfg)
+    return (
+        sorted(tuple(r) for r in good.collect()),
+        sorted(tuple(r)[: len(df.columns)] for r in bad.collect()),
+    )
+
+
+@pytest.mark.parametrize("partitions", [1, 3, 8])
+def test_split_is_exact_partition_of_input_at_any_partitioning(spark, partitions):
+    """good + bad == input exactly: nothing duplicated, nothing dropped."""
+    rows = [(i % 4, f"name_{i}") for i in range(24)]
+    df = spark.createDataFrame(rows, ["id", "name"]).repartition(partitions)
+    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"])
+
+    good_rows, bad_rows = _split_contents(df, cfg)
+
+    assert len(good_rows) + len(bad_rows) == len(rows)
+    assert sorted(good_rows + bad_rows) == sorted(rows)
+    # 4 distinct ids -> exactly 4 survivors, the rest are duplicates.
+    assert len(good_rows) == 4
+
+
+def test_split_is_stable_across_repartitioning(spark):
+    """The SAME rows are kept regardless of how the input is partitioned.
+
+    This is the regression that matters. With the old
+    monotonically_increasing_id() tie-break, re-partitioning changed which
+    member of each duplicate group got row_number 1, so the two plans could
+    select different survivors.
+    """
+    rows = [(i % 5, f"name_{i}") for i in range(30)]
+    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"])
+
+    base = spark.createDataFrame(rows, ["id", "name"])
+    results = [_split_contents(base.repartition(n), cfg) for n in (1, 2, 7)]
+
+    assert results[0] == results[1] == results[2]
+
+
+def test_split_is_stable_across_repeated_evaluation(spark):
+    """Evaluating the same split twice returns the same rows both times."""
+    rows = [(i % 3, f"name_{i}") for i in range(12)]
+    df = spark.createDataFrame(rows, ["id", "name"])
+    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"])
+
+    good, bad = split_good_bad(df, cfg)
+
+    first = (sorted(tuple(r) for r in good.collect()), sorted(tuple(r) for r in bad.collect()))
+    second = (sorted(tuple(r) for r in good.collect()), sorted(tuple(r) for r in bad.collect()))
+    assert first == second
+
+
+def test_split_partitions_rows_differing_only_in_null_position(spark):
+    """Two bad rows that differ only in WHICH column is null must stay distinct.
+
+    concat_ws skips nulls, so ('x', None) and (None, 'x') would hash
+    identically under it and the two rows would be treated as byte-identical
+    duplicates. row_content_hash uses to_json(struct(*)) precisely to avoid
+    that, and null-bearing rows are exactly what this module quarantines.
+    """
+    rows = [(1, "x", None), (1, None, "x")]
+    df = spark.createDataFrame(rows, "id INT, a STRING, b STRING")
+    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"])
+
+    good_rows, bad_rows = _split_contents(df, cfg)
+
+    # repr-keyed: these rows contain nulls, which sorted() cannot compare
+    # against strings.
+    by_repr = lambda rs: sorted(rs, key=repr)
+
+    assert len(good_rows) == 1 and len(bad_rows) == 1
+    assert by_repr(good_rows + bad_rows) == by_repr(rows)
+
+
+def test_dedupe_order_by_still_wins_over_the_tie_break(spark):
+    """The content hash is the FINAL sort key, not the primary one."""
+    rows = [(1, "old", 1), (1, "new", 2)]
+    df = spark.createDataFrame(rows, ["id", "name", "ts"])
+    cfg = IngestionConfig(
+        source_path="x", table="t", unique_columns=["id"], dedupe_order_by="ts"
+    )
+
+    good, _ = split_good_bad(df, cfg)
+
+    assert [tuple(r) for r in good.collect()] == [(1, "new", 2)]

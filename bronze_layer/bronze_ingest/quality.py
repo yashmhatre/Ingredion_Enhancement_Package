@@ -21,11 +21,20 @@ for why the flattener was pulled out of Bronze for the same reason).
 
 from typing import Tuple, List, Optional
 
-from pyspark.sql.functions import col, lit, expr, when, concat, concat_ws, row_number, monotonically_increasing_id
+from pyspark.sql.functions import (
+    col,
+    lit,
+    expr,
+    when,
+    concat,
+    concat_ws,
+    row_number,
+)
 from pyspark.sql.window import Window
 
 from .config import IngestionConfig
 from .logging_utils import logger
+from .sql_utils import row_content_hash
 
 
 class DataQualityError(Exception):
@@ -48,26 +57,49 @@ def _duplicate_flag_column(df, config: IngestionConfig):
     """
     row_number() over a window partitioned by unique_columns, ordered by
     dedupe_order_by (descending, highest wins) when that column exists on
-    df, else an arbitrary-but-deterministic tie-break.
+    df, then by a content hash as the final tie-break.
 
-    dedupe_order_by defaults to audit_ingest_ts_col for bronze_writer's
-    merge-time dedupe, but that column doesn't exist yet here - this
-    quality gate runs before add_audit_columns(). If dedupe_order_by isn't
-    set or isn't present on the source data, ties are broken by
-    monotonically_increasing_id(), which is deterministic for a given
-    DataFrame but doesn't reflect any real ordering - set dedupe_order_by
-    to a source column (e.g. an upstream timestamp) to control which
-    duplicate is kept.
+    The tie-break must be deterministic, and this is the whole point of it
+    (#147). The previous implementation used `monotonically_increasing_id()`
+    and its docstring claimed that was "deterministic for a given
+    DataFrame". It is not: the value encodes the partition index and the
+    row's position within that partition, so re-executing the same plan
+    with a different partitioning yields different ids.
+
+    That was not a cosmetic problem. `split_good_bad` derives good_df and
+    bad_df from one tagged DataFrame, but they are two lazy plans, and Spark
+    evaluates each independently. If the two evaluations disagreed about
+    which member of a duplicate group got row_number 1, a row could land in
+    BOTH good_df and bad_df (written to the bronze table *and* quarantined)
+    or in NEITHER (silently dropped). No error either way.
+
+    A content hash fixes it at the source: rows with identical content hash
+    identically, so the ordering is a function of the data alone. Within a
+    group of byte-identical rows the ordering is still arbitrary - but those
+    rows are interchangeable, so the *content* of good_df and bad_df is
+    deterministic even though which physical row was kept is not. That is
+    the property the split actually needs.
+
+    dedupe_order_by stays the primary sort where it applies. It is not
+    sufficient on its own: two rows can share both the unique_columns and
+    the dedupe_order_by value, and that tie was previously broken
+    nondeterministically too. It defaults to audit_ingest_ts_col for
+    bronze_writer's merge-time dedupe, but that column does not exist yet
+    here - this gate runs before add_audit_columns() - so on the common path
+    the hash is doing all the work.
 
     Row 1 per group is the row to keep; every other row in the group is
     flagged as a duplicate.
     """
+    tie_break = row_content_hash(df).asc()
+
     order_col = config.dedupe_order_by
     if order_col and order_col in df.columns:
-        order_expr = col(f"`{order_col}`").desc()
+        order_exprs = [col(f"`{order_col}`").desc(), tie_break]
     else:
-        order_expr = monotonically_increasing_id().asc()
-    w = Window.partitionBy(*config.unique_columns).orderBy(order_expr)
+        order_exprs = [tie_break]
+
+    w = Window.partitionBy(*config.unique_columns).orderBy(*order_exprs)
     return row_number().over(w) > 1
 
 
@@ -82,6 +114,14 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
     regardless of how many columns are in the combination - not a
     per-column rescan), and both good_df/bad_df are derived from that same
     tagged DataFrame.
+
+    good_df and bad_df are two lazy plans, not one materialized split -
+    Spark evaluates each independently, so every expression feeding
+    `_dq_bad` must be a pure function of the row's content or the two
+    evaluations can disagree and a row lands in both or neither (#147).
+    `isNull()` is; `_duplicate_flag_column`'s window ordering was not until
+    it was given a content-hash tie-break. Anything added to `_dq_bad`
+    later must clear the same bar.
 
     bad_df additionally carries a per-row `_quarantine_reason` describing
     which check(s) failed (e.g. "null:email", "duplicate:order_id,

@@ -10,6 +10,69 @@ function just centralizes the read options driven by config.
 
 from .config import IngestionConfig
 from .retry import with_retry
+from .logging_utils import logger
+
+
+# Extensions that mean "one JSON value per line" by definition of the
+# format. `.json` is deliberately absent: a .json file may legitimately be
+# either a single pretty-printed document or JSON-lines, so only the config
+# can decide for it.
+_JSON_LINES_EXTENSIONS = (".jsonl", ".ndjson")
+
+
+def _effective_multiline(config: IngestionConfig) -> bool:
+    """
+    `multiLine` to actually use, which is not always `config.multiline`.
+
+    `multiline` is one flag on a config that a directory run shares across
+    every file it discovers, but the correct value is a property of each
+    individual FILE. Discovery accepts `.json` and `.jsonl`; the deployed
+    job sets `multiline: "true"`, which is right for the pretty-printed
+    `.json` documents this package was built for and silently wrong for
+    every `.jsonl` file in the same folder.
+
+    Silently is the operative word, and it is why this is a data-loss bug
+    rather than a configuration annoyance (#146). Measured against a local
+    Spark session on a 3-record `.jsonl` file:
+
+        multiLine=false -> 3 rows
+        multiLine=true  -> 1 row
+
+    No error, no warning, and nothing in `_corrupt_record` - Spark parses
+    the first JSON value in the file and discards the remaining bytes. The
+    run reports success, the audit row records a row count that looks
+    plausible, and the other 2 records are simply gone.
+
+    So: when the path names a file whose extension means JSON-lines, that
+    wins over the config, because the extension is a statement about the
+    file's format and the config is a default across many files. A path
+    that is a directory, or a `.json` file, keeps the configured value -
+    neither is unambiguous enough to override.
+
+    An override is logged at WARNING rather than applied silently: the
+    config asked for something that was not honoured, and that should be
+    visible in the run log even though the outcome is correct. A file
+    genuinely named `.jsonl` that contains one pretty-printed document is
+    misnamed, and the warning is the thread to pull.
+
+    Escape hatch: `reader_options` is applied after this in `read_json`, so
+    `reader_options: {multiLine: "true"}` still forces the issue if a
+    source really does need it.
+    """
+    path = (config.source_path or "").split("?", 1)[0].rstrip("/")
+    if not path.lower().endswith(_JSON_LINES_EXTENSIONS):
+        return config.multiline
+
+    if config.multiline:
+        logger.warning(
+            "%s has a JSON-lines extension, so reading it with multiLine=false "
+            "despite multiline=True in config. multiLine=true on a JSON-lines "
+            "file silently returns only its first record (#146). Set "
+            "reader_options={'multiLine': 'true'} to override if this file "
+            "really is a single JSON document.",
+            path,
+        )
+    return False
 
 
 def read_json(spark, config: IngestionConfig):
@@ -23,6 +86,10 @@ def read_json(spark, config: IngestionConfig):
       - When a schema_hint_ddl is supplied, `rescued_data_column` captures
         any fields present in the source JSON that don't fit that schema
         (extra/renamed fields), so nothing is silently lost on drift.
+      - `multiLine` comes from `_effective_multiline(config)`, not straight
+        from config: a `.jsonl`/`.ndjson` path forces it off, since
+        multiLine=true on a JSON-lines file returns only its first record
+        with no error (#146).
       - Adds `_input_file_name` for lineage, used later for the audit
         `_source_file` column.
       - The actual load (which triggers schema inference / file listing,
@@ -32,7 +99,10 @@ def read_json(spark, config: IngestionConfig):
     """
     reader = (
         spark.read.format("json")
-        .option("multiLine", config.multiline)
+        # Not config.multiline directly - a JSON-lines extension overrides
+        # it, because multiLine=true on such a file silently drops every
+        # record but the first (#146). See _effective_multiline.
+        .option("multiLine", _effective_multiline(config))
         .option("mode", "PERMISSIVE")
         .option("columnNameOfCorruptRecord", config.corrupt_record_column)
     )
