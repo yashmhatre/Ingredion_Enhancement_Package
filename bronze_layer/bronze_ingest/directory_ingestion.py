@@ -265,9 +265,28 @@ _ARCHIVE_MAX_WORKERS = 10
 def _archive_files_parallel(source_dir, file_paths, relative_subpath=""):
     """
     Archives multiple files concurrently. Each dbutils.fs.mv / shutil.move
-    is independent, so these parallelize safely - benchmarking showed
-    sequential archival at ~0.5s per file was the dominant linear cost in
-    folder ingestion (9.4x scaling for 10x files, vs ~4x for read/write).
+    is independent, so these parallelize safely.
+
+    **On serverless this produces no speedup, and that is measured, not
+    assumed.** Archival is the dominant linear cost in folder ingestion
+    (~0.45s per file, 9.4x scaling for 10x files vs ~4x for read/write),
+    which is why it was parallelized - but the benchmark showed 163.0s with
+    10 workers against 161.3s sequential. Logs show files still completing
+    in exact input order at consistent ~0.45s intervals: the threads are
+    created correctly and serialize below, most likely in the Spark Connect
+    gRPC client, which appears to handle one request at a time per session.
+
+    The implementation is kept deliberately - it is correct, costs nothing,
+    and would help on any filesystem where moves genuinely parallelize
+    (local execution, or if Databricks changes this behaviour). Do not read
+    its existence as evidence that archival is parallel on serverless; it
+    is not. Full measurement in docs/testing_directory_ingestion.md, which
+    owns this benchmark.
+
+    Consequently the single-file path in ingest_directory_to_bronze
+    archiving sequentially via _archive_ingested_file is immaterial on
+    serverless rather than an oversight - there is no speedup being left
+    on the table.
 
     Returns a list of (file_path, move_result_dict) tuples in the same
     order as file_paths, so per-file error attribution is preserved

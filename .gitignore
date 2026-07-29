@@ -1,0 +1,29 @@
+# Repository-root ignores.
+#
+# bronze_layer/.gitignore already covers these, but only relative to
+# bronze_layer/. CI runs pytest with `working-directory: bronze_layer`, so
+# the artifacts land there and are ignored. Running the same suite from the
+# repository root - `pytest bronze_layer/tests` - puts them HERE instead,
+# where nothing was ignoring them, and a `git add -A` will happily commit
+# several MB of Delta parquet. Duplicated deliberately rather than moved:
+# both working directories are legitimate.
+
+# Local pytest run artifacts: the Delta-backed tests spin up a real local
+# Spark session, which materializes test tables under spark-warehouse/ and,
+# depending on session config, a Derby metastore alongside it. All of it is
+# regenerated on demand and must never be committed.
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Databricks CLI / bundle local state
+.databricks/

@@ -202,10 +202,24 @@ Nested structures now land in bronze exactly as read.
 
 ### Remaining enterprise-hardening phases
 
-4. Control-table driven dynamic config
-5. Concurrency locking
-6. Config validation and allowlist governance
-7. Secrets via Databricks secret scopes
+4. **Control-table driven dynamic config** — not started.
+5. **Concurrency locking** (#153) — *partly done*. The deployed job sets
+   `max_concurrent_runs: 1` with `queue.enabled`, so two runs of the *same
+   job* can no longer race on discovery, archival and `_state/`. That is
+   the deployment-level half. The library-level half is still open: two
+   callers invoking `ingest_directory_to_bronze` against one `source_dir`
+   from anywhere else are still unguarded.
+6. **Config validation and allowlist governance** — *partly done* via
+   #154 (config-field validation) and #166 (unknown-field rejection in
+   `ingest_directory_to_bronze`). The allowlist-governance half —
+   restricting which catalogs/schemas/paths a config may name — is open.
+7. **Secrets via Databricks secret scopes** (#115) — not started; blocked
+   on the workspace provisioning in #112.
+
+This list and `bronze_layer/README.md` § "Not yet implemented" describe
+the same set of gaps from two angles: this one is phased and
+architectural, that one is issue-linked and reader-facing. If they
+disagree, the open issues are the tiebreak.
 
 ### Target-state work, in dependency order
 
@@ -232,6 +246,18 @@ full benchmark detail.
   folder ingestion. This is irreducible on serverless: `dbutils.fs.mv`
   calls serialize through the Spark Connect client and do not
   parallelize, confirmed by benchmark.
+
+  The folder-as-table path still submits archival through a 10-worker
+  `ThreadPoolExecutor` (`_archive_files_parallel`). That is not a
+  contradiction and not stale code: the pool was measured *after* it was
+  added and produced no speedup — 163.0s threaded vs 161.3s sequential,
+  with files completing in exact input order at ~0.45s intervals, which
+  is what serialization in the Connect client looks like from the caller's
+  side. It is kept because it costs nothing, is correct either way, and
+  would start paying off if a future runtime lifts that serialization.
+  The function's docstring says the same; this document and that docstring
+  both defer to `docs/testing_directory_ingestion.md`, which owns the
+  number.
 - **100 files per folder ≈ 163s total**, of which ~45s is archival.
 - **Beyond roughly 100 files per folder, use Auto Loader**
   (`ingestion_mode: streaming`) rather than folder-as-table. Auto Loader
