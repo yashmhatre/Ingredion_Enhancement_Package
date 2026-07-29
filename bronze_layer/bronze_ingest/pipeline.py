@@ -15,6 +15,7 @@ from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
 from .audit import audited_run, tag_failure_stage
 from .schema_registry import record_schema
+from .catalog_metadata import apply_catalog_metadata
 
 
 class BronzeIngestion:
@@ -82,6 +83,7 @@ class BronzeIngestion:
             fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
             audit["schema_fingerprint"] = fingerprint
             audit["schema_changed"] = schema_changed
+            apply_catalog_metadata(self.spark, self.config)
             logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
 
             return {
@@ -132,6 +134,7 @@ class BronzeIngestion:
             fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
             audit["schema_fingerprint"] = fingerprint
             audit["schema_changed"] = schema_changed
+            apply_catalog_metadata(self.spark, self.config)
             logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
 
             return {
@@ -190,6 +193,7 @@ class BronzeIngestion:
                 fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
                 audit["schema_fingerprint"] = fingerprint
                 audit["schema_changed"] = schema_changed
+                apply_catalog_metadata(self.spark, self.config)
 
         query = (
             stream_df.writeStream

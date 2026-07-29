@@ -69,6 +69,10 @@ class IngestionConfig:
     cluster_by_auto: bool = False               # CLUSTER BY AUTO - Databricks Runtime only, not supported by OSS/local Delta
     table_properties: Dict[str, str] = field(default_factory=dict)  # e.g. {"delta.enableChangeDataFeed": "true"}
 
+    # --- Catalog documentation (see catalog_metadata.py, #64) ---
+    table_comment: Optional[str] = None     # COMMENT ON TABLE - catalog documentation for the bronze table
+    column_comments: Dict[str, str] = field(default_factory=dict)  # {column_name: comment}; top-level columns only
+
     # --- Audit / lineage columns added automatically ---
     add_audit_columns: bool = True
     audit_ingest_ts_col: str = "_ingested_at"
@@ -109,6 +113,10 @@ class IngestionConfig:
                 )
         if self.unique_columns is not None and len(self.unique_columns) == 0:
             raise ValueError("unique_columns, if provided, must be a non-empty list of column names.")
+        if self.column_comments:
+            blank = [k for k in self.column_comments if not str(k).strip()]
+            if blank:
+                raise ValueError("column_comments keys must be non-empty column names.")
         if self.cluster_by is not None and len(self.cluster_by) == 0:
             raise ValueError("cluster_by, if provided, must be a non-empty list of column names.")
         if self.cluster_by and self.cluster_by_auto:
