@@ -75,6 +75,13 @@ variables:
     description: >-
       Schema for the schema-registry table. Same reasoning as
       audit_schema_name.
+  env_suffix:
+    description: >-
+      Short environment tag appended to deployed job display names
+      (dev / stg / prd). All three targets deploy into the same workspace, so
+      without it the Jobs list shows identically-named jobs and there is no
+      way to tell which one is production. The resource key is unsuffixed, so
+      `bundle run <key> -t <target>` is unaffected.
   notification_email:
     description: >-
       Address alerted on job failure. Intentionally has no default for
@@ -105,6 +112,7 @@ targets:
     variables:
       catalog: ingredion_en
       schema_name: ingredion_dev
+      env_suffix: dev
       audit_schema_name: ingredion_dev
       registry_schema_name: ingredion_dev
       source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/DEV/Raw/
@@ -133,6 +141,7 @@ targets:
     variables:
       catalog: ingredion_en
       schema_name: ingredion_stg
+      env_suffix: stg
       audit_schema_name: ingredion_stg
       registry_schema_name: ingredion_stg
       source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/STG/Raw/
@@ -157,6 +166,7 @@ targets:
     variables:
       catalog: ingredion_en
       schema_name: ingredion_prd
+      env_suffix: prd
       audit_schema_name: ingredion_prd
       registry_schema_name: ingredion_prd
       source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/PROD/Raw/

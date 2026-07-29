@@ -16,7 +16,7 @@ resources:
     # single-table job, but disabled to avoid unnecessary deployment/
     # scheduling cost. Uncomment and redeploy if needed again.
     # bronze_orders_ingestion:
-    #   name: bronze_orders_ingestion
+    #   name: bronze_orders_ingestion_${var.env_suffix}
 
     #   environments:
     #     - environment_key: default
@@ -43,8 +43,14 @@ resources:
     # Directory ingestion: loads every .json in source_dir into its own
     # bronze table named {filename}_bronze. Run with:
     #   databricks bundle run bronze_directory_ingestion
+    # The resource KEY stays unsuffixed - `databricks bundle run
+    # bronze_directory_ingestion -t staging` addresses it by key, and the
+    # target selects the environment. Only the display NAME is suffixed,
+    # because all three targets deploy into the same workspace and would
+    # otherwise show three identically-named jobs in the Jobs list with no
+    # way to tell which is production.
     bronze_directory_ingestion:
-      name: bronze_directory_ingestion
+      name: bronze_directory_ingestion_${var.env_suffix}
       # max_concurrent_runs: 1
 
       # Serverless compute rejects a task-level `libraries:` field outright

@@ -637,11 +637,19 @@ workspace, one catalog, one schema and one service principal per
 environment. That gives per-environment isolation and audit without paying
 for multiple workspaces.
 
-| Target | Catalog | Schema | Runs as | Schedules |
-|---|---|---|---|---|
-| `dev` | `ingredion_en` | `ingredion_dev` | the deploying user | auto-paused |
-| `staging` | `ingredion_en` | `ingredion_stg` | staging service principal | as configured |
-| `prod` | `ingredion_en` | `ingredion_prd` | prod service principal | as configured |
+| Target | Catalog | Schema | Deployed job name | Runs as | Schedules |
+|---|---|---|---|---|---|
+| `dev` | `ingredion_en` | `ingredion_dev` | `bronze_directory_ingestion_dev` | the deploying user | auto-paused |
+| `staging` | `ingredion_en` | `ingredion_stg` | `bronze_directory_ingestion_stg` | staging service principal | as configured |
+| `prod` | `ingredion_en` | `ingredion_prd` | `bronze_directory_ingestion_prd` | prod service principal | as configured |
+
+Job **display names** carry an environment suffix because all three targets
+deploy into the same workspace — without it the Jobs list would show three
+identically-named jobs with no way to tell which one is production, and
+running the wrong one is a single misclick. The **resource key** is
+deliberately not suffixed, so `databricks bundle run
+bronze_directory_ingestion -t staging` still addresses it by key with the
+target selecting the environment.
 
 **The boundary is the schema, so every grant that matters is a schema
 grant.** `USE CATALOG` on its own conveys no data access, which is what
@@ -719,6 +727,12 @@ service principal. (403 PERMISSION_DENIED)
 It reads like a data-access problem and is not one; no amount of `GRANT` fixes
 it. The requirement disappears once deploys move to OIDC federation, where the
 deploying identity *is* the service principal.
+
+Set it in the **Databricks account console, not the Azure portal** — even
+though these are Entra ID service principals. Entra ID owns that the identity
+exists and how you authenticate as it; Databricks owns who may bind a job to
+run as it. Azure RBAC does not reach inside Databricks' permission model, so
+being Owner on the subscription conveys nothing here.
 
 ```bash
 databricks bundle deploy -t dev        # deploys as you, schedules paused
