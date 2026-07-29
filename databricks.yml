@@ -106,7 +106,7 @@ variables:
 targets:
   # A full development environment on Databricks - same code path, same
   # bundle, same Unity Catalog semantics as staging/prod. Local pytest stays
-  # the fast inner loop for logic (130 tests, ~3 min, no workspace
+  # the fast inner loop for logic (full suite, ~3 min, no workspace
   # round-trip), but it cannot reproduce the UC surface (Volumes, tags, Auto
   # Loader, information_schema), so it complements this environment rather
   # than replacing it.

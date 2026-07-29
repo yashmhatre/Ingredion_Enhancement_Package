@@ -722,7 +722,7 @@ against it means UC-only behavior (Volumes, tags, Auto Loader,
 `information_schema`) is exercised continuously rather than first meeting
 production.
 
-Local pytest remains the **fast inner loop**: 130 tests against local Spark +
+Local pytest remains the **fast inner loop**: the full suite against local Spark +
 Delta in ~3 minutes with no workspace round-trip, which is where logic bugs
 should be caught. It is a complement to the `dev` environment, not a
 substitute for it — local Delta cannot reproduce the UC surface, so green
@@ -864,21 +864,63 @@ dbutils.library.restartPython()
 
 The bundle consumes these; it does not create them.
 
-- **Service principals** — one per non-dev environment, with OAuth (M2M)
-  credentials. Never a personal account: a job running under a named human
-  inherits their full permissions and breaks when they leave.
-- **Catalogs** — `ingredion_en_{dev,staging,prod}`, each granted to only its
-  own service principal (`USE CATALOG` + `CREATE TABLE` on its target schema;
-  not `ALL PRIVILEGES`).
+- **Entra ID service principals** — one per non-dev environment. Never a
+  personal account: a job running under a named human inherits their full
+  permissions and breaks when they leave.
+- **One catalog** — `ingredion_en`, shared by all three environments.
+- **One schema per environment** — `ingredion_dev` / `ingredion_stg` /
+  `ingredion_prd`. **The schema is the isolation boundary**, not the catalog.
 - **Volumes** — the `source_volume_path` per environment.
-- **A distribution list** for `notification_email` in staging/prod.
+- **An address** for `notification_email` in staging/prod.
+
+**Grant `USE CATALOG` and nothing else at catalog level.** A single
+`GRANT SELECT ON CATALOG` flattens the entire boundary in one statement.
+Everything that matters is a schema or volume grant:
+
+```sql
+GRANT USE CATALOG ON CATALOG ingredion_en TO `<client-id>`;
+GRANT USE SCHEMA, CREATE TABLE, MODIFY, SELECT
+  ON SCHEMA ingredion_en.ingredion_stg TO `<staging-client-id>`;
+```
+
+That one schema grant covers the bronze tables, `_ingestion_audit` and
+`_schema_registry` together — they all live in the environment's own schema,
+so there is nothing separate to grant or keep in sync.
+
+**Also required, and not a Unity Catalog grant:** the deploying identity
+needs the **Service Principal: User** role on each service principal,
+granted in the Databricks *account console*. `run_as` asks Databricks to let
+a job execute *as* another identity, so the deployer must be authorised to
+act on that identity. No `GRANT` fixes it, and `Manage` does not imply
+`Use`. See `azure_setup.md` Step 12.
+
+> **Source files are not isolated.** All three environments read subpaths of
+> one Volume, and Unity Catalog grants `READ VOLUME` at volume granularity —
+> there is no sub-path grant. Any principal that can read its own subpath can
+> read `PROD/Raw/`. Tables, audit and registry *are* isolated by schema.
+> Per-environment Volumes would close this; tracked as #160.
 
 ### Not yet implemented
 
-- **CI/CD deploy.** CI runs tests and verifies the wheel; it does not deploy.
-  Deploys are manual. The intended next step is GitHub OIDC federation to a
-  service principal, so no long-lived tokens are stored anywhere.
-- **Secret scopes** (architecture.md phase 7).
+Kept in step with `docs/architecture.md`'s "Remaining enterprise-hardening
+phases" and the issue tracker — if those disagree with this list, this list
+is the one that drifted.
+
+- **CI/CD deploy** (#113). CI runs tests and verifies the wheel; it does not
+  deploy. Deploys are manual. The intended next step is GitHub OIDC
+  federation to a service principal, so no long-lived tokens are stored
+  anywhere — which also removes the `Service Principal: User` requirement
+  above, since the deploying identity would *be* the service principal.
+- **Secret scopes** (#115, architecture.md phase 7).
+- **Per-environment Volume isolation** (#160). Source-file separation is
+  currently a naming convention, not a control — see the note above.
+- **Table lifecycle** (#159). Nothing runs `OPTIMIZE` or `VACUUM`, and no
+  retention policy exists for the quarantine or audit tables, which grow
+  monotonically.
+- **Concurrency locking** (#153, architecture.md phase 5). Mitigated but not
+  solved: the job now sets `max_concurrent_runs: 1`, which prevents the
+  common case (a scheduled run overlapping its predecessor) without making
+  the underlying operations safe against concurrent access.
 
 ## Operational notes / known caveats
 
