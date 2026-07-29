@@ -12,7 +12,7 @@ changes.
 - [Local Development Setup](#local-development-setup)
 - [Finding Something to Work On](#finding-something-to-work-on)
 - [Claiming an Issue](#claiming-an-issue)
-- [Branch Naming](#branch-naming)
+- [Branches and the promotion flow](#branches-and-the-promotion-flow)
 - [Commit Message Guidelines](#commit-message-guidelines)
 - [Making Changes](#making-changes)
 - [Testing Requirements](#testing-requirements)
@@ -43,7 +43,10 @@ python -m venv venv
 source venv/bin/activate      # Mac/Linux
 venv\Scripts\activate         # Windows
 
-# 3. Install dependencies (includes pyspark, delta-spark, pytest via the dev extra)
+# 3. Install dependencies (includes pyspark, delta-spark, pytest and build
+#    via the dev extra). `build` is what `databricks bundle deploy` uses to
+#    package the wheel locally before uploading it - without it a deploy
+#    fails with "No module named build" before reaching the workspace.
 pip install -e ".[dev]"
 
 # 4. Run tests to confirm your setup works

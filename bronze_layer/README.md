@@ -660,6 +660,21 @@ with the deploying user's name and force-pauses schedules. Multiple people
 can deploy `dev` concurrently without colliding, and nothing runs on a timer
 by accident.
 
+### Deploy prerequisites
+
+Deploying builds the wheel locally before uploading it, so the Python
+environment you deploy *from* needs the build tooling — not just the
+Databricks CLI:
+
+```bash
+pip install build          # or: pip install -e "bronze_layer[dev]"
+```
+
+Without it, `bundle deploy` fails at the artifact step with
+`No module named build` before it reaches the workspace. The `dev` extra in
+`bronze_layer/setup.py` includes it, along with pytest and the local
+Spark/Delta stack.
+
 ```bash
 databricks bundle deploy -t dev        # deploys as you, schedules paused
 
