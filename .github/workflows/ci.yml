@@ -5,6 +5,14 @@ name: CI
 # earlier gates unchecked - and any branch protection naming `test` or
 # `wheel` as a required status check would block PRs there forever,
 # waiting on a run that never starts.
+#
+# Deliberately NOT using GitHub's native `paths:` filter to skip doc-only
+# changes. A path-filtered workflow does not run at all, so a required
+# status check never reports and the PR blocks forever - the same deadlock
+# the branch list above avoids. Instead both jobs always run and always
+# report; each detects whether files it actually depends on changed, and
+# skips only its expensive steps. A docs-only PR finishes in seconds with
+# both checks green.
 on:
   pull_request:
     branches: [main, staging, dev]
@@ -22,19 +30,59 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history: the change detection below diffs against the base
+          # branch, which a shallow clone cannot reach.
+          fetch-depth: 0
+
+      - name: Detect whether tested code changed
+        id: changes
+        env:
+          # Paths the pytest suite actually depends on. Docs, bundle config,
+          # notebooks and sample YAML are excluded - no test reads them.
+          WATCHED: '^bronze_layer/(bronze_ingest|tests)/|^bronze_layer/(setup\.py|pytest\.ini)$|^\.github/workflows/ci\.yml$'
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ -n "${{ github.event.before }}" ] && \
+               [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && \
+               git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            CHANGED=$(git diff --name-only "${{ github.event.before }}" HEAD)
+          else
+            # New branch, force-push, or unreachable base - run everything
+            # rather than guess. Skipping is an optimisation; never let it
+            # cause a miss.
+            CHANGED=""
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "No usable diff base - running the full suite."
+            exit 0
+          fi
+
+          echo "Changed files:"; echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE "$WATCHED"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Tested code changed - running the suite."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No tested code changed - skipping the suite."
+          fi
 
       - name: Set up Python
+        if: steps.changes.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Set up Java (required by PySpark)
+        if: steps.changes.outputs.run == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
 
       - name: Install dependencies
+        if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
           python -m pip install --upgrade pip
@@ -43,12 +91,14 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Run tests
+        if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: pytest -v --json-report --json-report-file=report.json
         continue-on-error: true
 
       - name: Render report card
         id: render
+        if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
           python ../.github/scripts/render_test_report.py \
@@ -60,6 +110,7 @@ jobs:
             --timestamp "$(date -u '+%Y-%m-%d %H:%M UTC')"
 
       - name: Upload report card
+        if: steps.changes.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: test-report-card
@@ -68,7 +119,7 @@ jobs:
             bronze_layer/test-report-card.html
 
       - name: Comment on PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.changes.outputs.run == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: test-results
@@ -81,8 +132,21 @@ jobs:
 
             📊 [**View full visual report**](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) — per-file breakdown and failure details on the run summary, plus a downloadable report card image.
 
+      # Replaces the results table rather than leaving a stale one from an
+      # earlier commit on the same PR, which would otherwise look like the
+      # suite had run against this commit.
+      - name: Comment on PR (suite skipped)
+        if: github.event_name == 'pull_request' && steps.changes.outputs.run != 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: test-results
+          message: |
+            ⏭️ **Test suite skipped** — no changes under `bronze_layer/bronze_ingest/`, `bronze_layer/tests/`, `setup.py`, `pytest.ini`, or the CI workflow.
+
+            The suite last ran against the most recent commit that touched those paths. Push a change to any of them to re-run it.
+
       - name: Fail if tests failed
-        if: steps.render.outputs.ok != 'true'
+        if: steps.changes.outputs.run == 'true' && steps.render.outputs.ok != 'true'
         run: exit 1
 
   # The bundle installs bronze_ingest onto job compute as a wheel
@@ -96,19 +160,53 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect whether packaged code changed
+        id: changes
+        env:
+          # Narrower than the test job: tests/ and pytest.ini do not affect
+          # the wheel, and are excluded from it by design.
+          WATCHED: '^bronze_layer/bronze_ingest/|^bronze_layer/setup\.py$|^\.github/workflows/ci\.yml$'
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ -n "${{ github.event.before }}" ] && \
+               [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && \
+               git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            CHANGED=$(git diff --name-only "${{ github.event.before }}" HEAD)
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "No usable diff base - building the wheel."
+            exit 0
+          fi
+
+          echo "Changed files:"; echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE "$WATCHED"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Packaged code changed - building the wheel."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No packaged code changed - skipping the wheel build."
+          fi
 
       - name: Set up Python
+        if: steps.changes.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Build wheel
+        if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
           python -m pip install --upgrade pip build
           python -m build --wheel
 
       - name: Verify wheel contents and version
+        if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
           python - <<'PY'
@@ -142,6 +240,7 @@ jobs:
           PY
 
       - name: Verify wheel installs and imports standalone
+        if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
           python -m venv /tmp/wheelcheck
