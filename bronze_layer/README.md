@@ -660,6 +660,21 @@ with the deploying user's name and force-pauses schedules. Multiple people
 can deploy `dev` concurrently without colliding, and nothing runs on a timer
 by accident.
 
+### Deploy prerequisites
+
+Deploying builds the wheel locally before uploading it, so the Python
+environment you deploy *from* needs the build tooling — not just the
+Databricks CLI:
+
+```bash
+pip install build          # or: pip install -e "bronze_layer[dev]"
+```
+
+Without it, `bundle deploy` fails at the artifact step with
+`No module named build` before it reaches the workspace. The `dev` extra in
+`bronze_layer/setup.py` includes it, along with pytest and the local
+Spark/Delta stack.
+
 ```bash
 databricks bundle deploy -t dev        # deploys as you, schedules paused
 
@@ -708,6 +723,32 @@ notebook. That approach tied production to one individual's home directory,
 shipped whatever happened to be sitting there at the time, and had no
 version or rollback story. The wheel is versioned, belongs to no user, and
 rolls back with the bundle.
+
+**On serverless compute, dependencies go in `environments:`, not
+`libraries:`.** A task-level `libraries:` field is rejected outright:
+
+```
+Libraries field is not supported for serverless task,
+please specify libraries in environment.   (400 INVALID_PARAMETER_VALUE)
+```
+
+So the job declares a job-level environment and each task binds to it:
+
+```yaml
+environments:
+  - environment_key: default
+    spec:
+      client: "3"
+      dependencies:
+        - ../dist/*.whl
+tasks:
+  - task_key: ingest_directory
+    environment_key: default
+```
+
+This workspace is serverless by design — see `azure_setup.md` Step 3, chosen
+because trial subscriptions have a hard 4-vCPU quota that blocks classic
+compute entirely.
 
 `bronze_ingest/__init__.py`'s `__version__` is the single source of truth —
 `setup.py` parses it rather than declaring a second copy. CI enforces that
