@@ -79,11 +79,15 @@ step-by-step runbook.
 
 Three long-lived branches, one per deployment environment:
 
-| Branch | Environment | Unity Catalog catalog | Deployed as |
+| Branch | Environment | Unity Catalog schema | Deployed as |
 |---|---|---|---|
-| `dev` | development | `ingredion_en_dev` | the deploying user |
-| `staging` | pre-production | `ingredion_en_staging` | staging service principal |
-| `main` | **production** | `ingredion_en_prod` | prod service principal |
+| `dev` | development | `ingredion_en.ingredion_dev` | the deploying user |
+| `staging` | pre-production | `ingredion_en.ingredion_stg` | staging service principal |
+| `main` | **production** | `ingredion_en.ingredion_prd` | prod service principal |
+
+All three share the `ingredion_en` catalog; the **schema** is the isolation
+boundary, so grants are made at schema level rather than catalog level. See
+the Deployment section of `bronze_layer/README.md`.
 
 Changes flow one way, and every arrow is a pull request:
 
