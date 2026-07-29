@@ -34,15 +34,22 @@ beyond JSON. Any `bronze_json_loader` path references below are historical
 context from when the environment was originally set up — substitute
 `bronze_layer` for the current repo structure.
 
-**Status as of last session:** Steps 1-6 done and validated — resource group,
-budget alert, ADLS Gen2 storage (`ingredion` container), Databricks serverless
-workspace, Unity Catalog wiring (Access Connector, storage credential,
-external location with file events), and a dedicated schema + external volume
-(see corrected Step 6 for actual names). Paused before Step 7 (CLI/bundle
-setup). The config file edits listed under Step 6 have since been **applied**
-to the repo (`order_bronze.yaml`, `sample_config.yaml`, `databricks.yml` all
-updated to the real catalog/schema/volume values — see closed task in the
-issue tracker).
+**Status as of last session:** Steps 1-11 done and validated. Steps 1-6 built
+the Azure/Unity Catalog foundation — resource group, budget alert, ADLS Gen2
+storage (`ingredion` container), Databricks serverless workspace, Unity
+Catalog wiring (Access Connector, storage credential, external location with
+file events), and a dedicated schema + external volume (see corrected Step 6
+for actual names). Steps 7-11 took the `dev` environment from "no CLI
+installed" to a job running end to end on serverless compute, writing a
+bronze table plus audit and schema-registry rows.
+
+The config file edits listed under Step 6 have since been **applied** to the
+repo (`order_bronze.yaml`, `sample_config.yaml`, and the bundle all updated to
+the real catalog/schema/volume values).
+
+**Still to do:** `staging` and `prod` provisioning — service principals,
+`ingredion_en_staging` / `ingredion_en_prod` catalogs, external locations, and
+scoped grants. Tracked as Phase B on the deployment-provisioning issue.
 
 ---
 
@@ -276,15 +283,16 @@ there, and job definitions live in `bronze_layer/resources/`. See the
 
 ---
 
-## Step 7 — Databricks CLI + authentication (not done, paused here)
-
-(Step numbering note: test ingestion was intentionally deferred rather than
-done as Step 7 — it'll be picked up later as its own step once you're ready.)
+## Step 7 — Databricks CLI + authentication ✅ done
 
 **Install**
 - macOS/Linux: `curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh`
 - Windows: `winget install Databricks.DatabricksCLI`
 - Verify: `databricks -v`
+
+**Version matters.** Validated on **CLI v1.9.0**. Asset Bundle path-resolution
+rules have changed across CLI versions — Step 9's troubleshooting log depends
+on this version's behaviour, so note yours if it differs.
 
 **Authenticate (OAuth U2M — interactive browser login, no service principal needed for solo dev use)**
 - Get workspace URL from the workspace Overview page in the portal (e.g. `https://adb-xxxxxxxxxxxxxxxx.x.azuredatabricks.net`)
@@ -294,11 +302,238 @@ done as Step 7 — it'll be picked up later as its own step once you're ready.)
 - Non-secret config (host, profile name) goes to `~/.databrickscfg`; the OAuth token itself lives in the OS keychain, not that file
 
 **Verify**
-- `databricks current-user me --profile bronze-json-loader-dev` → should return user JSON
+```bash
+databricks current-user me --profile bronze-json-loader-dev
+```
+Returns your user JSON (`userName`, `displayName`, SCIM schemas).
 
-**Validate the bundle (no deploy yet, no cost)**
-- `databricks bundle validate -t dev --profile bronze-json-loader-dev`
-  (run from the repository root — the bundle now lives at the root
-  `databricks.yml`, not inside `bronze_layer/`)
+Validated: profile created, `current-user me` returned the expected identity.
 
-*(checkpoint pending)*
+**On OAuth vs. a personal access token.** OAuth U2M is the enterprise-grade
+choice here, not a shortcut — the token is short-lived and lives in the OS
+keychain rather than a file. A long-lived PAT is the thing to avoid. This
+human login is *not* on the production path: it exists to bootstrap, because
+creating service principals requires an already-authenticated identity, and
+something has to deploy `dev`. Staging and prod deploy via service principals
+(Phase B) and, later, GitHub OIDC federation.
+
+---
+
+## Step 8 — Local deploy prerequisites ✅ done
+
+The bundle builds the `bronze_ingest` wheel **locally** before uploading it,
+so the environment you deploy *from* needs the Python build tooling. The
+Databricks CLI alone is not enough.
+
+```bash
+cd bronze_layer
+pip install -e ".[dev]"      # includes build, pytest, pyspark, delta-spark
+# or minimally:  pip install build
+```
+
+Validated: without it, `bundle deploy` fails at the artifact step before ever
+reaching the workspace:
+
+```
+Building bronze_ingest_wheel...
+Error: build failed bronze_ingest_wheel, error: exit status 1, output:
+> python -m build --wheel
+python.exe: No module named build
+```
+
+---
+
+## Step 9 — Validate the bundle ✅ done (no deploy, no cost)
+
+```bash
+databricks bundle validate -t dev --profile bronze-json-loader-dev
+```
+
+**Run from the repository root** — the bundle lives at the root
+`databricks.yml`, not inside `bronze_layer/`.
+
+Expected output:
+
+```
+Name: ingredion_enhancement_package
+Target: dev
+Workspace:
+  Host: https://adb-7405607398572130.10.azuredatabricks.net
+  User: <you>@example.com
+  Path: /Workspace/Users/<you>@example.com/.bundle/ingredion_enhancement_package/dev
+
+Validation OK!
+```
+
+`validate` requires an authenticated workspace connection — it is not an
+offline syntax check. It resolves variables, the current user, and file paths
+against the real workspace.
+
+**Troubleshooting log (issues actually hit, in order):**
+
+1. *`Error: no value assigned to required variable run_as_service_principal`*
+   — the CLI requires **every declared variable to resolve for the selected
+   target, even variables that target never references**. `dev` has no
+   `run_as` block (it deploys as you), so the variable was left unset and
+   validation refused. Fixed by giving `dev` an inert value in its own
+   `variables:` block while keeping **no top-level default**, so staging and
+   prod still fail fast when the real service principal isn't supplied.
+
+2. *`Error: notebook bronze_layer/resources/bronze_layer/notebooks/run_directory_ingestion.py not found`*
+   — note the doubled path segment. Paths inside an **included resource file**
+   resolve relative to **that file's own directory**, not the bundle root. So
+   `./bronze_layer/notebooks/...` declared in
+   `bronze_layer/resources/bronze_ingest_jobs.yml` resolved from
+   `bronze_layer/resources/`. Fixed by using `../notebooks/...` and
+   `../dist/*.whl`. Paths in the root `databricks.yml` itself (such as the
+   `artifacts:` build path) stay root-relative — same rule, different
+   declaring file.
+
+Validated: `Validation OK!` with no `--var` arguments needed for `dev`.
+
+---
+
+## Step 10 — Deploy to dev ✅ done
+
+```bash
+databricks bundle deploy -t dev --profile bronze-json-loader-dev
+```
+
+Expected output:
+
+```
+Building bronze_ingest_wheel...
+Uploading bronze_layer/dist/bronze_ingest-0.4.0-py3-none-any.whl...
+Uploading bundle files to /Workspace/Users/<you>/.bundle/ingredion_enhancement_package/dev/files...
+Deploying resources...
+Updating deployment state...
+Deployment complete!
+```
+
+`mode: development` prefixes every resource with your username and force-pauses
+schedules, so concurrent deploys by different people cannot collide and nothing
+starts running on a timer by accident.
+
+**Troubleshooting log (issues actually hit, in order):**
+
+1. *`Error: cannot create resources.jobs.bronze_directory_ingestion: Libraries
+   field is not supported for serverless task, please specify libraries in
+   environment. (400 INVALID_PARAMETER_VALUE)`*
+   — a task-level `libraries:` field is the **classic-compute** form. This
+   workspace is serverless (Step 3) and rejects it. Dependencies must be a
+   job-level environment that tasks bind to:
+
+   ```yaml
+   environments:
+     - environment_key: default
+       spec:
+         client: "3"
+         dependencies:
+           - ../dist/*.whl
+   tasks:
+     - task_key: ingest_directory
+       environment_key: default
+   ```
+
+   `client: "3"` is accepted by this workspace — confirmed by the successful
+   deploy. DAB also resolves the `../dist/*.whl` glob inside
+   `environments[].spec.dependencies`, the same as it did inside `libraries:`.
+
+Validated: `Deployment complete!`, wheel uploaded as
+`bronze_ingest-0.4.0-py3-none-any.whl`.
+
+---
+
+## Step 11 — Smoke run: end-to-end ingestion ✅ done
+
+```bash
+databricks bundle run bronze_directory_ingestion -t dev --profile bronze-json-loader-dev
+```
+
+This is the step that proves the *ingestion* path, not just the control plane:
+the wheel installs on serverless compute, the notebook imports `bronze_ingest`
+**with no `sys.path` manipulation**, and data lands in Unity Catalog.
+
+Expected:
+
+```
+Notebook exited: SUCCESS: 1 unit(s) ingested, 1 skipped
+```
+
+Then confirm in Catalog Explorer or SQL:
+
+```sql
+SELECT * FROM ingredion_en_dev.ingredion_dev.<filename>_bronze;
+SELECT * FROM ingredion_en_dev.ingredion_dev._ingestion_audit ORDER BY started_at DESC;
+SELECT * FROM ingredion_en_dev.ingredion_dev._schema_registry;
+```
+
+**Troubleshooting log (issues actually hit, in order):**
+
+1. *`Notebook exited: FAILED: 1/1 file(s) failed: ['.../multi_file']`*, while
+   the log above it said `Folder ... contains no JSON files - skipping` — the
+   message and the outcome contradicted each other. A folder with no JSON was
+   returning `status: "failed"`, because the result vocabulary had only
+   `success` and `failed`. That fired failure alerting for a non-event and,
+   worse, made a skip indistinguishable from a real write error in the summary.
+   Fixed by adding a `skipped` status; the job task now fails only on genuine
+   failures.
+
+2. *`SUCCESS: 0 unit(s) ingested, 1 skipped`* — a clean exit that proves
+   nothing about ingestion. The Volume held no top-level JSON and one empty
+   subfolder, so the run never reached a write. **A smoke run that ingests
+   zero units has not validated the write path.** Drop a small file such as
+   `{"order_id": 1, "amount": 10}` into
+   `/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/raw/JSON/` and
+   re-run before believing the environment works.
+
+Validated: `SUCCESS: 1 unit(s) ingested, 1 skipped`, with a bronze table
+created and correct rows in both `_ingestion_audit` and `_schema_registry`.
+
+---
+
+## What Steps 7-11 established
+
+| | |
+|---|---|
+| Wheel built, uploaded, installed on serverless compute | ✅ |
+| Notebook imports `bronze_ingest`, no `sys.path` manipulation | ✅ |
+| Directory discovery against the UC Volume | ✅ |
+| Delta table written to `ingredion_en_dev` | ✅ |
+| `_ingestion_audit` and `_schema_registry` rows written | ✅ |
+| UC write permissions from the job's execution context | ✅ |
+
+**Caveat carried into Phase B:** all of this ran as the **deploying user**,
+who holds broad rights on the catalog. Staging and prod service principals get
+deliberately narrow grants (`USE CATALOG` + `USE SCHEMA` + `CREATE TABLE` on
+their own schema), so permission failures are the most likely thing to surface
+there. The audit and schema-registry tables are the ones to watch: they live in
+the same catalog but are written by a different code path, and are easy to
+forget when granting.
+
+---
+
+## Step 12 — Staging and prod provisioning (not done)
+
+Phase B. Summarised here so the runbook stays the single entry point; the
+authoritative checklist is on the deployment-provisioning issue.
+
+**Azure Portal** — two containers in the existing `ingredionenpkgdev` storage
+account (`ingredion-staging`, `ingredion-prod`). No new storage account and no
+new Access Connector: the existing connector already holds `Storage Blob Data
+Contributor` at account scope, so it reaches new containers automatically.
+
+**Databricks account console** (`accounts.azuredatabricks.net`) — service
+principals `sp-ingredion-staging` and `sp-ingredion-prod`, each with an OAuth
+secret. The **Client ID** is what the bundle takes as
+`run_as_service_principal`.
+
+**Databricks workspace** — external locations for the two new containers
+(reusing `cred-ingredion-storage`), then catalogs, schemas, external volumes,
+and scoped grants per service principal. Verify the isolation rather than
+assuming it: as the staging principal, a `SELECT` against a prod table should
+be denied.
+
+**Cost note:** catalogs, schemas, external locations and service principals are
+metadata and cost nothing. The spend is serverless compute per job run plus
+ADLS storage.
