@@ -84,7 +84,7 @@ def json_test_dir(tmp_path):
     if dbutils is not None:
         base = os.environ.get(
             "PYTEST_VOLUME_SCRATCH",
-            "/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/pytest_scratch",
+            "/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/pytest_scratch",
         )
         scratch = f"{base}/{uuid.uuid4().hex}"
         dbutils.fs.mkdirs(scratch)

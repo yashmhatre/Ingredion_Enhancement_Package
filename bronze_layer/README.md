@@ -631,16 +631,44 @@ inside a resource file resolves it as
 
 ### Environment model
 
-Environments are separated by **Unity Catalog catalog and by the service
-principal jobs run as** — not by workspace. One workspace, three catalogs,
-one service principal per non-dev environment. That gives real isolation
-and per-environment audit without paying for multiple workspaces.
+Environments are separated by **Unity Catalog schema and by the service
+principal jobs run as** — not by workspace, and not by catalog. One
+workspace, one catalog, one schema and one service principal per
+environment. That gives per-environment isolation and audit without paying
+for multiple workspaces.
 
-| Target | Catalog | Runs as | Schedules | Purpose |
+| Target | Catalog | Schema | Runs as | Schedules |
 |---|---|---|---|---|
-| `dev` | `ingredion_en_dev` | the deploying user | auto-paused | Full development environment on Databricks |
-| `staging` | `ingredion_en_staging` | staging service principal | as configured | Pre-production validation |
-| `prod` | `ingredion_en_prod` | prod service principal | as configured | Production |
+| `dev` | `ingredion_en` | `ingredion_dev` | the deploying user | auto-paused |
+| `staging` | `ingredion_en` | `ingredion_stg` | staging service principal | as configured |
+| `prod` | `ingredion_en` | `ingredion_prd` | prod service principal | as configured |
+
+**The boundary is the schema, so every grant that matters is a schema
+grant.** `USE CATALOG` on its own conveys no data access, which is what
+makes a shared catalog sound — but it also means a single
+`GRANT SELECT ON CATALOG` would flatten the entire boundary in one
+statement. Grant `USE CATALOG` and nothing else at catalog level.
+
+The audit and schema-registry tables follow the same boundary:
+`audit_schema_name` and `registry_schema_name` are pinned per environment in
+the bundle. Left at their package default (`bronze`) all three environments
+would write run history and schema fingerprints into one shared table —
+mixing the trails, and giving every service principal read access to the
+others'. `_write_audit_row` creates the schema if it is missing, so this
+would have worked silently rather than failing.
+
+> **Source-file isolation is not enforced.** All three environments read
+> from subpaths of a single volume (`ext-ingredion-dev`). Unity Catalog
+> grants `READ VOLUME` at volume granularity — there is no sub-path grant —
+> so any principal that can read its own subpath can read the others,
+> including `PROD/Raw/`. Directory separation here is a convention, not a
+> control. Tables, audit and registry are properly isolated; source files
+> are not. Giving each environment its own volume would close this, and
+> costs nothing but the metadata objects.
+>
+> The volume also lives in the `ingredion_dev` schema, so staging and prod
+> need `USE SCHEMA` on `ingredion_dev` purely to reach their own source
+> data — another reason per-environment volumes are cleaner.
 
 **All three environments are real Databricks environments.** `dev` is a
 deployed environment like the others — same code path, same bundle, same UC

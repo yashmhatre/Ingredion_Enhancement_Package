@@ -35,6 +35,13 @@ dbutils.widgets.dropdown("stop_on_error", "false", ["true", "false"], "Stop on f
 dbutils.widgets.text("required_columns", "", "Required columns, comma-separated (optional)")
 dbutils.widgets.dropdown("fail_on_quality_error", "true", ["true", "false"], "Fail on quality error (false = quarantine)")
 dbutils.widgets.text("per_file_config_json", "", "Per-file overrides as JSON (optional)")
+# audit/registry schemas: when several environments share one catalog, these
+# must be pinned per environment. Left blank they fall back to the package
+# default ("bronze"), so every environment would write its run history and
+# schema fingerprints to one shared table - mixing the trails and giving each
+# service principal read access to the others'.
+dbutils.widgets.text("audit_schema_name", "", "Schema for the audit table (blank = package default)")
+dbutils.widgets.text("registry_schema_name", "", "Schema for the schema registry (blank = package default)")
 # batch_id/run_id: pass {{job.run_id}} / {{job.id}}-{{job.run_id}} as the
 # base_parameters value in databricks.yml so every file's audit row and
 # idempotent batch write (#63) in this job run can be joined back to a
@@ -61,7 +68,7 @@ per_file_raw = dbutils.widgets.get("per_file_config_json").strip()
 per_file_config = _json.loads(per_file_raw) if per_file_raw else None
 
 id_overrides = {}
-for key in ("batch_id", "run_id"):
+for key in ("batch_id", "run_id", "audit_schema_name", "registry_schema_name"):
     val = dbutils.widgets.get(key).strip()
     if val:
         id_overrides[key] = val

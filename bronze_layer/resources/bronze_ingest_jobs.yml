@@ -80,6 +80,13 @@ resources:
               source_dir: ${var.source_volume_path}
               catalog: ${var.catalog}
               schema_name: ${var.schema_name}
+              # All three environments share one catalog, so the audit and
+              # schema-registry tables must be pinned to this environment's
+              # schema. Left at the package default ("bronze") they would all
+              # write to one shared table - mixing run histories and giving
+              # every service principal read access to the others'.
+              audit_schema_name: ${var.audit_schema_name}
+              registry_schema_name: ${var.registry_schema_name}
               table_name_template: "{filename}_bronze"
               write_mode: append
               multiline: "true"
