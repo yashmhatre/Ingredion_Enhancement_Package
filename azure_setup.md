@@ -22,10 +22,22 @@ own actual names wherever you see the placeholders below.
 
 **Additional naming note:** the Unity Catalog catalog, schema, and volume also
 differ from what Steps 5-6 originally planned — see the corrected Step 6 below
-for actual values (`ingredion_en_dev.ingredion_dev.ext-ingredion-dev`, not
+for actual values (`ingredion_en.ingredion_dev.ext-ingredion-dev`, not
 `workspace.bronze.ingredion`). Confirmed via live testing in the JSON reader
 and directory ingestion validation work (see `docs/testing_json_reader.md` and
 `docs/testing_directory_ingestion.md`).
+
+**Catalog rename note:** the catalog was originally created as
+`ingredion_en_dev` and has since been renamed to **`ingredion_en`**, because
+a catalog named `_dev` now holds staging and production schemas too. Steps
+below use the current name. The schema `ingredion_dev` and the volume
+`ext-ingredion-dev` keep their original names.
+
+**Environment layout note:** environments are separated by **schema**, not by
+catalog - one catalog (`ingredion_en`) with `ingredion_dev` / `ingredion_stg`
+/ `ingredion_prd`, and one Entra ID service principal per non-dev
+environment. Grants are therefore made at schema level; see the Deployment
+section of `bronze_layer/README.md`.
 
 **Package rename note:** the package/folder was renamed
 `bronze_json_loader` → `bronze_layer` (outer folder) / `bronze_ingest`
@@ -47,9 +59,10 @@ The config file edits listed under Step 6 have since been **applied** to the
 repo (`order_bronze.yaml`, `sample_config.yaml`, and the bundle all updated to
 the real catalog/schema/volume values).
 
-**Still to do:** `staging` and `prod` provisioning — service principals,
-`ingredion_en_staging` / `ingredion_en_prod` catalogs, external locations, and
-scoped grants. Tracked as Phase B on the deployment-provisioning issue.
+**Still to do:** `staging` and `prod` provisioning — the Entra ID service
+principals exist and their client IDs are wired into the bundle, but the
+`ingredion_stg` / `ingredion_prd` schemas and their scoped grants are not yet
+created. Tracked as Phase B on the deployment-provisioning issue.
 
 ---
 
@@ -245,18 +258,18 @@ names originally planned in earlier drafts of this doc):
 
 | | Originally planned | Actually created |
 |---|---|---|
-| Catalog | `workspace` | `ingredion_en_dev` |
+| Catalog | `workspace` | `ingredion_en` |
 | Schema | `bronze` | `ingredion_dev` |
 | Volume | `ingredion` | `ext-ingredion-dev` |
 
 **Validate:**
 ```python
-dbutils.fs.ls("/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/")
+dbutils.fs.ls("/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/")
 ```
 
-Validated: schema `ingredion_en_dev.ingredion_dev` and external volume
-`ingredion_en_dev.ingredion_dev.ext-ingredion-dev` created;
-`dbutils.fs.ls("/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/")`
+Validated: schema `ingredion_en.ingredion_dev` and external volume
+`ingredion_en.ingredion_dev.ext-ingredion-dev` created;
+`dbutils.fs.ls("/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/")`
 returned successfully with no error. Also confirmed working in practice —
 used as the pytest scratch location for `tests/test_directory_ingestion.py`
 (see `docs/testing_directory_ingestion.md`).
@@ -264,9 +277,9 @@ used as the pytest scratch location for `tests/test_directory_ingestion.py`
 **Config files updated to use these real values** (previously tracked as a
 pending task — now applied):
 - `config/order_bronze.yaml`: `schema_name: "ingredion_dev"`,
-  `source_path: "/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/"`
+  `source_path: "/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/"`
 - `sample_config.yaml`: same two fields
-- `databricks.yml`: `catalog` variable default → `ingredion_en_dev`,
+- `databricks.yml`: `catalog` variable default → `ingredion_en`,
   `schema_name` base_parameter for `bronze_directory_ingestion` →
   `ingredion_dev`
 
@@ -463,9 +476,9 @@ Notebook exited: SUCCESS: 1 unit(s) ingested, 1 skipped
 Then confirm in Catalog Explorer or SQL:
 
 ```sql
-SELECT * FROM ingredion_en_dev.ingredion_dev.<filename>_bronze;
-SELECT * FROM ingredion_en_dev.ingredion_dev._ingestion_audit ORDER BY started_at DESC;
-SELECT * FROM ingredion_en_dev.ingredion_dev._schema_registry;
+SELECT * FROM ingredion_en.ingredion_dev.<filename>_bronze;
+SELECT * FROM ingredion_en.ingredion_dev._ingestion_audit ORDER BY started_at DESC;
+SELECT * FROM ingredion_en.ingredion_dev._schema_registry;
 ```
 
 **Troubleshooting log (issues actually hit, in order):**
@@ -484,7 +497,7 @@ SELECT * FROM ingredion_en_dev.ingredion_dev._schema_registry;
    subfolder, so the run never reached a write. **A smoke run that ingests
    zero units has not validated the write path.** Drop a small file such as
    `{"order_id": 1, "amount": 10}` into
-   `/Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/raw/JSON/` and
+   `/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/raw/JSON/` and
    re-run before believing the environment works.
 
 Validated: `SUCCESS: 1 unit(s) ingested, 1 skipped`, with a bronze table
@@ -499,7 +512,7 @@ created and correct rows in both `_ingestion_audit` and `_schema_registry`.
 | Wheel built, uploaded, installed on serverless compute | ✅ |
 | Notebook imports `bronze_ingest`, no `sys.path` manipulation | ✅ |
 | Directory discovery against the UC Volume | ✅ |
-| Delta table written to `ingredion_en_dev` | ✅ |
+| Delta table written to `ingredion_en` | ✅ |
 | `_ingestion_audit` and `_schema_registry` rows written | ✅ |
 | UC write permissions from the job's execution context | ✅ |
 
@@ -513,27 +526,127 @@ forget when granting.
 
 ---
 
-## Step 12 — Staging and prod provisioning (not done)
+## Step 12 — Staging and prod provisioning (partially done)
 
 Phase B. Summarised here so the runbook stays the single entry point; the
 authoritative checklist is on the deployment-provisioning issue.
 
-**Azure Portal** — two containers in the existing `ingredionenpkgdev` storage
-account (`ingredion-staging`, `ingredion-prod`). No new storage account and no
-new Access Connector: the existing connector already holds `Storage Blob Data
-Contributor` at account scope, so it reaches new containers automatically.
+**Done — Entra ID service principals.** Registered in the tenant and added to
+Databricks. Their Application (client) IDs are identifiers rather than
+credentials and are set per target in the root `databricks.yml`, so a prod
+deploy cannot run under the staging identity:
 
-**Databricks account console** (`accounts.azuredatabricks.net`) — service
-principals `sp-ingredion-staging` and `sp-ingredion-prod`, each with an OAuth
-secret. The **Client ID** is what the bundle takes as
-`run_as_service_principal`.
+| | Application (client) ID |
+|---|---|
+| `staging-databricks-service-principal` | `6ea945e0-2b4f-4746-b8f7-e7be51adc35a` |
+| `prod-sp` | `8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9` |
 
-**Databricks workspace** — external locations for the two new containers
-(reusing `cred-ingredion-storage`), then catalogs, schemas, external volumes,
-and scoped grants per service principal. Verify the isolation rather than
-assuming it: as the staging principal, a `SELECT` against a prod table should
-be denied.
+Tenant: `01984097-743d-456d-9101-11a2e04cb219`.
 
-**Cost note:** catalogs, schemas, external locations and service principals are
+**Also required — `Service Principal: User` role for whoever deploys.** This
+is an account-level permission on the *service principal object*, and is
+separate from every Unity Catalog grant below. Without it the deploy fails at
+resource creation:
+
+```
+Error: cannot create resources.jobs.bronze_directory_ingestion: Cannot bind the
+service principal provided in 'run_as' field (staging-databricks-service-principal)
+to the job. The user creating or updating the job must have 'servicePrincipal.user'
+role on the service principal. (403 PERMISSION_DENIED)
+```
+
+Databricks **account console** → **User management** → **Service principals**
+→ select the principal → **Permissions** → add the deploying user with role
+**Service Principal: User**. Repeat for both principals.
+
+**`Manage` does not imply `Use`.** The console states this outright, and it is
+the easiest way to think the permission is already set: being able to
+administer a service principal is a separate grant from being able to run
+jobs as it. `Use` is the one `run_as` requires.
+
+**Grant `Use` to named principals, not to `account users`.** A default
+`account users` → `Use` grant means every user in the Databricks account can
+run jobs as that service principal. The principal's own UC grants still limit
+what it can reach, but anyone who can act as it inherits exactly that reach —
+which defeats the point of a scoped deploy identity. Grant `Use` to the
+deploying user, and later the CI federation identity, explicitly. Same
+discipline as granting `USE CATALOG` and nothing more at catalog level.
+
+Easy to miss because it reads like a data-access problem and is not one:
+`run_as` means the deployer is asking Databricks to let a job execute *as*
+another identity, so the deployer must be authorised to act on that identity.
+Granting every UC privilege in the world would not fix it.
+
+**Set this in the Databricks account console, not the Azure portal — even
+though these are Entra ID service principals.** The two systems own different
+halves:
+
+| | Owns |
+|---|---|
+| Entra ID | that the principal exists, its credentials, lifecycle, conditional access, sign-in logs |
+| Databricks | who may bind a job to run *as* it, and what it can reach in Unity Catalog |
+
+`servicePrincipal.user` is a Databricks account-level role on Databricks' own
+representation of the principal. Being Owner on the Azure subscription, or
+owner of the Entra app registration, conveys none of it — Azure RBAC does not
+reach inside Databricks' permission model. Choosing Entra ID over
+Databricks-managed principals changed *where the identity lives*, not *who
+governs its use inside Databricks*.
+
+Note this requirement disappears under OIDC federation (#113): there the
+deploying identity *is* the service principal, so nothing is binding on
+anyone else's behalf. One more reason to move deploys into CI rather than
+leaving them manual.
+
+**Not done — schemas and grants.** In the Databricks workspace:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS ingredion_en.ingredion_stg;
+CREATE SCHEMA IF NOT EXISTS ingredion_en.ingredion_prd;
+
+-- Catalog level: USE CATALOG and nothing more. A single
+-- GRANT SELECT ON CATALOG would flatten the whole boundary at once.
+GRANT USE CATALOG ON CATALOG ingredion_en TO `6ea945e0-2b4f-4746-b8f7-e7be51adc35a`;
+GRANT USE CATALOG ON CATALOG ingredion_en TO `8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9`;
+
+GRANT USE SCHEMA, CREATE TABLE, MODIFY, SELECT
+  ON SCHEMA ingredion_en.ingredion_stg TO `6ea945e0-2b4f-4746-b8f7-e7be51adc35a`;
+GRANT USE SCHEMA, CREATE TABLE, MODIFY, SELECT
+  ON SCHEMA ingredion_en.ingredion_prd TO `8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9`;
+
+-- The source volume lives in the ingredion_dev schema, so staging and prod
+-- need USE SCHEMA there purely to reach their own subpath.
+GRANT USE SCHEMA ON SCHEMA ingredion_en.ingredion_dev TO `6ea945e0-2b4f-4746-b8f7-e7be51adc35a`;
+GRANT USE SCHEMA ON SCHEMA ingredion_en.ingredion_dev TO `8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9`;
+GRANT READ VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
+  TO `6ea945e0-2b4f-4746-b8f7-e7be51adc35a`;
+GRANT READ VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
+  TO `8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9`;
+```
+
+**Verify the isolation rather than assuming it.** As the staging principal, a
+`SELECT` against a table in `ingredion_prd` should be denied. A grant that
+looks right and a grant that works are different things.
+
+**Known gap — source files are not isolated.** All three environments read
+subpaths of one volume, and `READ VOLUME` is granted at volume granularity;
+Unity Catalog has no sub-path grant. Any principal that can read its own
+subpath can read `PROD/Raw/` too. Tables, audit and registry are properly
+isolated by schema; source files are not. Giving each environment its own
+volume would close this and costs nothing but the metadata objects.
+
+**Then deploy:**
+
+```bash
+databricks bundle deploy -t staging --profile bronze-json-loader-dev
+databricks bundle run bronze_directory_ingestion -t staging --profile bronze-json-loader-dev
+```
+
+Do this manually before wiring OIDC federation. A manual deploy separates
+"does the service principal have the right grants" from "does federation
+work" — debugging both at once is considerably harder, and the grants are
+the more likely problem.
+
+**Cost note:** schemas, external locations, volumes and service principals are
 metadata and cost nothing. The spend is serverless compute per job run plus
 ADLS storage.

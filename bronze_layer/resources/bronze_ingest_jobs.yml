@@ -16,7 +16,7 @@ resources:
     # single-table job, but disabled to avoid unnecessary deployment/
     # scheduling cost. Uncomment and redeploy if needed again.
     # bronze_orders_ingestion:
-    #   name: bronze_orders_ingestion
+    #   name: bronze_orders_ingestion_${var.env_suffix}
 
     #   environments:
     #     - environment_key: default
@@ -43,9 +43,63 @@ resources:
     # Directory ingestion: loads every .json in source_dir into its own
     # bronze table named {filename}_bronze. Run with:
     #   databricks bundle run bronze_directory_ingestion
+    # The resource KEY stays unsuffixed - `databricks bundle run
+    # bronze_directory_ingestion -t staging` addresses it by key, and the
+    # target selects the environment. Only the display NAME is suffixed,
+    # because all three targets deploy into the same workspace and would
+    # otherwise show three identically-named jobs in the Jobs list with no
+    # way to tell which is production.
     bronze_directory_ingestion:
-      name: bronze_directory_ingestion
-      # max_concurrent_runs: 1
+      name: bronze_directory_ingestion_${var.env_suffix}
+
+      # One run at a time. Two concurrent runs over the same source_dir race
+      # on file discovery, archival, and the shared _state/ retry file - see
+      # #153. That is not exotic: it is the default behaviour of any
+      # scheduled job whose run outlasts its interval, and the benchmark
+      # below makes that realistic on a tight schedule.
+      #
+      # This must be set BEFORE task retries are enabled, not after: a
+      # retried task can otherwise overlap a still-draining original, making
+      # the same races strictly more likely.
+      max_concurrent_runs: 1
+
+      # A scheduled run that arrives while another is in flight waits rather
+      # than being dropped. Without this, max_concurrent_runs silently
+      # discards the overlapping trigger and the skipped run produces no
+      # signal at all.
+      queue:
+        enabled: true
+
+      # Timeout derived from the measured benchmark, not picked round.
+      # docs/testing_directory_ingestion.md: 100 files ~= 163s, of which
+      # archival is ~0.45s/file and is the dominant linear cost. This job
+      # sets max_files: 50, so nominal is ~82s.
+      #
+      # The worst realistic case is not slow files, it is failing ones:
+      # retry_attempts=3 with retry_delay_seconds=10 and 2x backoff sleeps
+      # 10s + 20s = 30s per failing file (#152 - the retry wrapper does not
+      # distinguish transient from permanent). 50 failing files is ~1500s of
+      # pure sleeping plus overhead, so ~1800s is the realistic ceiling for a
+      # run that is failing rather than hung.
+      #
+      # 3600s therefore bounds a genuinely stuck run at roughly 2x that
+      # ceiling, without turning a bad-but-progressing day into a hard kill.
+      timeout_seconds: 3600
+
+      # Warn at the point a run has stopped looking like a slow success and
+      # started looking like the failing-file case above - ~22x nominal.
+      # This is the only proactive signal in the job today; everything else
+      # fires on failure, so a run that is merely stuck is otherwise
+      # invisible until it finishes or times out.
+      health:
+        rules:
+          - metric: RUN_DURATION_SECONDS
+            op: GREATER_THAN
+            value: 1800
+
+      tags:
+        layer: bronze
+        environment: ${var.env_suffix}
 
       # Serverless compute rejects a task-level `libraries:` field outright
       # ("Libraries field is not supported for serverless task, please
@@ -70,6 +124,35 @@ resources:
         - task_key: ingest_directory
           environment_key: default
 
+          # Slightly under the job timeout so the task is what times out,
+          # and the job records which task did it rather than killing the
+          # run from above with no attribution.
+          timeout_seconds: 3300
+
+          # Retries cover transient platform failures (throttling, a
+          # momentary storage blip) that today need a human to notice and
+          # re-run.
+          #
+          # Retry safety depends on `batch_id` being stable across attempts.
+          # base_parameters sets batch_id: "{{job.run_id}}", which
+          # _resolve_idempotent_txn_version parses as an integer and uses as
+          # the Delta txnVersion, keyed per table by txnAppId. A retried
+          # attempt therefore re-writes the same txnVersion and Delta skips
+          # it, so a file written but not yet archived is not duplicated.
+          #
+          # That guarantee holds only while {{job.run_id}} is the JOB run and
+          # stays constant across task attempts - {{task.run_id}} would not.
+          # Worth confirming on the first real retry: if a retried run
+          # duplicates rows for already-written files, this is why, and
+          # max_retries should go back to 0 until #63's idempotency is keyed
+          # on something genuinely stable.
+          max_retries: 2
+          min_retry_interval_millis: 60000
+
+          # A run that hit the timeout will hit it again - retrying doubles
+          # the cost of the same failure and delays the alert.
+          retry_on_timeout: false
+
           notebook_task:
             # Relative to this file's directory (see header). The bundle
             # syncs the notebook into the target's own root_path, so the
@@ -80,6 +163,13 @@ resources:
               source_dir: ${var.source_volume_path}
               catalog: ${var.catalog}
               schema_name: ${var.schema_name}
+              # All three environments share one catalog, so the audit and
+              # schema-registry tables must be pinned to this environment's
+              # schema. Left at the package default ("bronze") they would all
+              # write to one shared table - mixing run histories and giving
+              # every service principal read access to the others'.
+              audit_schema_name: ${var.audit_schema_name}
+              registry_schema_name: ${var.registry_schema_name}
               table_name_template: "{filename}_bronze"
               write_mode: append
               multiline: "true"
@@ -109,4 +199,8 @@ resources:
 
       email_notifications:
         on_failure:
+          - ${var.notification_email}
+        # Fires when the health rule above trips, so a stuck run is visible
+        # while it is still stuck rather than only once it finally exits.
+        on_duration_warning_threshold_exceeded:
           - ${var.notification_email}

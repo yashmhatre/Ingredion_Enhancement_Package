@@ -503,6 +503,43 @@ gets the same protection when `idempotent_batch_writes: true` (default)
 ID) - see the retry-safety matrix below for exactly what's covered and
 what isn't.
 
+### Job-level safety controls
+
+The package's own failure handling is thorough — retry with backoff,
+quarantine fallback chains, retry limits across runs, `failure_stage`
+tagging, an audit row on every outcome. None of that bounds a run that is
+merely *stuck*, and the job wrapper is what stands between a hung run and
+the bill. `bronze_ingest_jobs.yml` sets:
+
+| Control | Value | Why |
+|---|---|---|
+| `max_concurrent_runs` | `1` | Two runs over one `source_dir` race on discovery, archival and the shared `_state/` retry file |
+| `queue.enabled` | `true` | An overlapping scheduled run waits instead of being silently dropped |
+| `health` warn | 1800s | The only proactive signal — everything else fires on failure |
+| task `timeout_seconds` | 3300s | Task dies first, so the run records *which* task hung |
+| job `timeout_seconds` | 3600s | Backstop |
+| `max_retries` | `2` | Transient platform failures shouldn't need a human |
+| `retry_on_timeout` | `false` | A timeout recurs; retrying doubles the cost and delays the alert |
+
+Escalation order is deliberate: **warn (1800s) → task timeout (3300s) → job
+timeout (3600s)**, so a stuck run is visible while still stuck rather than
+only once it exits.
+
+The timeouts are derived, not round numbers. `docs/testing_directory_ingestion.md`
+measures 100 files ≈ 163s, and the job caps at `max_files: 50` — so nominal
+is ~82s. The realistic ceiling is a *failing* run, not a slow one: with
+`retry_attempts: 3` and `retry_delay_seconds: 10`, each failing file sleeps
+10s + 20s before giving up, so 50 failing files is ~1500s of pure waiting.
+3600s bounds a genuinely hung run at roughly 2× that.
+
+> **`max_retries` depends on `batch_id` stability.** The job passes
+> `batch_id: "{{job.run_id}}"`, which becomes the Delta `txnVersion`, so a
+> retried attempt re-writes the same version and Delta skips it — a file
+> written but not yet archived is not duplicated. That holds only while
+> `{{job.run_id}}` stays constant across task attempts. If a retried run ever
+> duplicates rows for already-written files, this is the reason: set
+> `max_retries: 0` until idempotency is keyed on something verifiably stable.
+
 ### Retry-safety matrix
 
 | Write mode | Retry-safe across a job retry? | Mechanism |
@@ -631,16 +668,52 @@ inside a resource file resolves it as
 
 ### Environment model
 
-Environments are separated by **Unity Catalog catalog and by the service
-principal jobs run as** — not by workspace. One workspace, three catalogs,
-one service principal per non-dev environment. That gives real isolation
-and per-environment audit without paying for multiple workspaces.
+Environments are separated by **Unity Catalog schema and by the service
+principal jobs run as** — not by workspace, and not by catalog. One
+workspace, one catalog, one schema and one service principal per
+environment. That gives per-environment isolation and audit without paying
+for multiple workspaces.
 
-| Target | Catalog | Runs as | Schedules | Purpose |
-|---|---|---|---|---|
-| `dev` | `ingredion_en_dev` | the deploying user | auto-paused | Full development environment on Databricks |
-| `staging` | `ingredion_en_staging` | staging service principal | as configured | Pre-production validation |
-| `prod` | `ingredion_en_prod` | prod service principal | as configured | Production |
+| Target | Catalog | Schema | Deployed job name | Runs as | Schedules |
+|---|---|---|---|---|---|
+| `dev` | `ingredion_en` | `ingredion_dev` | `bronze_directory_ingestion_dev` | the deploying user | auto-paused |
+| `staging` | `ingredion_en` | `ingredion_stg` | `bronze_directory_ingestion_stg` | staging service principal | as configured |
+| `prod` | `ingredion_en` | `ingredion_prd` | `bronze_directory_ingestion_prd` | prod service principal | as configured |
+
+Job **display names** carry an environment suffix because all three targets
+deploy into the same workspace — without it the Jobs list would show three
+identically-named jobs with no way to tell which one is production, and
+running the wrong one is a single misclick. The **resource key** is
+deliberately not suffixed, so `databricks bundle run
+bronze_directory_ingestion -t staging` still addresses it by key with the
+target selecting the environment.
+
+**The boundary is the schema, so every grant that matters is a schema
+grant.** `USE CATALOG` on its own conveys no data access, which is what
+makes a shared catalog sound — but it also means a single
+`GRANT SELECT ON CATALOG` would flatten the entire boundary in one
+statement. Grant `USE CATALOG` and nothing else at catalog level.
+
+The audit and schema-registry tables follow the same boundary:
+`audit_schema_name` and `registry_schema_name` are pinned per environment in
+the bundle. Left at their package default (`bronze`) all three environments
+would write run history and schema fingerprints into one shared table —
+mixing the trails, and giving every service principal read access to the
+others'. `_write_audit_row` creates the schema if it is missing, so this
+would have worked silently rather than failing.
+
+> **Source-file isolation is not enforced.** All three environments read
+> from subpaths of a single volume (`ext-ingredion-dev`). Unity Catalog
+> grants `READ VOLUME` at volume granularity — there is no sub-path grant —
+> so any principal that can read its own subpath can read the others,
+> including `PROD/Raw/`. Directory separation here is a convention, not a
+> control. Tables, audit and registry are properly isolated; source files
+> are not. Giving each environment its own volume would close this, and
+> costs nothing but the metadata objects.
+>
+> The volume also lives in the `ingredion_dev` schema, so staging and prod
+> need `USE SCHEMA` on `ingredion_dev` purely to reach their own source
+> data — another reason per-environment volumes are cleaner.
 
 **All three environments are real Databricks environments.** `dev` is a
 deployed environment like the others — same code path, same bundle, same UC
@@ -649,7 +722,7 @@ against it means UC-only behavior (Volumes, tags, Auto Loader,
 `information_schema`) is exercised continuously rather than first meeting
 production.
 
-Local pytest remains the **fast inner loop**: 130 tests against local Spark +
+Local pytest remains the **fast inner loop**: the full suite against local Spark +
 Delta in ~3 minutes with no workspace round-trip, which is where logic bugs
 should be caught. It is a complement to the `dev` environment, not a
 substitute for it — local Delta cannot reproduce the UC surface, so green
@@ -674,6 +747,29 @@ Without it, `bundle deploy` fails at the artifact step with
 `No module named build` before it reaches the workspace. The `dev` extra in
 `bronze_layer/setup.py` includes it, along with pytest and the local
 Spark/Delta stack.
+
+**Deploying `staging` or `prod` also needs the `Service Principal: User` role
+on the target service principal**, granted in the Databricks account console
+under User management → Service principals → Permissions. This is an
+account-level permission on the *identity*, unrelated to any Unity Catalog
+grant — `run_as` asks Databricks to let a job execute *as* another identity,
+so the deployer must be authorised to act on that identity. Without it:
+
+```
+Cannot bind the service principal provided in 'run_as' field ... The user
+creating or updating the job must have 'servicePrincipal.user' role on the
+service principal. (403 PERMISSION_DENIED)
+```
+
+It reads like a data-access problem and is not one; no amount of `GRANT` fixes
+it. The requirement disappears once deploys move to OIDC federation, where the
+deploying identity *is* the service principal.
+
+Set it in the **Databricks account console, not the Azure portal** — even
+though these are Entra ID service principals. Entra ID owns that the identity
+exists and how you authenticate as it; Databricks owns who may bind a job to
+run as it. Azure RBAC does not reach inside Databricks' permission model, so
+being Owner on the subscription conveys nothing here.
 
 ```bash
 databricks bundle deploy -t dev        # deploys as you, schedules paused
@@ -768,21 +864,63 @@ dbutils.library.restartPython()
 
 The bundle consumes these; it does not create them.
 
-- **Service principals** — one per non-dev environment, with OAuth (M2M)
-  credentials. Never a personal account: a job running under a named human
-  inherits their full permissions and breaks when they leave.
-- **Catalogs** — `ingredion_en_{dev,staging,prod}`, each granted to only its
-  own service principal (`USE CATALOG` + `CREATE TABLE` on its target schema;
-  not `ALL PRIVILEGES`).
+- **Entra ID service principals** — one per non-dev environment. Never a
+  personal account: a job running under a named human inherits their full
+  permissions and breaks when they leave.
+- **One catalog** — `ingredion_en`, shared by all three environments.
+- **One schema per environment** — `ingredion_dev` / `ingredion_stg` /
+  `ingredion_prd`. **The schema is the isolation boundary**, not the catalog.
 - **Volumes** — the `source_volume_path` per environment.
-- **A distribution list** for `notification_email` in staging/prod.
+- **An address** for `notification_email` in staging/prod.
+
+**Grant `USE CATALOG` and nothing else at catalog level.** A single
+`GRANT SELECT ON CATALOG` flattens the entire boundary in one statement.
+Everything that matters is a schema or volume grant:
+
+```sql
+GRANT USE CATALOG ON CATALOG ingredion_en TO `<client-id>`;
+GRANT USE SCHEMA, CREATE TABLE, MODIFY, SELECT
+  ON SCHEMA ingredion_en.ingredion_stg TO `<staging-client-id>`;
+```
+
+That one schema grant covers the bronze tables, `_ingestion_audit` and
+`_schema_registry` together — they all live in the environment's own schema,
+so there is nothing separate to grant or keep in sync.
+
+**Also required, and not a Unity Catalog grant:** the deploying identity
+needs the **Service Principal: User** role on each service principal,
+granted in the Databricks *account console*. `run_as` asks Databricks to let
+a job execute *as* another identity, so the deployer must be authorised to
+act on that identity. No `GRANT` fixes it, and `Manage` does not imply
+`Use`. See `azure_setup.md` Step 12.
+
+> **Source files are not isolated.** All three environments read subpaths of
+> one Volume, and Unity Catalog grants `READ VOLUME` at volume granularity —
+> there is no sub-path grant. Any principal that can read its own subpath can
+> read `PROD/Raw/`. Tables, audit and registry *are* isolated by schema.
+> Per-environment Volumes would close this; tracked as #160.
 
 ### Not yet implemented
 
-- **CI/CD deploy.** CI runs tests and verifies the wheel; it does not deploy.
-  Deploys are manual. The intended next step is GitHub OIDC federation to a
-  service principal, so no long-lived tokens are stored anywhere.
-- **Secret scopes** (architecture.md phase 7).
+Kept in step with `docs/architecture.md`'s "Remaining enterprise-hardening
+phases" and the issue tracker — if those disagree with this list, this list
+is the one that drifted.
+
+- **CI/CD deploy** (#113). CI runs tests and verifies the wheel; it does not
+  deploy. Deploys are manual. The intended next step is GitHub OIDC
+  federation to a service principal, so no long-lived tokens are stored
+  anywhere — which also removes the `Service Principal: User` requirement
+  above, since the deploying identity would *be* the service principal.
+- **Secret scopes** (#115, architecture.md phase 7).
+- **Per-environment Volume isolation** (#160). Source-file separation is
+  currently a naming convention, not a control — see the note above.
+- **Table lifecycle** (#159). Nothing runs `OPTIMIZE` or `VACUUM`, and no
+  retention policy exists for the quarantine or audit tables, which grow
+  monotonically.
+- **Concurrency locking** (#153, architecture.md phase 5). Mitigated but not
+  solved: the job now sets `max_concurrent_runs: 1`, which prevents the
+  common case (a scheduled run overlapping its predecessor) without making
+  the underlying operations safe against concurrent access.
 
 ## Operational notes / known caveats
 
