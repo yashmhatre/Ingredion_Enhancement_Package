@@ -720,6 +720,12 @@ It reads like a data-access problem and is not one; no amount of `GRANT` fixes
 it. The requirement disappears once deploys move to OIDC federation, where the
 deploying identity *is* the service principal.
 
+Set it in the **Databricks account console, not the Azure portal** — even
+though these are Entra ID service principals. Entra ID owns that the identity
+exists and how you authenticate as it; Databricks owns who may bind a job to
+run as it. Azure RBAC does not reach inside Databricks' permission model, so
+being Owner on the subscription conveys nothing here.
+
 ```bash
 databricks bundle deploy -t dev        # deploys as you, schedules paused
 

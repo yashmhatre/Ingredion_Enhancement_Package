@@ -564,6 +564,22 @@ Easy to miss because it reads like a data-access problem and is not one:
 another identity, so the deployer must be authorised to act on that identity.
 Granting every UC privilege in the world would not fix it.
 
+**Set this in the Databricks account console, not the Azure portal — even
+though these are Entra ID service principals.** The two systems own different
+halves:
+
+| | Owns |
+|---|---|
+| Entra ID | that the principal exists, its credentials, lifecycle, conditional access, sign-in logs |
+| Databricks | who may bind a job to run *as* it, and what it can reach in Unity Catalog |
+
+`servicePrincipal.user` is a Databricks account-level role on Databricks' own
+representation of the principal. Being Owner on the Azure subscription, or
+owner of the Entra app registration, conveys none of it — Azure RBAC does not
+reach inside Databricks' permission model. Choosing Entra ID over
+Databricks-managed principals changed *where the identity lives*, not *who
+governs its use inside Databricks*.
+
 Note this requirement disappears under OIDC federation (#113): there the
 deploying identity *is* the service principal, so nothing is binding on
 anyone else's behalf. One more reason to move deploys into CI rather than
