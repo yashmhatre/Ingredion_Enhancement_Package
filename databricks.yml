@@ -12,22 +12,32 @@
 # CI deployment a single `bundle deploy` rather than one per layer, so the
 # layers can never be deployed against mismatched settings.
 #
-# Environments are separated by Unity Catalog catalog and by the service
-# principal jobs run as - not by workspace. One workspace, three catalogs,
-# one service principal per non-dev environment. That gives real isolation
-# and per-environment audit without paying for multiple workspaces.
+# Environments are separated by Unity Catalog SCHEMA and by the service
+# principal jobs run as - not by workspace, and not by catalog. One
+# workspace, one catalog (ingredion_en), one schema and one service
+# principal per environment. That gives per-environment isolation and audit
+# without paying for multiple workspaces.
 #
-# staging/prod deliberately have NO defaults for `notification_email` and
-# `run_as_service_principal`. A deploy that doesn't supply them fails
-# immediately rather than silently running as a human or sending alerts
-# nowhere:
+# Because the boundary is the schema, every grant that matters is a schema
+# grant. `USE CATALOG` on its own conveys no data access, which is what makes
+# a shared catalog sound - but it also means a single `GRANT SELECT ON
+# CATALOG` would flatten the whole boundary in one statement. Grant
+# `USE CATALOG` and nothing else at catalog level.
 #
-#   databricks bundle deploy -t prod \
-#     --var="notification_email=data-platform-oncall@your-org.com" \
-#     --var="run_as_service_principal=<application-id-of-prod-SP>"
+# The audit and schema-registry tables live in each environment's own data
+# schema, so the same grant that lets a service principal write its bronze
+# tables also covers them - no separate governance schema, and nothing extra
+# to grant or keep in sync.
 #
-# In CI these come from repository secrets/variables rather than the
-# command line.
+# `run_as_service_principal` is set explicitly per target rather than passed
+# via --var, so a prod deploy cannot accidentally run under the staging
+# identity. Client IDs are identifiers, not credentials, and are safe here.
+#
+# Known gap: all three environments read subpaths of ONE volume, and Unity
+# Catalog grants READ VOLUME at volume granularity - there is no sub-path
+# grant. Any principal that can read its own subpath can read PROD/Raw/.
+# Tables, audit and registry are isolated by schema; source files are not.
+# Per-environment volumes would close it. See bronze_layer/README.md.
 
 bundle:
   name: ingredion_enhancement_package
