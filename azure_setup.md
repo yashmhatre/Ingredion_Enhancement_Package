@@ -559,6 +559,19 @@ Databricks **account console** → **User management** → **Service principals*
 → select the principal → **Permissions** → add the deploying user with role
 **Service Principal: User**. Repeat for both principals.
 
+**`Manage` does not imply `Use`.** The console states this outright, and it is
+the easiest way to think the permission is already set: being able to
+administer a service principal is a separate grant from being able to run
+jobs as it. `Use` is the one `run_as` requires.
+
+**Grant `Use` to named principals, not to `account users`.** A default
+`account users` → `Use` grant means every user in the Databricks account can
+run jobs as that service principal. The principal's own UC grants still limit
+what it can reach, but anyone who can act as it inherits exactly that reach —
+which defeats the point of a scoped deploy identity. Grant `Use` to the
+deploying user, and later the CI federation identity, explicitly. Same
+discipline as granting `USE CATALOG` and nothing more at catalog level.
+
 Easy to miss because it reads like a data-access problem and is not one:
 `run_as` means the deployer is asking Databricks to let a job execute *as*
 another identity, so the deployer must be authorised to act on that identity.
