@@ -277,6 +277,48 @@ There's currently no table-lifecycle management (`OPTIMIZE`, `VACUUM`,
 retention policies) in this package beyond what `table_properties` and
 predictive optimization already cover.
 
+## Catalog documentation (table/column comments)
+
+Config-driven `COMMENT` support, applied to the target table after every
+successful write:
+
+```yaml
+table_comment: "Raw orders landed from SAP, one row per source record"
+column_comments:
+  order_id: "Source system primary key"
+  customer_email: "Customer email as provided upstream"
+```
+
+Both are optional; when neither is set the whole step is skipped without
+so much as a catalog read.
+
+**Only what changed is written.** Comment DDL creates a new Delta table
+version *every time it runs, including when the comment is identical* -
+verified empirically: applying the same `COMMENT ON TABLE` twice takes the
+table from version 1 to 2 to 3. Blind re-stamping would therefore append
+two or more junk versions to `DESCRIBE HISTORY` on every ingestion run
+forever. So the current table/column comments are read first and DDL is
+issued only for values that actually differ.
+
+**Top-level columns only.** Nested paths like `customer.name` are not
+supported - bronze preserves nested JSON structures rather than flattening
+them, so there's no top-level column by that name. Any configured column
+that isn't on the table is logged as a WARNING and skipped; it never fails
+the run. Comments containing apostrophes are escaped correctly.
+
+Like the audit trail and schema registry, a failure here is logged and
+never fails the ingestion run.
+
+**Unity Catalog tags are not implemented** (`ALTER TABLE ... SET TAGS`,
+PII/classification markers). That DDL and the `information_schema` tag
+views are Databricks Runtime features that raise `ParseException` on
+OSS/local Delta, so neither the apply path nor the read-back path can be
+exercised by this package's test suite. Given tag failures would be
+non-fatal by design, an unverified implementation would silently report
+success while applying nothing - a worse outcome for a governance feature
+than not shipping it. Tracked on #64, pending validation against a real UC
+workspace.
+
 ## Audit columns (per-row lineage)
 
 When `add_audit_columns: true` (default), every load adds:
@@ -364,12 +406,13 @@ bronze_layer/
     config.py            # IngestionConfig dataclass + yaml/json loaders
     json_reader.py        # batch JSON read (PERMISSIVE mode, corrupt-record capture)
     streaming_reader.py    # Auto Loader (cloudFiles) incremental read
-    quality.py            # required-column validation + quarantine split
+    quality.py            # required-column + uniqueness validation, quarantine split
     bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
     directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
     audit.py               # run-level audit trail (audited_run context manager)
     schema_registry.py      # schema fingerprint + drift detection (one row per table)
     replay.py              # quarantine replay - reprocess_quarantine() / reprocess_quarantined_files()
+    catalog_metadata.py     # table/column COMMENT documentation (diff-and-apply)
     retry.py              # exponential-backoff retry decorator
     logging_utils.py       # structured logging
     pipeline.py           # BronzeIngestion orchestrator (run() / run_streaming() / run_on_dataframe())

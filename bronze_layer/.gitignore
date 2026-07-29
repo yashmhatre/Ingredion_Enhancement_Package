@@ -1,0 +1,23 @@
+# Databricks CLI / bundle local state
+.databricks/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local pytest run artifacts. The Delta-backed tests in tests/ spin up a
+# real local Spark session, which materializes test tables under
+# spark-warehouse/ (several MB per full run) and, depending on the
+# session config, a Derby metastore alongside it. All of it is
+# regenerated on demand and must never be committed.
+spark-warehouse/
+metastore_db/
+derby.log
+
+# .pytest_cache/ is deliberately absent: pytest writes its own
+# .gitignore inside that directory, so it already self-ignores.
+
+# Packaging
+*.egg-info/
+build/
+dist/

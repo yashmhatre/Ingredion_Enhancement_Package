@@ -21,6 +21,12 @@ partition_by: null              # discouraged for new tables - prefer cluster_by
 # table_properties:
 #   delta.enableChangeDataFeed: "true"
 
+# --- Catalog documentation: applied post-write, only when changed ---
+# table_comment: "Raw orders landed from SAP, one row per source record"
+# column_comments:                # top-level columns only - nested paths like
+#   order_id: "Source system primary key"        # customer.name are skipped with a
+#   customer_email: "Email as provided upstream"  # warning, since bronze doesn't flatten
+
 add_audit_columns: true
 audit_ingest_ts_col: "_ingested_at"
 audit_source_file_col: "_source_file"
