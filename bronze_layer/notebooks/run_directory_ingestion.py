@@ -8,10 +8,15 @@
 
 # COMMAND ----------
 
-import sys
-
-# Adjust to your deployed path (Repos path if using Git folders).
-sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer")
+# bronze_ingest is installed on the job's compute as a wheel, declared in
+# bronze_layer/resources/bronze_ingest_jobs.yml under the task's
+# `libraries:`. No sys.path manipulation:
+# the wheel is versioned, belongs to no individual's home directory, and
+# rolls back with the bundle.
+#
+# Running this notebook interactively outside a bundle-deployed job? Install
+# the same wheel into the session first:
+#   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
 from bronze_ingest import ingest_directory_to_bronze, get_logger
 

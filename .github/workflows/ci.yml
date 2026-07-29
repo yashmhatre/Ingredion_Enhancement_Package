@@ -79,3 +79,76 @@ jobs:
       - name: Fail if tests failed
         if: steps.render.outputs.ok != 'true'
         run: exit 1
+
+  # The bundle installs bronze_ingest onto job compute as a wheel
+  # (databricks.yml `artifacts:` -> task `libraries:`), and the notebooks
+  # import it with no sys.path fallback. A wheel that fails to build, ships
+  # the wrong files, or reports a version that disagrees with its filename
+  # would only surface at deploy time - so it's checked here instead.
+  wheel:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel
+        working-directory: bronze_layer
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Verify wheel contents and version
+        working-directory: bronze_layer
+        run: |
+          python - <<'PY'
+          import glob, re, sys, zipfile
+
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          failures = []
+
+          # Tests and other stray packages must not ship to production compute.
+          leaked = [n for n in names if n.startswith(("tests/", "notebooks/", "config/"))]
+          if leaked:
+              failures.append(f"non-package files in wheel: {leaked}")
+
+          if not any(n == "bronze_ingest/__init__.py" for n in names):
+              failures.append("bronze_ingest/__init__.py missing from wheel")
+
+          # The filename version and the package's own __version__ must agree,
+          # or a deployed job can't report which version it is running.
+          declared = re.search(
+              r'^__version__ = ["\']([^"\']+)["\']',
+              open("bronze_ingest/__init__.py").read(), re.M,
+          ).group(1)
+          if declared not in whl:
+              failures.append(f"__version__ {declared!r} not in wheel filename {whl!r}")
+
+          if failures:
+              print("\n".join(f"FAIL: {f}" for f in failures))
+              sys.exit(1)
+          print(f"OK: {whl} ({len(names)} entries), version {declared}")
+          PY
+
+      - name: Verify wheel installs and imports standalone
+        working-directory: bronze_layer
+        run: |
+          python -m venv /tmp/wheelcheck
+          # pyspark is intentionally not a runtime dependency (Databricks
+          # provides it), so it's installed here to mirror job compute.
+          /tmp/wheelcheck/bin/pip install --quiet "pyspark>=3.3.0" dist/*.whl
+          cd /tmp && /tmp/wheelcheck/bin/python -c "
+          import bronze_ingest
+          assert 'site-packages' in bronze_ingest.__file__, bronze_ingest.__file__
+          from bronze_ingest import (
+              BronzeIngestion, IngestionConfig, ingest_directory_to_bronze,
+              reprocess_quarantine, apply_catalog_metadata, get_logger,
+          )
+          print('wheel imports cleanly:', bronze_ingest.__version__)
+          "

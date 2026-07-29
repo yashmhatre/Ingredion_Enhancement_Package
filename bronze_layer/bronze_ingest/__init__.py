@@ -19,4 +19,9 @@ __all__ = [
     "apply_catalog_metadata",
     "get_logger",
 ]
-__version__ = "0.3.0"
+# Single source of truth for the package version: setup.py parses this
+# string rather than declaring its own. They previously disagreed (wheel
+# built as 0.4.0 while the package reported 0.3.0), which defeats the point
+# of shipping a versioned artifact - you couldn't tell what was deployed
+# from inside a running job.
+__version__ = "0.4.0"
