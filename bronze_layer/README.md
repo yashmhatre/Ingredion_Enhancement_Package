@@ -616,8 +616,18 @@ them once at the root also makes CI deployment a single `bundle deploy`
 rather than one per layer, so the layers can never be deployed against
 mismatched settings.
 
-Paths inside resource files are relative to the bundle root, e.g.
-`./bronze_layer/notebooks/run_directory_ingestion.py`.
+Paths inside a resource file are relative to **that file's own directory**,
+not to the bundle root — so `bronze_layer/resources/bronze_ingest_jobs.yml`
+refers to its notebooks as `../notebooks/run_directory_ingestion.py`.
+
+Paths in the root `databricks.yml` itself (such as the `artifacts:` build
+path) are relative to the root, since that is the file declaring them —
+same rule, different file.
+
+Verified against Databricks CLI v1.9.0. Using a bundle-root-relative path
+inside a resource file resolves it as
+`bronze_layer/resources/bronze_layer/notebooks/...` and fails with
+`notebook ... not found`.
 
 ### Environment model
 
