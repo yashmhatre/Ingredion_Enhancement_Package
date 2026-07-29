@@ -23,6 +23,8 @@ the results list, but does not stop the remaining files from loading.
 import os
 import re
 from typing import Dict, Any, List, Optional
+
+from .databricks_fs import get_dbutils, list_entries
 import shutil
 import json as _json
 from datetime import datetime, timezone
@@ -61,26 +63,18 @@ def build_table_name(filename: str, template: str = "{filename}_bronze") -> str:
 
 
 def _try_dbutils_ls(source_dir: str) -> Optional[List[str]]:
-    """File listing via dbutils.fs.ls - works on ALL Databricks compute,
+    """Databricks-native file listing - works on ALL Databricks compute,
     including serverless (where spark._jvm is blocked). Returns None if
-    dbutils isn't available (e.g. local pytest runs)."""
-    try:
-        import IPython
-        dbutils = IPython.get_ipython().user_ns["dbutils"]  # type: ignore[union-attr]
-    except Exception:
+    Databricks isn't available at all (e.g. local pytest runs); raises if it
+    is available and the listing genuinely fails. See databricks_fs.py."""
+    entries = list_entries(source_dir)
+    if entries is None:
         return None
-
-    try:
-        entries = dbutils.fs.ls(source_dir)
-    except Exception as exc:
-        if "FileNotFoundException" in str(exc) or "does not exist" in str(exc).lower() or "No such file" in str(exc):
-            raise FileNotFoundError(f"source_dir does not exist: {source_dir}") from exc
-        raise
 
     return sorted(
         e.path
         for e in entries
-        if not e.path.endswith("/") and e.name.lower().endswith((".json", ".jsonl"))
+        if not e.is_dir and e.name.lower().endswith((".json", ".jsonl"))
     )
 
 
@@ -99,15 +93,13 @@ def _try_posix_ls(source_dir: str) -> Optional[List[str]]:
 
 
 def _try_dbutils_ls_dirs(source_dir: str) -> Optional[List[str]]:
-    """Lists immediate subdirectories via dbutils.fs.ls. Returns None if
-    dbutils isn't available."""
-    try:
-        import IPython
-        dbutils = IPython.get_ipython().user_ns["dbutils"]
-    except Exception:
+    """Lists immediate subdirectories. Returns None if Databricks isn't
+    available. Directory detection uses the authoritative `is_dir` flag
+    rather than a trailing-slash convention - see databricks_fs.py."""
+    entries = list_entries(source_dir)
+    if entries is None:
         return None
-    entries = dbutils.fs.ls(source_dir)
-    return sorted(e.path.rstrip("/") for e in entries if e.path.endswith("/"))
+    return sorted(e.path.rstrip("/") for e in entries if e.is_dir)
 
 
 def _try_posix_ls_dirs(source_dir: str) -> Optional[List[str]]:
@@ -199,19 +191,19 @@ def _move_file_direct(src_path: str, dest_path: str) -> None:
     local/pytest paths. Raises on failure - caller decides how to handle
     it; this function does not swallow errors.
     """
-    try:
-        import IPython
-        dbutils = IPython.get_ipython().user_ns["dbutils"]
+    dbutils = get_dbutils()
+    if dbutils is not None:
+        # Databricks is available, so a failure here is a real failure -
+        # deliberately not caught. Previously any exception fell through to
+        # the local move below, which meant a genuine workspace error
+        # silently relocated files on the driver's local disk instead.
         dbutils.fs.mv(src_path, dest_path)
-    except Exception:
-        # No dbutils available (not installed, no active kernel, or missing
-        # from user_ns) - local/pytest environment. Broad catch is
-        # deliberate: any failure to obtain a working dbutils should fall
-        # through to the local move below.
-        local_src = src_path[len("file://"):] if src_path.startswith("file://") else src_path
-        local_dest = dest_path[len("file://"):] if dest_path.startswith("file://") else dest_path
-        os.makedirs(os.path.dirname(local_dest), exist_ok=True)
-        shutil.move(local_src, local_dest)
+        return
+
+    local_src = src_path[len("file://"):] if src_path.startswith("file://") else src_path
+    local_dest = dest_path[len("file://"):] if dest_path.startswith("file://") else dest_path
+    os.makedirs(os.path.dirname(local_dest), exist_ok=True)
+    shutil.move(local_src, local_dest)
 
 
 def _move_file(source_dir: str, file_path: str, dest_subfolder: str, relative_subpath: str = "") -> str:
@@ -433,12 +425,19 @@ def _read_retry_state(source_dir: str) -> Dict[str, int]:
     or can't be parsed - never raises, since losing retry counts is a
     minor issue and should not block ingestion."""
     path = _retry_state_path(source_dir)
-    try:
-        import IPython
-        dbutils = IPython.get_ipython().user_ns["dbutils"]
-        content = dbutils.fs.head(path, 1_000_000)
-    except Exception:
-        # No dbutils, or file doesn't exist via dbutils - try local read.
+    dbutils = get_dbutils()
+    content = None
+
+    if dbutils is not None:
+        try:
+            content = dbutils.fs.head(path, 1_000_000)
+        except Exception:
+            # A missing state file is the normal first-run case, so this
+            # stays tolerant even on Databricks - unlike the move/list paths,
+            # losing retry counts is explicitly a minor issue.
+            return {}
+
+    if content is None:
         local_path = path[len("file://"):] if path.startswith("file://") else path
         try:
             with open(local_path, "r") as f:
@@ -459,13 +458,17 @@ def _write_retry_state(source_dir: str, state: Dict[str, int]) -> None:
     path = _retry_state_path(source_dir)
     content = _json.dumps(state)
 
-    try:
-        import IPython
-        dbutils = IPython.get_ipython().user_ns["dbutils"]
-        dbutils.fs.put(path, content, overwrite=True)
-        return
-    except Exception:
-        pass
+    dbutils = get_dbutils()
+    if dbutils is not None:
+        try:
+            dbutils.fs.put(path, content, overwrite=True)
+            return
+        except Exception as exc:
+            # Tolerated, but no longer silent: losing retry counts is minor,
+            # yet a persistent failure here means the retry limit never
+            # advances and permanently-failing files are retried forever.
+            logger.warning("Could not persist retry state to %s: %s", path, exc)
+            return
 
     try:
         local_path = path[len("file://"):] if path.startswith("file://") else path
