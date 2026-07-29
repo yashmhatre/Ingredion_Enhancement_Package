@@ -543,6 +543,32 @@ deploy cannot run under the staging identity:
 
 Tenant: `01984097-743d-456d-9101-11a2e04cb219`.
 
+**Also required — `Service Principal: User` role for whoever deploys.** This
+is an account-level permission on the *service principal object*, and is
+separate from every Unity Catalog grant below. Without it the deploy fails at
+resource creation:
+
+```
+Error: cannot create resources.jobs.bronze_directory_ingestion: Cannot bind the
+service principal provided in 'run_as' field (staging-databricks-service-principal)
+to the job. The user creating or updating the job must have 'servicePrincipal.user'
+role on the service principal. (403 PERMISSION_DENIED)
+```
+
+Databricks **account console** → **User management** → **Service principals**
+→ select the principal → **Permissions** → add the deploying user with role
+**Service Principal: User**. Repeat for both principals.
+
+Easy to miss because it reads like a data-access problem and is not one:
+`run_as` means the deployer is asking Databricks to let a job execute *as*
+another identity, so the deployer must be authorised to act on that identity.
+Granting every UC privilege in the world would not fix it.
+
+Note this requirement disappears under OIDC federation (#113): there the
+deploying identity *is* the service principal, so nothing is binding on
+anyone else's behalf. One more reason to move deploys into CI rather than
+leaving them manual.
+
 **Not done — schemas and grants.** In the Databricks workspace:
 
 ```sql
