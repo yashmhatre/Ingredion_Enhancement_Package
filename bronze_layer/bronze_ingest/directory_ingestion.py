@@ -265,9 +265,28 @@ _ARCHIVE_MAX_WORKERS = 10
 def _archive_files_parallel(source_dir, file_paths, relative_subpath=""):
     """
     Archives multiple files concurrently. Each dbutils.fs.mv / shutil.move
-    is independent, so these parallelize safely - benchmarking showed
-    sequential archival at ~0.5s per file was the dominant linear cost in
-    folder ingestion (9.4x scaling for 10x files, vs ~4x for read/write).
+    is independent, so these parallelize safely.
+
+    **On serverless this produces no speedup, and that is measured, not
+    assumed.** Archival is the dominant linear cost in folder ingestion
+    (~0.45s per file, 9.4x scaling for 10x files vs ~4x for read/write),
+    which is why it was parallelized - but the benchmark showed 163.0s with
+    10 workers against 161.3s sequential. Logs show files still completing
+    in exact input order at consistent ~0.45s intervals: the threads are
+    created correctly and serialize below, most likely in the Spark Connect
+    gRPC client, which appears to handle one request at a time per session.
+
+    The implementation is kept deliberately - it is correct, costs nothing,
+    and would help on any filesystem where moves genuinely parallelize
+    (local execution, or if Databricks changes this behaviour). Do not read
+    its existence as evidence that archival is parallel on serverless; it
+    is not. Full measurement in docs/testing_directory_ingestion.md, which
+    owns this benchmark.
+
+    Consequently the single-file path in ingest_directory_to_bronze
+    archiving sequentially via _archive_ingested_file is immaterial on
+    serverless rather than an oversight - there is no speedup being left
+    on the table.
 
     Returns a list of (file_path, move_result_dict) tuples in the same
     order as file_paths, so per-file error attribution is preserved
@@ -487,6 +506,7 @@ def ingest_directory_to_bronze(
         max_ingestion_retries: int = 3,
         allow_overwrite_in_directory_mode: bool = False,
         base_config: Optional[Dict[str, Any]] = None,
+        per_file_config: Optional[Dict[str, Dict[str, Any]]] = None,
         **config_overrides,
     ) -> List[Dict[str, Any]]:
     """
@@ -541,6 +561,19 @@ def ingest_directory_to_bronze(
         if forbidden in shared:
             raise ValueError(f"{forbidden!r} is derived per file and cannot be set for directory ingestion")
 
+    # Reject unknown config keys loudly. IngestionConfig.from_dict filters
+    # unrecognised keys silently by design, so anything misspelled or
+    # unsupported used to vanish here with no exception, no warning, and a
+    # successful-looking run - which is exactly how `per_file_config` was
+    # accepted and discarded for the entire life of the deployed job.
+    unknown = sorted(set(shared) - set(IngestionConfig.__dataclass_fields__))
+    if unknown:
+        raise ValueError(
+            f"Unknown IngestionConfig field(s) passed to ingest_directory_to_bronze: {unknown}. "
+            "These would be silently dropped rather than applied. Check for a typo, or pass "
+            "per-file overrides via the per_file_config argument."
+        )
+
     if shared.get("write_mode") == "overwrite" and not allow_overwrite_in_directory_mode:
         raise ValueError(
             "write_mode='overwrite' is not allowed for directory/folder-as-table ingestion "
@@ -583,15 +616,43 @@ def ingest_directory_to_bronze(
             seen[table] = 0
         plan.append({"type": "folder", "source": folder_path, "table": table})
 
+    # Per-file overrides are keyed by basename (e.g. "orders.json"), matching
+    # how the deployed job's per_file_config_json widget is written. Validate
+    # the keys up front: an override naming a file that was not discovered is
+    # a configured rule that will never run, which is the failure this whole
+    # mechanism exists to avoid.
+    per_file_config = per_file_config or {}
+    for name, overrides in per_file_config.items():
+        bad = sorted(set(overrides) - set(IngestionConfig.__dataclass_fields__))
+        if bad:
+            raise ValueError(
+                f"per_file_config[{name!r}] contains unknown IngestionConfig field(s): {bad}."
+            )
+    discovered_names = {os.path.basename(i["source"].rstrip("/")) for i in plan}
+    unmatched = sorted(set(per_file_config) - discovered_names)
+    if unmatched:
+        logger.warning(
+            "per_file_config entries matched no discovered file or folder: %s. "
+            "Those overrides will not be applied. Discovered: %s",
+            unmatched, sorted(discovered_names),
+        )
+
     results: List[Dict[str, Any]] = []
     for item in plan:
         table = item["table"]
+        overrides = per_file_config.get(os.path.basename(item["source"].rstrip("/")), {})
+        item_config = {**shared, **overrides}
+        if overrides:
+            logger.info(
+                "Applying per-file config override for %s: %s",
+                item["source"], sorted(overrides),
+            )
 
         if item["type"] == "file":
             file_path = item["source"]
             logger.info("Ingesting %s -> %s", file_path, table)
             try:
-                cfg = IngestionConfig.from_dict({**shared, "source_path": file_path, "table": table})
+                cfg = IngestionConfig.from_dict({**item_config, "source_path": file_path, "table": table})
                 summary = BronzeIngestion(spark, cfg).run()
 
                 retry_state = _read_retry_state(source_dir)
@@ -654,7 +715,7 @@ def ingest_directory_to_bronze(
         elif item["type"] == "folder":
             folder_path = item["source"]
             folder_result = _ingest_folder_as_table(
-                spark, source_dir, folder_path, table, shared,
+                spark, source_dir, folder_path, table, item_config,
                 stop_on_error=stop_on_error, max_ingestion_retries=max_ingestion_retries,
             )
             results.append(folder_result)

@@ -1,11 +1,19 @@
 # Current Behavior Audit — Bronze Ingestion (`bronze_layer/bronze_ingest/`)
 
+> **Historical record, not a description of today's code.** This is a
+> point-in-time audit performed for issue #6 against the package as it
+> stood in July 2026, kept because it documents *why* several behaviours
+> are the way they are and which README claims were verified rather than
+> assumed. It is not maintained as the code changes, and at least one
+> section has already been superseded (see the `bronze_writer.py` note on
+> first-load merge). For current behaviour, read `bronze_layer/README.md`
+> and the code; where the two disagree, the code wins.
+
 Audit of the actual code against the claims in `bronze_layer/README.md`,
 for issue #6. Validated by reading each module and by executing the
-existing pytest suite (48/48 passing at the time of the original audit,
-now 50/50 after the retry-gap fix below added 2 tests) plus targeted
-ad-hoc checks against
-a local Spark session (JSON with a malformed record, a null in a
+pytest suite as it stood at the time (all green, both before and after
+the retry-gap fix below added its tests) plus targeted ad-hoc checks
+against a local Spark session (JSON with a malformed record, a null in a
 `required_columns` field, and a flaky function wrapped in `with_retry`).
 
 Note: the issue's file list (`bronze_json_loader/...`, plus a
@@ -62,7 +70,19 @@ timestamp), and renames `_input_file_name` to `_source_file` — verified
 present on the resulting DataFrame in the ad-hoc check. `write_bronze()`
 supports `append`/`overwrite`/`merge` as documented; `merge` falls back to
 a plain append when the target table doesn't exist yet (first load), and
-uses `DeltaTable.merge` with `merge_keys` otherwise. Streaming micro-batch
+uses `DeltaTable.merge` with `merge_keys` otherwise.
+
+> **Superseded (#46, commit `e9f28f2`).** The first-load append branch
+> described above no longer exists. Two concurrent first runs against the
+> same not-yet-existing table could both observe "doesn't exist" and both
+> append, duplicating the entire first batch. `write_bronze()` now calls
+> `DeltaTable.createIfNotExists(...)` and always takes the MERGE path —
+> merging into a freshly-created empty table is equivalent to insert-all,
+> so no separate first-load branch is needed, and a retried first load is
+> idempotent because MERGE on `merge_keys` cannot duplicate rows the way a
+> retried append could.
+
+Streaming micro-batch
 writes use `txnAppId`/`txnVersion` (keyed on `checkpoint_location` +
 Structured Streaming `batch_id`) for idempotent writes, matching the
 "Idempotent, exactly-once writes" claim.

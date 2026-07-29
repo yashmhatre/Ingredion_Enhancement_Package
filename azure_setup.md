@@ -543,6 +543,61 @@ deploy cannot run under the staging identity:
 
 Tenant: `01984097-743d-456d-9101-11a2e04cb219`.
 
+**Also required — `Service Principal: User` role for whoever deploys.** This
+is an account-level permission on the *service principal object*, and is
+separate from every Unity Catalog grant below. Without it the deploy fails at
+resource creation:
+
+```
+Error: cannot create resources.jobs.bronze_directory_ingestion: Cannot bind the
+service principal provided in 'run_as' field (staging-databricks-service-principal)
+to the job. The user creating or updating the job must have 'servicePrincipal.user'
+role on the service principal. (403 PERMISSION_DENIED)
+```
+
+Databricks **account console** → **User management** → **Service principals**
+→ select the principal → **Permissions** → add the deploying user with role
+**Service Principal: User**. Repeat for both principals.
+
+**`Manage` does not imply `Use`.** The console states this outright, and it is
+the easiest way to think the permission is already set: being able to
+administer a service principal is a separate grant from being able to run
+jobs as it. `Use` is the one `run_as` requires.
+
+**Grant `Use` to named principals, not to `account users`.** A default
+`account users` → `Use` grant means every user in the Databricks account can
+run jobs as that service principal. The principal's own UC grants still limit
+what it can reach, but anyone who can act as it inherits exactly that reach —
+which defeats the point of a scoped deploy identity. Grant `Use` to the
+deploying user, and later the CI federation identity, explicitly. Same
+discipline as granting `USE CATALOG` and nothing more at catalog level.
+
+Easy to miss because it reads like a data-access problem and is not one:
+`run_as` means the deployer is asking Databricks to let a job execute *as*
+another identity, so the deployer must be authorised to act on that identity.
+Granting every UC privilege in the world would not fix it.
+
+**Set this in the Databricks account console, not the Azure portal — even
+though these are Entra ID service principals.** The two systems own different
+halves:
+
+| | Owns |
+|---|---|
+| Entra ID | that the principal exists, its credentials, lifecycle, conditional access, sign-in logs |
+| Databricks | who may bind a job to run *as* it, and what it can reach in Unity Catalog |
+
+`servicePrincipal.user` is a Databricks account-level role on Databricks' own
+representation of the principal. Being Owner on the Azure subscription, or
+owner of the Entra app registration, conveys none of it — Azure RBAC does not
+reach inside Databricks' permission model. Choosing Entra ID over
+Databricks-managed principals changed *where the identity lives*, not *who
+governs its use inside Databricks*.
+
+Note this requirement disappears under OIDC federation (#113): there the
+deploying identity *is* the service principal, so nothing is binding on
+anyone else's behalf. One more reason to move deploys into CI rather than
+leaving them manual.
+
 **Not done — schemas and grants.** In the Databricks workspace:
 
 ```sql

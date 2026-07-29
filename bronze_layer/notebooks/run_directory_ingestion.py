@@ -91,6 +91,15 @@ results = ingest_directory_to_bronze(
 
 # COMMAND ----------
 
+# An empty source directory is a "no work to do" outcome, not a failure.
+# spark.createDataFrame(pd.DataFrame([])) raises CANNOT_INFER_EMPTY_SCHEMA -
+# there are no columns to infer from - so the summary display has to be
+# skipped rather than attempted. Reporting a failure here would page someone
+# because a watched directory happened to be empty.
+if not results:
+    logger.info("Nothing to ingest - no JSON files or subfolders found in %s.", source_dir)
+    dbutils.notebook.exit("SUCCESS: nothing to ingest (source directory is empty)")
+
 import pandas as pd
 summary_df = spark.createDataFrame(pd.DataFrame(results))
 display(summary_df)
