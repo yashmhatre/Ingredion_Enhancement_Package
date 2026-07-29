@@ -264,9 +264,15 @@ pending task — now applied):
   `ingredion_dev`
 
 **Note:** `bronze_orders_ingestion` (the job that originally used
-`order_bronze.yaml`) has since been disabled (commented out in
-`databricks.yml`) — it was a sample/test job, not needed for ongoing
-production use. See `docs/testing_end_to_end_deployment.md`.
+`order_bronze.yaml`) has since been disabled (commented out) — it was a
+sample/test job, not needed for ongoing production use. See
+`docs/testing_end_to_end_deployment.md`.
+
+**Layout note:** the values above are still current, but the bundle has
+since moved to a single root `databricks.yml` with `dev`/`staging`/`prod`
+targets; the per-environment catalog/schema/volume are now set per target
+there, and job definitions live in `bronze_layer/resources/`. See the
+"Deployment" section of `bronze_layer/README.md`.
 
 ---
 
@@ -291,6 +297,8 @@ done as Step 7 — it'll be picked up later as its own step once you're ready.)
 - `databricks current-user me --profile bronze-json-loader-dev` → should return user JSON
 
 **Validate the bundle (no deploy yet, no cost)**
-- `cd bronze_layer && databricks bundle validate -t dev --profile bronze-json-loader-dev`
+- `databricks bundle validate -t dev --profile bronze-json-loader-dev`
+  (run from the repository root — the bundle now lives at the root
+  `databricks.yml`, not inside `bronze_layer/`)
 
 *(checkpoint pending)*

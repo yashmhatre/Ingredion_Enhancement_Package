@@ -132,8 +132,9 @@ account, Unity Catalog, external volumes), see
 │   ├── docs/                        # architecture + testing documentation
 │   ├── tests/                        # pytest suite
 │   ├── config/                        # sample per-source config files
-│   ├── databricks.yml                  # Asset Bundle job definitions
+│   ├── resources/                      # Asset Bundle job definitions for this layer
 │   └── README.md                       # package-level documentation
+├── databricks.yml                # root Asset Bundle: variables, targets, artifacts
 ├── azure_setup.md                # Azure/Databricks environment setup runbook
 ├── CONTRIBUTING.md
 └── README.md                     # this file

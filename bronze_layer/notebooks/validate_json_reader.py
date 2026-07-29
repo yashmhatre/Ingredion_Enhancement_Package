@@ -13,8 +13,17 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-import sys
-sys.path.append("/Workspace/Users/fabricyash@gmail.com/Ingredion_Enhancement_Package/bronze_layer")
+# This is a manual validation notebook, not a bundle-deployed job, so it has
+# no `libraries:` declaration to install bronze_ingest for it. Install the
+# wheel into the session yourself - replacing the placeholders with the
+# Volume the bundle uploaded it to:
+#
+#   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
+#   dbutils.library.restartPython()
+#
+# Deliberately not a hardcoded /Workspace/Users/<person> path: that ties this
+# notebook to one individual's account and to whatever happened to be sitting
+# in their home directory at the time.
 
 # COMMAND ----------
 

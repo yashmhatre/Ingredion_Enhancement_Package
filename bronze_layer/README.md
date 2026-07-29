@@ -596,6 +596,108 @@ and `docs/testing_directory_ingestion.md`. Full production deployment
 validation (real Databricks jobs, real Unity Catalog environment) is in
 `docs/testing_end_to_end_deployment.md`.
 
+## Deployment (Asset Bundles)
+
+### One bundle for the whole repository
+
+The bundle is defined at the **repository root** (`databricks.yml`), not per
+layer. Each layer contributes only its own resources:
+
+```
+databricks.yml                              # bundle name, variables, targets, artifacts
+bronze_layer/resources/bronze_ingest_jobs.yml   # bronze job definitions
+silver_layer/resources/*.yml                    # (none yet)
+```
+
+`bronze_layer` and `silver_layer` previously each carried their own
+`databricks.yml`, which meant the workspace host, the target list, and the
+run-as service principal were declared twice and could drift apart. Defining
+them once at the root also makes CI deployment a single `bundle deploy`
+rather than one per layer, so the layers can never be deployed against
+mismatched settings.
+
+Paths inside resource files are relative to the bundle root, e.g.
+`./bronze_layer/notebooks/run_directory_ingestion.py`.
+
+### Environment model
+
+Environments are separated by **Unity Catalog catalog and by the service
+principal jobs run as** — not by workspace. One workspace, three catalogs,
+one service principal per non-dev environment. That gives real isolation
+and per-environment audit without paying for multiple workspaces.
+
+| Target | Catalog | Runs as | Schedules | Purpose |
+|---|---|---|---|---|
+| `dev` | `ingredion_en_dev` | the deploying user | auto-paused | Only what local Delta can't exercise — UC Volumes, tags, Auto Loader |
+| `staging` | `ingredion_en_staging` | staging service principal | as configured | Pre-production validation |
+| `prod` | `ingredion_en_prod` | prod service principal | as configured | Production |
+
+**Local pytest is the real development loop.** The suite runs against local
+Spark + Delta with no Databricks at all, so day-to-day work costs nothing.
+The `dev` *target* exists for the narrow set of behavior local Delta cannot
+reproduce, not for ordinary development.
+
+```bash
+databricks bundle deploy -t dev        # deploys as you, schedules paused
+
+databricks bundle deploy -t prod \
+  --var="notification_email=data-platform-oncall@your-org.com" \
+  --var="run_as_service_principal=<application-id-of-prod-SP>"
+```
+
+`notification_email` and `run_as_service_principal` deliberately have **no
+defaults** for staging/prod. A deploy that omits them fails immediately
+rather than silently running under a human identity or sending alerts
+nowhere. In `dev`, alerts go to `${workspace.current_user.userName}` — the
+person who deployed — so no shared inbox collects noise from someone else's
+experiment.
+
+### Code is shipped as a versioned wheel
+
+The `artifacts:` block builds `bronze_ingest` into a wheel on every deploy;
+the job task installs it via `libraries:`. Notebooks then just
+`from bronze_ingest import ...`.
+
+This replaced `sys.path.append("/Workspace/Users/<person>/...")` inside each
+notebook. That approach tied production to one individual's home directory,
+shipped whatever happened to be sitting there at the time, and had no
+version or rollback story. The wheel is versioned, belongs to no user, and
+rolls back with the bundle.
+
+`bronze_ingest/__init__.py`'s `__version__` is the single source of truth —
+`setup.py` parses it rather than declaring a second copy. CI enforces that
+the wheel builds, contains no test/notebook/config files, and reports a
+version matching its own filename, so a deployed job can always report
+which version it is running.
+
+To use a notebook interactively outside a deployed job, install the same
+wheel into the session:
+
+```python
+%pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
+dbutils.library.restartPython()
+```
+
+### What an administrator must provision
+
+The bundle consumes these; it does not create them.
+
+- **Service principals** — one per non-dev environment, with OAuth (M2M)
+  credentials. Never a personal account: a job running under a named human
+  inherits their full permissions and breaks when they leave.
+- **Catalogs** — `ingredion_en_{dev,staging,prod}`, each granted to only its
+  own service principal (`USE CATALOG` + `CREATE TABLE` on its target schema;
+  not `ALL PRIVILEGES`).
+- **Volumes** — the `source_volume_path` per environment.
+- **A distribution list** for `notification_email` in staging/prod.
+
+### Not yet implemented
+
+- **CI/CD deploy.** CI runs tests and verifies the wheel; it does not deploy.
+  Deploys are manual. The intended next step is GitHub OIDC federation to a
+  service principal, so no long-lived tokens are stored anywhere.
+- **Secret scopes** (architecture.md phase 7).
+
 ## Operational notes / known caveats
 
 - If you set `schema_hint_ddl` in batch mode, include

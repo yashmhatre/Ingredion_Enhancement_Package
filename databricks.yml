@@ -1,0 +1,117 @@
+# Root Asset Bundle for the whole repository.
+#
+#   databricks bundle deploy -t dev        # deploys as you, schedules paused
+#   databricks bundle deploy -t staging    # requires --var overrides, see below
+#   databricks bundle deploy -t prod       # requires --var overrides, see below
+#
+# One bundle, not one per layer. bronze_layer and silver_layer previously
+# carried their own databricks.yml, which meant the workspace host, the
+# target list, and the run-as service principal were declared twice and
+# could drift apart. A single root bundle defines them once; each layer
+# contributes only its own resources via `include:` below. It also makes
+# CI deployment a single `bundle deploy` rather than one per layer, so the
+# layers can never be deployed against mismatched settings.
+#
+# Environments are separated by Unity Catalog catalog and by the service
+# principal jobs run as - not by workspace. One workspace, three catalogs,
+# one service principal per non-dev environment. That gives real isolation
+# and per-environment audit without paying for multiple workspaces.
+#
+# staging/prod deliberately have NO defaults for `notification_email` and
+# `run_as_service_principal`. A deploy that doesn't supply them fails
+# immediately rather than silently running as a human or sending alerts
+# nowhere:
+#
+#   databricks bundle deploy -t prod \
+#     --var="notification_email=data-platform-oncall@your-org.com" \
+#     --var="run_as_service_principal=<application-id-of-prod-SP>"
+#
+# In CI these come from repository secrets/variables rather than the
+# command line.
+
+bundle:
+  name: ingredion_enhancement_package
+
+include:
+  - bronze_layer/resources/*.yml
+  # silver_layer has no deployable resources yet (it's a stub plus the
+  # archived flattener). Uncomment once silver_layer/resources/ contains
+  # at least one .yml - an include pattern matching zero files is an error.
+  # - silver_layer/resources/*.yml
+
+# The package is built into a wheel and uploaded on every deploy, then
+# installed onto job compute via each task's `libraries:`. This replaces
+# appending a hardcoded /Workspace/Users/<person> path to sys.path inside
+# each notebook: the wheel is versioned, tied to no individual's home
+# directory, and rolls back with the bundle.
+artifacts:
+  bronze_ingest_wheel:
+    type: whl
+    path: ./bronze_layer
+    build: python -m build --wheel
+
+variables:
+  catalog:
+    description: >-
+      Unity Catalog catalog for this environment. Environment isolation is
+      enforced here - each catalog is granted to only its own service principal.
+  schema_name:
+    description: Target schema within the catalog.
+  source_volume_path:
+    description: UC Volume path containing the source JSON files.
+  notification_email:
+    description: >-
+      Address alerted on job failure. Intentionally has no default - every
+      environment must name an accountable owner.
+  run_as_service_principal:
+    description: >-
+      Application ID of the service principal jobs run as. Intentionally has
+      no default for staging/prod; dev runs as the deploying user.
+
+targets:
+  # Local pytest is the real development loop for this repo (the bronze suite
+  # runs against local Spark + Delta with no Databricks at all). This target
+  # exists for the things local Delta cannot exercise - UC Volumes, tags,
+  # Auto Loader - not for day-to-day development.
+  dev:
+    mode: development          # prefixes resources per-user, pauses schedules
+    default: true
+    workspace:
+      host: https://adb-7405607398572130.10.azuredatabricks.net
+    variables:
+      catalog: ingredion_en_dev
+      schema_name: ingredion_dev
+      source_volume_path: /Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/raw/JSON/
+      # Dev alerts go to whoever deployed - no hardcoded address, and no
+      # shared inbox getting noise from someone else's experiment.
+      notification_email: ${workspace.current_user.userName}
+    # No run_as: dev deploys run as the deploying user by design.
+
+  staging:
+    mode: production
+    workspace:
+      host: https://adb-7405607398572130.10.azuredatabricks.net
+      root_path: /Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: ingredion_en_staging
+      schema_name: ingredion_staging
+      source_volume_path: /Volumes/ingredion_en_staging/ingredion_staging/ext-ingredion-staging/raw/JSON/
+    run_as:
+      service_principal_name: ${var.run_as_service_principal}
+
+  prod:
+    mode: production
+    workspace:
+      # Shared, not a personal home directory: production artifacts must not
+      # depend on any individual's account continuing to exist.
+      host: https://adb-7405607398572130.10.azuredatabricks.net
+      root_path: /Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: ingredion_en_prod
+      schema_name: ingredion_prod
+      source_volume_path: /Volumes/ingredion_en_prod/ingredion_prod/ext-ingredion-prod/raw/JSON/
+    run_as:
+      # Production runs as a service principal, never a named human - a job
+      # running under a person's identity inherits their full permissions and
+      # breaks when they leave.
+      service_principal_name: ${var.run_as_service_principal}
