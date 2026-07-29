@@ -53,24 +53,38 @@ artifacts:
 variables:
   catalog:
     description: >-
-      Unity Catalog catalog for this environment. Environment isolation is
-      enforced here - each catalog is granted to only its own service principal.
+      Unity Catalog catalog. All three environments share one catalog
+      (ingredion_en); isolation is enforced at the SCHEMA level below,
+      not the catalog level. `USE CATALOG` on its own grants no data access,
+      so this is sound - but it does mean every grant that matters is a
+      schema or volume grant. See the isolation notes in
+      bronze_layer/README.md.
   schema_name:
-    description: Target schema within the catalog.
+    description: >-
+      Target schema - this is the environment boundary. Each service
+      principal is granted USE SCHEMA / CREATE TABLE on its own schema only.
   source_volume_path:
     description: UC Volume path containing the source JSON files.
+  audit_schema_name:
+    description: >-
+      Schema for the run-level audit table. Must track schema_name: left at
+      its package default ("bronze") all three environments would write audit
+      rows to one shared table, mixing their trails and handing every service
+      principal read access to the others' run history.
+  registry_schema_name:
+    description: >-
+      Schema for the schema-registry table. Same reasoning as
+      audit_schema_name.
   notification_email:
     description: >-
-      Address alerted on job failure. Intentionally has no default - every
-      environment must name an accountable owner.
+      Address alerted on job failure. Intentionally has no default for
+      staging/prod - every environment must name an accountable owner.
   run_as_service_principal:
     description: >-
-      Application ID of the service principal jobs run as. Intentionally has
-      no top-level default, so a staging/prod deploy that omits it fails with
-      "no value assigned to required variable run_as_service_principal"
-      instead of deploying under the wrong identity. The dev target sets an
-      inert value below, since the CLI requires every declared variable to
-      resolve even for targets that never reference it.
+      Application (client) ID of the Entra ID service principal jobs run as.
+      An identifier, not a credential - safe to keep in the repository. Set
+      explicitly per target below rather than passed via --var, so a prod
+      deploy cannot accidentally run under the staging identity.
 
 targets:
   # A full development environment on Databricks - same code path, same
@@ -89,9 +103,11 @@ targets:
     workspace:
       host: https://adb-7405607398572130.10.azuredatabricks.net
     variables:
-      catalog: ingredion_en_dev
+      catalog: ingredion_en
       schema_name: ingredion_dev
-      source_volume_path: /Volumes/ingredion_en_dev/ingredion_dev/ext-ingredion-dev/raw/JSON/
+      audit_schema_name: ingredion_dev
+      registry_schema_name: ingredion_dev
+      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/DEV/Raw/
       # Dev alerts go to whoever deployed - no hardcoded address, and no
       # shared inbox getting noise from someone else's experiment.
       notification_email: ${workspace.current_user.userName}
@@ -115,9 +131,19 @@ targets:
       host: https://adb-7405607398572130.10.azuredatabricks.net
       root_path: /Shared/.bundle/${bundle.name}/${bundle.target}
     variables:
-      catalog: ingredion_en_staging
-      schema_name: ingredion_staging
-      source_volume_path: /Volumes/ingredion_en_staging/ingredion_staging/ext-ingredion-staging/raw/JSON/
+      catalog: ingredion_en
+      schema_name: ingredion_stg
+      audit_schema_name: ingredion_stg
+      registry_schema_name: ingredion_stg
+      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/STG/Raw/
+      # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
+      # is preferable once more than one person is on call - an individual's
+      # address means failure alerts stop reaching anyone if that mailbox goes
+      # away. Lower stakes than run_as, which was a permissions problem: this
+      # only decides where alerts land, not what the job can do.
+      notification_email: yashmhatre26@gmail.com
+      # staging-databricks-service-principal (Entra ID application ID).
+      run_as_service_principal: 6ea945e0-2b4f-4746-b8f7-e7be51adc35a
     run_as:
       service_principal_name: ${var.run_as_service_principal}
 
@@ -129,9 +155,19 @@ targets:
       host: https://adb-7405607398572130.10.azuredatabricks.net
       root_path: /Shared/.bundle/${bundle.name}/${bundle.target}
     variables:
-      catalog: ingredion_en_prod
-      schema_name: ingredion_prod
-      source_volume_path: /Volumes/ingredion_en_prod/ingredion_prod/ext-ingredion-prod/raw/JSON/
+      catalog: ingredion_en
+      schema_name: ingredion_prd
+      audit_schema_name: ingredion_prd
+      registry_schema_name: ingredion_prd
+      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/PROD/Raw/
+      # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
+      # is preferable once more than one person is on call - an individual's
+      # address means failure alerts stop reaching anyone if that mailbox goes
+      # away. Lower stakes than run_as, which was a permissions problem: this
+      # only decides where alerts land, not what the job can do.
+      notification_email: yashmhatre26@gmail.com
+      # prod-sp (Entra ID application ID).
+      run_as_service_principal: 8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9
     run_as:
       # Production runs as a service principal, never a named human - a job
       # running under a person's identity inherits their full permissions and
