@@ -503,6 +503,43 @@ gets the same protection when `idempotent_batch_writes: true` (default)
 ID) - see the retry-safety matrix below for exactly what's covered and
 what isn't.
 
+### Job-level safety controls
+
+The package's own failure handling is thorough — retry with backoff,
+quarantine fallback chains, retry limits across runs, `failure_stage`
+tagging, an audit row on every outcome. None of that bounds a run that is
+merely *stuck*, and the job wrapper is what stands between a hung run and
+the bill. `bronze_ingest_jobs.yml` sets:
+
+| Control | Value | Why |
+|---|---|---|
+| `max_concurrent_runs` | `1` | Two runs over one `source_dir` race on discovery, archival and the shared `_state/` retry file |
+| `queue.enabled` | `true` | An overlapping scheduled run waits instead of being silently dropped |
+| `health` warn | 1800s | The only proactive signal — everything else fires on failure |
+| task `timeout_seconds` | 3300s | Task dies first, so the run records *which* task hung |
+| job `timeout_seconds` | 3600s | Backstop |
+| `max_retries` | `2` | Transient platform failures shouldn't need a human |
+| `retry_on_timeout` | `false` | A timeout recurs; retrying doubles the cost and delays the alert |
+
+Escalation order is deliberate: **warn (1800s) → task timeout (3300s) → job
+timeout (3600s)**, so a stuck run is visible while still stuck rather than
+only once it exits.
+
+The timeouts are derived, not round numbers. `docs/testing_directory_ingestion.md`
+measures 100 files ≈ 163s, and the job caps at `max_files: 50` — so nominal
+is ~82s. The realistic ceiling is a *failing* run, not a slow one: with
+`retry_attempts: 3` and `retry_delay_seconds: 10`, each failing file sleeps
+10s + 20s before giving up, so 50 failing files is ~1500s of pure waiting.
+3600s bounds a genuinely hung run at roughly 2× that.
+
+> **`max_retries` depends on `batch_id` stability.** The job passes
+> `batch_id: "{{job.run_id}}"`, which becomes the Delta `txnVersion`, so a
+> retried attempt re-writes the same version and Delta skips it — a file
+> written but not yet archived is not duplicated. That holds only while
+> `{{job.run_id}}` stays constant across task attempts. If a retried run ever
+> duplicates rows for already-written files, this is the reason: set
+> `max_retries: 0` until idempotency is keyed on something verifiably stable.
+
 ### Retry-safety matrix
 
 | Write mode | Retry-safe across a job retry? | Mechanism |
