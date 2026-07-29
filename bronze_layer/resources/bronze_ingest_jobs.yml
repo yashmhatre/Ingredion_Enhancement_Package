@@ -18,8 +18,16 @@ resources:
     # bronze_orders_ingestion:
     #   name: bronze_orders_ingestion
 
+    #   environments:
+    #     - environment_key: default
+    #       spec:
+    #         client: "3"
+    #         dependencies:
+    #           - ../dist/*.whl
+
     #   tasks:
     #     - task_key: ingest_orders
+    #       environment_key: default
 
     #       notebook_task:
     #         notebook_path: ../notebooks/run_ingestion.py
@@ -27,9 +35,6 @@ resources:
     #           config_path: ${workspace.file_path}/bronze_layer/config/order_bronze.yaml
     #           batch_id: "{{job.run_id}}"
     #           run_id: "{{job.id}}-{{job.run_id}}"
-
-    #       libraries:
-    #         - whl: ../dist/*.whl
 
     #   email_notifications:
     #     on_failure:
@@ -42,8 +47,28 @@ resources:
       name: bronze_directory_ingestion
       # max_concurrent_runs: 1
 
+      # Serverless compute rejects a task-level `libraries:` field outright
+      # ("Libraries field is not supported for serverless task, please
+      # specify libraries in environment", 400 INVALID_PARAMETER_VALUE).
+      # Dependencies for serverless are declared as a job-level environment
+      # that tasks bind to via `environment_key`. This workspace is
+      # serverless by design - see azure_setup.md Step 3, chosen because
+      # trial subscriptions have a hard 4-vCPU quota that blocks classic
+      # compute entirely.
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              # The wheel built and uploaded by the root bundle's
+              # `artifacts:` block, so the notebook can
+              # `from bronze_ingest import ...` with no sys.path
+              # manipulation. Path is relative to this file (see header).
+              - ../dist/*.whl
+
       tasks:
         - task_key: ingest_directory
+          environment_key: default
 
           notebook_task:
             # Relative to this file's directory (see header). The bundle
@@ -72,11 +97,7 @@ resources:
               batch_id: "{{job.run_id}}"
               run_id: "{{job.id}}-{{job.run_id}}"
 
-          # Installs the bronze_ingest wheel built by the root bundle's
-          # `artifacts:` block, so the notebook can `from bronze_ingest
-          # import ...` with no sys.path manipulation.
-          libraries:
-            - whl: ../dist/*.whl
+          # No `libraries:` here - see the `environments:` block above.
 
       # Uncomment to run on a schedule instead of manually. In `dev` the
       # bundle pauses schedules automatically (mode: development), so this

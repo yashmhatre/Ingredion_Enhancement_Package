@@ -724,6 +724,32 @@ shipped whatever happened to be sitting there at the time, and had no
 version or rollback story. The wheel is versioned, belongs to no user, and
 rolls back with the bundle.
 
+**On serverless compute, dependencies go in `environments:`, not
+`libraries:`.** A task-level `libraries:` field is rejected outright:
+
+```
+Libraries field is not supported for serverless task,
+please specify libraries in environment.   (400 INVALID_PARAMETER_VALUE)
+```
+
+So the job declares a job-level environment and each task binds to it:
+
+```yaml
+environments:
+  - environment_key: default
+    spec:
+      client: "3"
+      dependencies:
+        - ../dist/*.whl
+tasks:
+  - task_key: ingest_directory
+    environment_key: default
+```
+
+This workspace is serverless by design — see `azure_setup.md` Step 3, chosen
+because trial subscriptions have a hard 4-vCPU quota that blocks classic
+compute entirely.
+
 `bronze_ingest/__init__.py`'s `__version__` is the single source of truth —
 `setup.py` parses it rather than declaring a second copy. CI enforces that
 the wheel builds, contains no test/notebook/config files, and reports a
