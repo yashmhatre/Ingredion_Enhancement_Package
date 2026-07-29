@@ -89,13 +89,22 @@ summary_df = spark.createDataFrame(pd.DataFrame(results))
 display(summary_df)
 
 failed = [r for r in results if r["status"] == "failed"]
-logger.info("Directory ingestion: %d succeeded, %d failed", len(results) - len(failed), len(failed))
+skipped = [r for r in results if r["status"] == "skipped"]
+succeeded = [r for r in results if r["status"] == "success"]
+logger.info(
+    "Directory ingestion: %d succeeded, %d failed, %d skipped",
+    len(succeeded), len(failed), len(skipped),
+)
 
-# Fail the job task if anything failed, so alerting/retries kick in -
+# Fail the job task only on real failures, so alerting/retries kick in -
 # successful tables have already been written and won't be duplicated on
-# retry if the underlying issue was per-file.
+# retry if the underlying issue was per-file. A "skipped" unit (e.g. a
+# folder with no JSON in it) is deliberately not a failure: there is no bad
+# data and nothing for a human to fix, so failing the task on it would fire
+# alerts for a non-event and bury genuine failures in the same run.
 if failed:
-    dbutils.notebook.exit(f"FAILED: {len(failed)}/{len(results)} file(s) failed: {[f['file'] for f in failed]}")
+    dbutils.notebook.exit(f"FAILED: {len(failed)}/{len(results)} unit(s) failed: {[f['file'] for f in failed]}")
 
-dbutils.notebook.exit(f"SUCCESS: {len(results)} file(s) ingested")
+_skip_note = f", {len(skipped)} skipped" if skipped else ""
+dbutils.notebook.exit(f"SUCCESS: {len(succeeded)} unit(s) ingested{_skip_note}")
 
