@@ -703,6 +703,23 @@ Without it, `bundle deploy` fails at the artifact step with
 `bronze_layer/setup.py` includes it, along with pytest and the local
 Spark/Delta stack.
 
+**Deploying `staging` or `prod` also needs the `Service Principal: User` role
+on the target service principal**, granted in the Databricks account console
+under User management → Service principals → Permissions. This is an
+account-level permission on the *identity*, unrelated to any Unity Catalog
+grant — `run_as` asks Databricks to let a job execute *as* another identity,
+so the deployer must be authorised to act on that identity. Without it:
+
+```
+Cannot bind the service principal provided in 'run_as' field ... The user
+creating or updating the job must have 'servicePrincipal.user' role on the
+service principal. (403 PERMISSION_DENIED)
+```
+
+It reads like a data-access problem and is not one; no amount of `GRANT` fixes
+it. The requirement disappears once deploys move to OIDC federation, where the
+deploying identity *is* the service principal.
+
 ```bash
 databricks bundle deploy -t dev        # deploys as you, schedules paused
 
