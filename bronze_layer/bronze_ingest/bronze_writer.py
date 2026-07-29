@@ -12,6 +12,7 @@ from pyspark.sql.window import Window
 from .config import IngestionConfig
 from .retry import with_retry
 from .logging_utils import logger
+from .sql_utils import row_content_hash
 
 
 def add_audit_columns(df, config: IngestionConfig):
@@ -79,6 +80,19 @@ def _dedupe_for_merge(df, config: IngestionConfig):
     intra-batch duplicates, so deterministically keep one row per key -
     the one with the highest dedupe_order_by value (defaults to the
     ingestion timestamp, so the most-recently-ingested row wins).
+
+    "Deterministically" needs the content-hash tie-break to be true (#147).
+    The default order column is the ingestion timestamp, which
+    add_audit_columns() sets from `current_timestamp()` - identical for
+    every row in the batch, so on the default path EVERY row is a tie and
+    the ordering was decided entirely by partition layout. Delta's MERGE can
+    re-evaluate the source plan, so which duplicate won was not stable.
+
+    The tie-break makes the choice a function of row content. It does not
+    make the *hash* stable when a column is itself nondeterministic
+    (`current_timestamp()` re-evaluates across separate actions) - that is
+    upstream of here and is what #63's idempotency addresses. What it does
+    remove is the dependence on how Spark happened to partition the data.
     """
     order_col = config.dedupe_order_by or config.audit_ingest_ts_col
     if order_col not in df.columns:
@@ -88,7 +102,9 @@ def _dedupe_for_merge(df, config: IngestionConfig):
             "or leave add_audit_columns=True so the default (audit_ingest_ts_col) exists."
         )
 
-    w = Window.partitionBy(*config.merge_keys).orderBy(col(f"`{order_col}`").desc())
+    w = Window.partitionBy(*config.merge_keys).orderBy(
+        col(f"`{order_col}`").desc(), row_content_hash(df).asc()
+    )
     return (
         df.withColumn("_dedupe_rn", row_number().over(w))
         .filter(col("_dedupe_rn") == 1)

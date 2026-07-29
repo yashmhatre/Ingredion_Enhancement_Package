@@ -209,10 +209,16 @@ Nested structures now land in bronze exactly as read.
    the deployment-level half. The library-level half is still open: two
    callers invoking `ingest_directory_to_bronze` against one `source_dir`
    from anywhere else are still unguarded.
-6. **Config validation and allowlist governance** — *partly done* via
-   #154 (config-field validation) and #166 (unknown-field rejection in
-   `ingest_directory_to_bronze`). The allowlist-governance half —
-   restricting which catalogs/schemas/paths a config may name — is open.
+6. **Config validation and allowlist governance** — *barely started*.
+   #166 rejects unknown keys passed to `ingest_directory_to_bronze`, which
+   is the shallowest part of it. The substance is open and tracked in
+   **#154** (identifier validation, SQL escaping, `reader_options`
+   allowlist) and **#54** (numeric ranges, identifier safety). Neither is
+   implemented.
+
+   *(An earlier revision of this list said phase 6 was "partly done via
+   #154". That was wrong — #154 is the issue describing the remaining
+   work, not work delivered.)*
 7. **Secrets via Databricks secret scopes** (#115) — not started; blocked
    on the workspace provisioning in #112.
 
