@@ -12,7 +12,7 @@ changes.
 - [Local Development Setup](#local-development-setup)
 - [Finding Something to Work On](#finding-something-to-work-on)
 - [Claiming an Issue](#claiming-an-issue)
-- [Branch Naming](#branch-naming)
+- [Branches and the promotion flow](#branches-and-the-promotion-flow)
 - [Commit Message Guidelines](#commit-message-guidelines)
 - [Making Changes](#making-changes)
 - [Testing Requirements](#testing-requirements)
@@ -43,7 +43,10 @@ python -m venv venv
 source venv/bin/activate      # Mac/Linux
 venv\Scripts\activate         # Windows
 
-# 3. Install dependencies (includes pyspark, delta-spark, pytest via the dev extra)
+# 3. Install dependencies (includes pyspark, delta-spark, pytest and build
+#    via the dev extra). `build` is what `databricks bundle deploy` uses to
+#    package the wheel locally before uploading it - without it a deploy
+#    fails with "No module named build" before reaching the workspace.
 pip install -e ".[dev]"
 
 # 4. Run tests to confirm your setup works
@@ -72,7 +75,25 @@ step-by-step runbook.
 - If it's not assigned to you within a day or two, feel free to self-assign
 - If you start an issue but can't finish it, leave a comment so someone else can pick it up
 
-## Branch Naming
+## Branches and the promotion flow
+
+Three long-lived branches, one per deployment environment:
+
+| Branch | Environment | Unity Catalog catalog | Deployed as |
+|---|---|---|---|
+| `dev` | development | `ingredion_en_dev` | the deploying user |
+| `staging` | pre-production | `ingredion_en_staging` | staging service principal |
+| `main` | **production** | `ingredion_en_prod` | prod service principal |
+
+Changes flow one way, and every arrow is a pull request:
+
+```
+feature/*  →  dev  →  staging  →  main (prod)
+```
+
+**Branch your work off `dev`, and open your PR against `dev`** — not `main`.
+`main` is production; nothing lands there except a promotion from `staging`,
+or an urgent hotfix (see below).
 
 Use a short, descriptive branch name prefixed by type:
 
@@ -83,6 +104,14 @@ test/<short-description>        e.g. test/json-reader-validation
 docs/<short-description>        e.g. docs/update-readme
 refactor/<short-description>    e.g. refactor/rename-bronze-layer
 ```
+
+### Hotfixes
+
+A fix that unblocks production may go straight to `main`. It must then be
+**back-merged into `dev` and `staging` immediately**, or those branches
+silently carry the bug and will reintroduce it at the next promotion. This
+is the known cost of environment branches: they drift whenever `main` moves
+independently, and nothing detects that automatically.
 
 ## Commit Message Guidelines
 
@@ -180,12 +209,17 @@ actually happened, why, and how it was resolved.
    ```bash
    git push origin feature/your-feature-name
    ```
-2. Open a PR against `main` — the PR template will auto-populate; fill it out completely
+2. Open a PR against **`dev`** — the PR template will auto-populate; fill it out completely.
+   (Only promotions and hotfixes target `staging` or `main`.)
 3. Link the related issue using `Closes #<issue-number>` in the PR description
 4. CI runs automatically via GitHub Actions on every PR
-   (`.github/workflows/ci.yml`) — the full pytest suite must pass.
-   Branch protection on `main` requires this check before merge.
-5. Request review — at least 1 approval required before merging
+   (`.github/workflows/ci.yml`) — two required checks:
+   - **`test`** — the full pytest suite
+   - **`wheel`** — the package builds, ships no test/notebook/config files,
+     reports a version matching its filename, and imports standalone
+   CI runs on PRs into `dev`, `staging` and `main`, so each gate in the
+   promotion chain is checked rather than only the last one.
+5. Request review — at least 1 approval required before merging into `main`
 
 ## Code Review Process
 

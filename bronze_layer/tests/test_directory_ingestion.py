@@ -277,6 +277,52 @@ def test_folder_as_table_merges_files_into_one_table(spark, json_test_dir, monke
     assert all(fr["status"] == "success" for fr in folder_result["file_results"])
 
 
+def test_folder_with_no_json_is_skipped_not_failed(spark, json_test_dir):
+    """A folder with nothing to ingest is not an error - there is no bad
+    data and nothing for a human to fix. Reporting it as "failed" made the
+    job task exit non-zero and fire alerting for a non-event, and buried
+    genuine failures in the same run."""
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "multi_file"), exist_ok=True)
+    _write(write_dir, "multi_file/readme.txt", "not json")
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default"
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "skipped"
+    assert results[0]["reason"] == "no JSON files in folder"
+    assert "error" not in results[0]
+    # The job task keys off "failed" specifically - a skip must not appear there.
+    assert [r for r in results if r["status"] == "failed"] == []
+
+
+def test_folder_with_no_json_does_not_mask_a_real_failure(spark, json_test_dir, monkeypatch):
+    """An empty folder alongside a genuinely failing one: the skip is
+    reported separately and the real failure still surfaces."""
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "empty_folder"), exist_ok=True)
+    _write(write_dir, "empty_folder/notes.txt", "not json")
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    from bronze_ingest.pipeline import BronzeIngestion
+
+    def boom(self, df):
+        raise RuntimeError("write blew up")
+
+    monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", boom)
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default"
+    )
+
+    by_status = {r["status"] for r in results}
+    assert by_status == {"skipped", "failed"}
+    assert len(results) == 2
+
+
 def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_dir, monkeypatch):
     write_dir, source_dir = json_test_dir
     os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
