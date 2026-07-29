@@ -66,7 +66,11 @@ variables:
   run_as_service_principal:
     description: >-
       Application ID of the service principal jobs run as. Intentionally has
-      no default for staging/prod; dev runs as the deploying user.
+      no top-level default, so a staging/prod deploy that omits it fails with
+      "no value assigned to required variable run_as_service_principal"
+      instead of deploying under the wrong identity. The dev target sets an
+      inert value below, since the CLI requires every declared variable to
+      resolve even for targets that never reference it.
 
 targets:
   # A full development environment on Databricks - same code path, same
@@ -91,7 +95,19 @@ targets:
       # Dev alerts go to whoever deployed - no hardcoded address, and no
       # shared inbox getting noise from someone else's experiment.
       notification_email: ${workspace.current_user.userName}
-    # No run_as: dev deploys run as the deploying user by design.
+      # dev has no run_as - it deploys as the user, by design. But the CLI
+      # requires *every* declared variable to resolve before it will
+      # validate or deploy a target, even variables that target never
+      # references, so this needs an inert value rather than being left
+      # unset. Verified against CLI v1.9.0: leaving it out fails with
+      # "no value assigned to required variable run_as_service_principal"
+      # on `bundle validate -t dev`.
+      #
+      # Deliberately not a top-level default: staging and prod must keep
+      # failing fast when it isn't supplied, rather than inheriting a
+      # placeholder and silently deploying under the wrong identity.
+      run_as_service_principal: not-used-in-dev
+    # No run_as block here: dev deploys run as the deploying user by design.
 
   staging:
     mode: production
