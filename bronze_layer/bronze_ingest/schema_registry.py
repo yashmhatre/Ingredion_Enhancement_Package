@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from pyspark.sql import Row
+from pyspark.sql.functions import col
 from pyspark.sql.types import (
     StructType, StructField, StringType, TimestampType,
 )
@@ -63,9 +64,22 @@ def _read_current_row(spark, config: IngestionConfig):
     try:
         if not spark.catalog.tableExists(config.resolved_registry_table):
             return None
+        # A Column expression, not an f-string SQL predicate (#154). The old
+        # form was `.filter(f"table_name = '{config.full_table_name}'")`,
+        # which put a config value inside a SQL string literal unescaped: a
+        # table name of `x' OR '1'='1` made the filter match every row, and
+        # _read_current_row then returned some OTHER table's registry row -
+        # so the drift comparison and first_seen_at were silently taken from
+        # it. A name containing an apostrophe was the same bug arriving as an
+        # opaque parse error instead.
+        #
+        # Escaping the literal would have worked. Building a Column is
+        # better: there is no string for anything to escape out of, and it
+        # cannot regress the way a quoting helper someone forgets to call
+        # can.
         rows = (
             spark.read.table(config.resolved_registry_table)
-            .filter(f"table_name = '{config.full_table_name}'")
+            .filter(col("table_name") == config.full_table_name)
             .collect()
         )
         return rows[0] if rows else None
@@ -82,10 +96,12 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
     safely infer nullability from a single-row list.
     """
     try:
+        # resolved_registry_schema, not registry_schema_name - see the
+        # equivalent note in audit.py (#54).
         schema_ref = (
-            f"{config.registry_catalog or config.catalog}.{config.registry_schema_name}"
+            f"{config.registry_catalog or config.catalog}.{config.resolved_registry_schema}"
             if (config.registry_catalog or config.catalog)
-            else config.registry_schema_name
+            else config.resolved_registry_schema
         )
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 

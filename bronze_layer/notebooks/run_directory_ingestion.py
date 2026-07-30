@@ -35,13 +35,15 @@ dbutils.widgets.dropdown("stop_on_error", "false", ["true", "false"], "Stop on f
 dbutils.widgets.text("required_columns", "", "Required columns, comma-separated (optional)")
 dbutils.widgets.dropdown("fail_on_quality_error", "true", ["true", "false"], "Fail on quality error (false = quarantine)")
 dbutils.widgets.text("per_file_config_json", "", "Per-file overrides as JSON (optional)")
-# audit/registry schemas: when several environments share one catalog, these
-# must be pinned per environment. Left blank they fall back to the package
-# default ("bronze"), so every environment would write its run history and
-# schema fingerprints to one shared table - mixing the trails and giving each
-# service principal read access to the others'.
-dbutils.widgets.text("audit_schema_name", "", "Schema for the audit table (blank = package default)")
-dbutils.widgets.text("registry_schema_name", "", "Schema for the schema registry (blank = package default)")
+# audit/registry schemas: blank now means "use schema_name", so the audit
+# trail and schema fingerprints land beside the data they describe (#54).
+# They used to fall back to the literal "bronze", which meant every
+# environment sharing a catalog wrote its run history to one table - mixing
+# the trails and giving each service principal read access to the others'.
+# databricks.yml still pins them explicitly per target: that is belt and
+# braces now rather than the only thing standing between the environments.
+dbutils.widgets.text("audit_schema_name", "", "Schema for the audit table (blank = same as schema_name)")
+dbutils.widgets.text("registry_schema_name", "", "Schema for the schema registry (blank = same as schema_name)")
 # batch_id/run_id: pass {{job.run_id}} / {{job.id}}-{{job.run_id}} as the
 # base_parameters value in databricks.yml so every file's audit row and
 # idempotent batch write (#63) in this job run can be joined back to a

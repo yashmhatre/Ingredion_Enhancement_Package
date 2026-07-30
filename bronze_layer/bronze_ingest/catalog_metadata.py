@@ -28,16 +28,15 @@ from typing import Dict, Optional
 
 from .config import IngestionConfig
 from .logging_utils import logger
+from .sql_utils import quote_literal, quote_ident
 
 
-def _quote(value: str) -> str:
-    """
-    Escapes a comment for use as a SQL string literal by doubling single
-    quotes (verified against Spark SQL: 'it''s fine' round-trips to
-    "it's fine"). Comments are free text from config, so an unescaped
-    apostrophe would otherwise produce a syntax error or worse.
-    """
-    return str(value).replace("'", "''")
+#: Kept as a module-level alias so existing references and tests keep
+#: working; the implementation now lives in sql_utils so every module escapes
+#: identically (#154). This module is the reason that centralisation
+#: happened: it escaped the comment BODY correctly here and interpolated the
+#: table name and column name raw, two lines apart.
+_quote = quote_literal
 
 
 def _current_table_comment(spark, full_name: str) -> Optional[str]:
@@ -112,8 +111,17 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
                     continue
                 if current.get(column) == comment:
                     continue
+                # quote_ident, not a bare backtick pair: a column name
+                # containing a backtick would otherwise close the quoting
+                # early and the rest of the name would be parsed as SQL
+                # (#154). Column names here are checked against the table's
+                # actual columns just above, so this is defence in depth
+                # rather than the only guard - but the names come from the
+                # DATA's schema, which never passed through config
+                # validation.
                 spark.sql(
-                    f"ALTER TABLE {full_name} ALTER COLUMN `{column}` COMMENT '{_quote(comment)}'"
+                    f"ALTER TABLE {full_name} ALTER COLUMN {quote_ident(column)} "
+                    f"COMMENT '{quote_literal(comment)}'"
                 )
                 result["columns_applied"].append(column)
 

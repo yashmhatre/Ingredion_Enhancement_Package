@@ -63,6 +63,44 @@ auto-detect based on extension.
 Any other user just needs their own config file (or their own kwargs) - the
 package code itself never changes.
 
+### Config validation
+
+Every rule below is checked in `IngestionConfig.__post_init__`, so a bad
+config fails **before a cluster starts** rather than partway into a run.
+Compute is the overwhelming majority of what a pipeline costs, and a config
+error found 40 minutes in has already been paid for.
+
+| Rule | Why |
+| --- | --- |
+| **Identifiers** — `catalog`, `schema_name`, `table`, the audit/registry names, the audit column names, and every entry of `required_columns`, `unique_columns`, `merge_keys`, `partition_by`, `cluster_by` must match `[A-Za-z_][A-Za-z0-9_]*` | All of them are interpolated into SQL this package builds. The realistic failure is not an attacker — it's `table: "orders-2024"` producing an opaque parse error mid-run |
+| `quarantine_table`, `table_properties` keys, `column_comments` keys — validated **per dot-separated part** | These are legitimately dotted (`main.bronze.x`, `delta.enableChangeDataFeed`, `customer.name`). Per-part checking accepts those and still rejects `bad-key` |
+| `reader_options` keys must be on `ALLOWED_READER_OPTIONS`, or `cloudFiles.*` | `reader_options` goes verbatim to the Spark reader, and configs load from a Volume. `path` is a reader option — an unfiltered passthrough lets a config redirect the read while every log line still reports `source_path`. Set `allow_unsafe_reader_options: true` to override; it logs what it let through |
+| `retry_attempts >= 1` | Below 1, `with_retry`'s loop body never executes and it raises `last_exc` — still `None`. You get "exceptions must derive from BaseException" and no trace of the real failure. **1 means "try once, don't retry"** |
+| `retry_delay_seconds >= 0` | A negative value reaches `time.sleep()` and raises mid-run, on a cluster |
+| `max_files_per_trigger >= 1` when set | Leave it `None` for no limit |
+| `ingestion_mode: streaming` + `write_mode: overwrite` → **raises** | Every micro-batch would replace the whole table, so only the last one survives. There is no case where this is intended |
+| `write_mode: merge` + `dedupe_before_merge` + `add_audit_columns: false` and no `dedupe_order_by` → **raises** | The default order column is `audit_ingest_ts_col`, which exists only because `add_audit_columns` creates it. Otherwise it fails at MERGE time, after the read is paid for |
+| `dedupe_before_merge` on a non-merge write → **warns** | Silently ignored today, so a user who thinks they configured deduplication hasn't. Warns rather than raises: the setting is merely inert, and raising would break working configs carrying a leftover |
+| `enable_schema_registry` without `enable_run_audit` → **warns** | Legal, but drift visibility works by writing the fingerprint onto the audit row, so drift becomes invisible |
+
+Plus the pre-existing rules: enum membership for `write_mode` /
+`ingestion_mode` / `schema_evolution_mode` / `trigger_mode`; `merge_keys`
+required for merge and required to be a subset of `required_columns`;
+`checkpoint_location` + `schema_location` for streaming;
+`trigger_processing_time` for `processingTime`; non-empty `unique_columns` and
+`cluster_by`; the `cluster_by` / `cluster_by_auto` / `partition_by` mutual
+exclusions.
+
+> **`audit_schema_name` and `registry_schema_name` default to `None`, meaning
+> "use `schema_name`".** They previously defaulted to the literal `"bronze"`,
+> which under the one-catalog/three-schema model meant every environment that
+> didn't override them wrote its audit trail to the same
+> `<catalog>.bronze._ingestion_audit` — mixing dev, staging and production run
+> histories and giving each service principal read access to the others'. It
+> failed silently, because the audit writer issues `CREATE SCHEMA IF NOT
+> EXISTS` first and so created the shared schema and carried on. If you were
+> relying on the old default, set the value explicitly.
+
 ## Directory ingestion (multi-file sources)
 
 ```python
