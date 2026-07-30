@@ -273,7 +273,9 @@ def test_replay_promotes_and_removes_a_batch_far_larger_than_the_old_in_list(spa
 
     # Drop the rule so every row now passes, then replay.
     relaxed = _cfg(
-        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+        table,
+        required_columns=[],
+        fail_on_quality_error=False,
     )
     result = reprocess_quarantine(spark, relaxed)
 
@@ -294,7 +296,9 @@ def test_replay_is_idempotent_after_a_full_promotion(spark):
     _quarantine(spark, df, cfg)
 
     relaxed = _cfg(
-        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+        table,
+        required_columns=[],
+        fail_on_quality_error=False,
     )
     first = reprocess_quarantine(spark, relaxed)
     second = reprocess_quarantine(spark, relaxed)
@@ -318,7 +322,9 @@ def test_max_rows_guard_refuses_an_oversized_replay_before_writing(spark):
     _quarantine(spark, df, cfg)
 
     relaxed = _cfg(
-        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+        table,
+        required_columns=[],
+        fail_on_quality_error=False,
     )
     with pytest.raises(ValueError, match="exceeds max_rows"):
         reprocess_quarantine(spark, relaxed, max_rows=3)
@@ -339,7 +345,9 @@ def test_max_rows_message_points_at_the_way_out(spark):
     _quarantine(spark, df, cfg)
 
     relaxed = _cfg(
-        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+        table,
+        required_columns=[],
+        fail_on_quality_error=False,
     )
     with pytest.raises(ValueError) as excinfo:
         reprocess_quarantine(spark, relaxed, max_rows=1)
@@ -356,7 +364,9 @@ def test_max_rows_none_lifts_the_guard(spark):
     _quarantine(spark, df, cfg)
 
     relaxed = _cfg(
-        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+        table,
+        required_columns=[],
+        fail_on_quality_error=False,
     )
     result = reprocess_quarantine(spark, relaxed, max_rows=None)
     assert result["replayed_row_count"] == 2
