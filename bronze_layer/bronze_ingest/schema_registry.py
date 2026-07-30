@@ -137,7 +137,7 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
 
 
 def record_schema(
-    spark, config: IngestionConfig, df, source_path: str = None
+    spark, config: IngestionConfig, df, source_path: Optional[str] = None
 ) -> Tuple[Optional[str], bool]:
     """
     Records the current schema for config's target table, but only if it

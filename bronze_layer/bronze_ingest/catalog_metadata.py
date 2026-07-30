@@ -24,7 +24,7 @@ Never raises: catalog documentation failing must never fail an ingestion
 run, matching audit.py and schema_registry.py.
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from .config import IngestionConfig
 from .logging_utils import logger
@@ -82,7 +82,11 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
     Returns a summary dict {"table_comment_applied", "columns_applied",
     "columns_skipped"} for logging/testing. Never raises.
     """
-    result = {"table_comment_applied": False, "columns_applied": [], "columns_skipped": []}
+    result: Dict[str, Any] = {
+        "table_comment_applied": False,
+        "columns_applied": [],
+        "columns_skipped": [],
+    }
 
     if not config.table_comment and not config.column_comments:
         return result

@@ -32,7 +32,7 @@ from bronze_ingest.json_reader import read_json
 
 BASE = "abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON"
 
-results = []
+results: list = []
 
 
 def check(name, fn):

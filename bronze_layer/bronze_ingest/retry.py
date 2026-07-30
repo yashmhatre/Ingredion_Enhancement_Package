@@ -19,16 +19,30 @@ def with_retry(
     the last exception if all attempts fail.
     """
 
+    if attempts < 1:
+        # `range(1, attempts + 1)` is empty below 1, so the loop never runs,
+        # the function is never CALLED, and control falls through to the
+        # re-raise with nothing to re-raise. That surfaced as
+        # `TypeError: exceptions must derive from BaseException` - an error
+        # about the retry decorator, masking whatever the caller was
+        # actually doing (#54).
+        #
+        # IngestionConfig rejects retry_attempts < 1 at config load, but
+        # with_retry is importable and callable directly, so it validates
+        # its own argument rather than trusting every caller to have come
+        # through a validated config.
+        raise ValueError(
+            f"attempts must be >= 1, got {attempts}. 1 means 'try once, do not retry'."
+        )
+
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            last_exc = None
             wait = delay_seconds
             for attempt in range(1, attempts + 1):
                 try:
                     return fn(*args, **kwargs)
                 except exceptions as exc:  # noqa: PERF203
-                    last_exc = exc
                     if attempt == attempts:
                         logger.error("%s failed after %d attempt(s): %s", fn.__name__, attempt, exc)
                         raise
@@ -42,7 +56,11 @@ def with_retry(
                     )
                     time.sleep(wait)
                     wait *= backoff
-            raise last_exc  # pragma: no cover - unreachable safeguard
+            # Unreachable: attempts >= 1 is enforced above, so the loop always
+            # runs at least once and either returns or re-raises. Kept as an
+            # explicit assertion rather than a bare `raise last_exc`, which
+            # was the thing that used to fail confusingly.
+            raise AssertionError("with_retry loop exited without returning or raising")
 
         return wrapper
 

@@ -80,7 +80,7 @@ def _notebook_dbutils() -> Optional[Any]:
     try:
         import IPython
 
-        return IPython.get_ipython().user_ns["dbutils"]  # type: ignore[union-attr]
+        return IPython.get_ipython().user_ns["dbutils"]
     except Exception:  # noqa: BLE001 - no IPython/dbutils is the normal local-pytest case
         return None
 

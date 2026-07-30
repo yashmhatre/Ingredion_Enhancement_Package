@@ -19,7 +19,7 @@ Bronze's (see the discussion on #59/#95 and silver_layer/_archive/README.md
 for why the flattener was pulled out of Bronze for the same reason).
 """
 
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pyspark.sql.functions import (
     col,
@@ -101,11 +101,11 @@ def _duplicate_flag_column(df, config: IngestionConfig):
     else:
         order_exprs = [tie_break]
 
-    w = Window.partitionBy(*config.unique_columns).orderBy(*order_exprs)
+    w = Window.partitionBy(*(config.unique_columns or [])).orderBy(*order_exprs)
     return row_number().over(w) > 1
 
 
-def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
+def split_good_bad(df, config: IngestionConfig) -> Tuple[Any, Any]:
     """
     Returns (good_df, bad_df). bad_df is empty (0 rows, same schema) if
     neither required_columns nor unique_columns are configured, or no
@@ -382,7 +382,7 @@ def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
 
     # Latest reason and sighting win, so a row's quarantine entry reflects why
     # it is CURRENTLY bad rather than why it first was.
-    updates = {"_quarantine_reason": "source._quarantine_reason"}
+    updates: Dict[str, Any] = {"_quarantine_reason": "source._quarantine_reason"}
     if has_ingest_ts:
         updates[config.audit_ingest_ts_col] = f"source.`{config.audit_ingest_ts_col}`"
 

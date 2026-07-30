@@ -76,11 +76,26 @@ known-first-party = ["bronze_ingest"]
 [tool.mypy]
 python_version = "3.11"
 
-# Deliberately non-strict to start. The value here is not exhaustive typing -
-# it is catching calls that pass a keyword the target function does not
-# accept, which is how #145 shipped a quality rule that was silently inert.
-# Tighten module by module afterwards; an all-at-once strict mode produces a
-# number too large to act on and gets switched off.
+# Deliberately non-strict to start. Tighten module by module afterwards; an
+# all-at-once strict mode produces a number too large to act on and gets
+# switched off.
+#
+# A correction to the expectation #158 set for this gate, since it changes
+# what the gate is worth: mypy does catch unexpected keyword arguments
+# (`call-arg`) on fixed-signature callables - verified against
+# IngestionConfig(...) and reprocess_quarantine(...). It CANNOT catch them
+# on `ingest_directory_to_bronze`, which is the exact call that carried
+# #145, because that function ends in `**config_overrides` and its signature
+# therefore accepts any keyword by design. No type checker can flag a
+# keyword a function explicitly agreed to take.
+#
+# What actually guards that call is the strict unknown-key rejection added
+# in 928ea3e, at runtime, inside config resolution. mypy is still worth
+# running - on this codebase it found a genuine `raise None` path in
+# retry.py (#54), three `str = None` defaults, and a `-> Tuple[object,
+# object]` that silently made every downstream DataFrame attribute an
+# error - but it is not the answer to #145's class, and #157's contract
+# tests should not be scoped as though it were.
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_redundant_casts = true
@@ -97,6 +112,20 @@ mypy_path = "."
 # not about this code.
 module = ["pyspark.*", "delta.*", "databricks.*", "yaml.*", "IPython.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `dbutils`, `spark` and `display` are injected into the notebook namespace
+# by the Databricks kernel. They accounted for all 96 remaining errors, and
+# left on they would bury every real finding in this layer - which is the
+# layer #157 identifies as the one where both live production defects were.
+#
+# ONLY `name-defined` is disabled, not the whole file. Everything else still
+# runs, including `call-arg` - the check that catches passing a keyword a
+# function does not accept, which is exactly how #145 shipped a quality rule
+# that was silently inert. Disabling notebooks wholesale would have thrown
+# away the single most valuable thing a type checker does for this repo.
+module = ["notebooks.*"]
+disable_error_code = ["name-defined"]
 
 
 # ---------------------------------------------------------------------------

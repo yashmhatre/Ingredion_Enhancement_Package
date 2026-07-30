@@ -11,6 +11,7 @@ within a table. This module describes the run itself.
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Optional
 
 from pyspark.sql import Row
 from pyspark.sql.types import (
@@ -61,7 +62,9 @@ def tag_failure_stage(exc: Exception, stage: str) -> None:
     a nested handler won't overwrite a stage an inner handler already set.
     """
     if not hasattr(exc, "failure_stage"):
-        exc.failure_stage = stage
+        # Dynamic attribute on an arbitrary exception - deliberate, so that
+        # audited_run can read the stage back off whatever propagated.
+        exc.failure_stage = stage  # type: ignore[attr-defined]
 
 
 def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
@@ -103,7 +106,7 @@ def record_replay_run(
     status: str,
     row_count,
     quarantined_row_count,
-    source_path: str = None,
+    source_path: Optional[str] = None,
 ) -> None:
     """
     Writes a single run-level audit row for a quarantine-replay operation
@@ -138,7 +141,7 @@ def record_replay_run(
 
 
 @contextmanager
-def audited_run(spark, config: IngestionConfig, source_path: str = None):
+def audited_run(spark, config: IngestionConfig, source_path: Optional[str] = None):
     """
     Context manager wrapping a single ingestion run (or one streaming
     micro-batch). Writes exactly one audit row on exit, success or

@@ -103,7 +103,7 @@ def _dedupe_for_merge(df, config: IngestionConfig):
             "or leave add_audit_columns=True so the default (audit_ingest_ts_col) exists."
         )
 
-    w = Window.partitionBy(*config.merge_keys).orderBy(
+    w = Window.partitionBy(*(config.merge_keys or [])).orderBy(
         col(f"`{order_col}`").desc(), row_content_hash(df).asc()
     )
     return (
@@ -322,7 +322,7 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         creator.execute()
 
         target = DeltaTable.forName(spark, full_name)
-        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in config.merge_keys)
+        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in (config.merge_keys or []))
         (
             target.alias("target")
             .merge(df.alias("source"), condition)
