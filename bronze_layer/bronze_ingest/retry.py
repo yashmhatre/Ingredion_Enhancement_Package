@@ -184,7 +184,10 @@ def with_retry(
                         logger.error("%s failed after %d attempt(s): %s", fn.__name__, attempt, exc)
                         raise
 
-                    this_wait = random.uniform(0, wait) if jitter else wait  # noqa: S311 - backoff jitter, not crypto
+                    # nosec B311 - retry jitter, not a security decision. The
+                    # value only decides how long to wait before trying again;
+                    # nothing derives a secret, token or identifier from it.
+                    this_wait = random.uniform(0, wait) if jitter else wait  # nosec B311
                     if max_total_seconds is not None and slept + this_wait > max_total_seconds:
                         logger.error(
                             "%s failed on attempt %d/%d and the retry budget of %.1fs is "
