@@ -110,12 +110,20 @@ def test_multiline_actually_applied_single_file_source_forces_off():
 
 # ---- the guard itself (needs a DataFrame, not a stream) ----
 
+_BATCH_SCHEMA = "id INT, _input_file_name STRING"
+
+
 def _batch(spark, file_names):
     """A DataFrame shaped like an Auto Loader micro-batch: real rows plus the
-    `_input_file_name` lineage column read_json_stream attaches."""
+    `_input_file_name` lineage column read_json_stream attaches.
+
+    The schema is explicit so an empty batch is still a valid DataFrame -
+    inference on an empty list raises CANNOT_INFER_EMPTY_SCHEMA, which is
+    the same defect #144 hit in the notebook layer.
+    """
     return spark.createDataFrame(
         [(i, name) for i, name in enumerate(file_names)],
-        ["id", "_input_file_name"],
+        schema=_BATCH_SCHEMA,
     )
 
 
@@ -188,7 +196,8 @@ def test_guard_warns_but_does_not_fail_without_lineage_column(spark, caplog):
 
 def test_guard_is_empty_batch_safe(spark):
     """availableNow with no new files produces an empty micro-batch."""
-    df = _batch(spark, []).limit(0)
+    df = _batch(spark, [])
+    assert df.count() == 0
     sr.assert_no_silent_truncation(df, _cfg(multiline=True))
 
 
