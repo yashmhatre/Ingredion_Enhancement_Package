@@ -2,11 +2,12 @@ import uuid
 
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.schema_registry import REGISTRY_SCHEMA, _fingerprint, record_schema
+from tests.conftest import file_uri
 
 
 def _cfg(tmp_path, table, **overrides):
     return IngestionConfig(
-        source_path=f"file://{tmp_path}/src",
+        source_path=file_uri(tmp_path, "src"),
         table=table,
         schema_name="default",
         catalog=None,

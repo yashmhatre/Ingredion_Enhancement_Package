@@ -27,3 +27,10 @@ dist/
 
 # Databricks CLI / bundle local state
 .databricks/
+
+# Local virtualenvs. `.venv311` is the Python 3.11 environment CONTRIBUTING
+# describes for running the Spark-backed tests on Windows (#74) - several
+# hundred MB of pyspark, and per-developer by nature.
+.venv/
+.venv*/
+venv/

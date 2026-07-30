@@ -6,6 +6,7 @@ import pytest
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.pipeline import BronzeIngestion
 from bronze_ingest.quality import DataQualityError
+from tests.conftest import file_uri
 
 
 def _write_json(path, rows):
@@ -16,7 +17,7 @@ def _write_json(path, rows):
 
 def _cfg(tmp_path, table, **overrides):
     return IngestionConfig(
-        source_path=f"file://{tmp_path}/data.json",
+        source_path=file_uri(tmp_path, "data.json"),
         multiline=False,
         table=table,
         schema_name="default",

@@ -33,6 +33,89 @@ changes.
 
 ## Local Development Setup
 
+### Prerequisites (get these right first)
+
+Five things must be in place before `pytest` will run the Spark-backed
+tests. Each one was found the hard way, in this order, and each produces a
+failure that looks like something else (#74). The pure-Python tests — config
+validation, notebooks, retry — need none of it and run anywhere.
+
+**1. Java 17.** Spark supports 8/11/17 only. A newer JDK fails at
+`SparkSession` creation with `ClassNotFoundException: jdk.internal.ref.Cleaner`.
+Install Temurin 17 (what CI uses) and set `JAVA_HOME`.
+
+**2. Python 3.11**, in a venv of its own (e.g. `.venv311`) rather than by
+replacing an existing interpreter.
+
+Worth correcting the record, because #74 got this wrong and the wrong
+diagnosis cost real time: the issue attributes `TypeError: 'JavaPackage'
+object is not callable` to Python 3.14. On PySpark 4.1.x that error no
+longer occurs — the session builds fine. What *was* still failing looked
+like a version problem and was not; see prerequisite 4.
+
+3.11 remains the recommendation because it is what CI runs and what this
+setup was verified against end to end. Whether 3.14 also works once
+prerequisite 4 is set has not been tested.
+
+**3. `winutils.exe` + `hadoop.dll` (Windows only).** Without `HADOOP_HOME`,
+Spark fails during session creation at `Shell.checkHadoopHomeInner` —
+so it blocks every Spark test, including ones that never touch a file.
+
+Match the Hadoop version PySpark bundles, not the newest mirror you find:
+
+```powershell
+python -c "import pyspark, glob, os; print(glob.glob(os.path.join(os.path.dirname(pyspark.__file__),'jars','hadoop-client-api-*.jar')))"
+```
+
+PySpark 4.1.x bundles Hadoop **3.4.x**. The widely-linked `cdarlint/winutils`
+mirror stops at 3.3.6; `kontext-tech/winutils` carries `hadoop-3.4.0-win10-x64`,
+which works. Both are third-party binaries — Apache publishes no Windows
+builds — so this is a judgement call, not a vendor download.
+
+```powershell
+# put winutils.exe and hadoop.dll in <dir>\bin, then:
+setx HADOOP_HOME C:\Users\<you>\hadoop
+```
+
+**4. `PYSPARK_PYTHON` (Windows).** The single most important one, and the
+one that looks exactly like a Python-version problem. Without it, Spark
+launches its Python workers with whatever `python` it finds rather than the
+venv's, and every test needing a worker dies with `SparkException: Python
+worker exited unexpectedly (crashed)`. That is the *same* symptom a wrong
+Python version produces, which is why #74 originally attributed it to 3.14 —
+setting this fixed 94 of 105 failures on 3.11, and the version alone fixed
+none of them.
+
+```powershell
+setx PYSPARK_PYTHON <repo>\.venv311\Scripts\python.exe
+setx PYSPARK_DRIVER_PYTHON <repo>\.venv311\Scripts\python.exe
+```
+
+**5. `SPARK_LOCAL_IP` (Windows, Spark 4.x).** Not in the original issue, and
+the reason step 3 alone is not enough. With `winutils` in place the Hadoop
+error is replaced by:
+
+```
+Py4JError: An error occurred while calling None.org.apache.spark.api.java.JavaSparkContext
+Caused by: NullPointerException: ... "idWithoutTopologyInfo" is null
+```
+
+That is driver host resolution, not Hadoop:
+
+```powershell
+setx SPARK_LOCAL_IP 127.0.0.1
+setx SPARK_LOCAL_HOSTNAME localhost
+```
+
+Both are **environment** settings on purpose. Pinning the driver host in
+`conftest.py` would be a Windows-specific workaround that CI does not need
+and that could break Linux.
+
+> **Local Spark on Windows is usable but not fully reliable** even with all
+> five in place — session startup intermittently fails with the same
+> `JavaSparkContext` error. Re-running usually works. The pure-Python suites
+> are unaffected, and CI remains the source of truth for Spark-backed tests.
+
 ```bash
 # 1. Clone the repo
 git clone https://github.com/yashmhatre/Ingredion_Enhancement_Package.git

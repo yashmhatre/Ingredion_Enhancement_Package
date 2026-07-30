@@ -18,6 +18,7 @@ from bronze_ingest.catalog_metadata import (
 )
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.pipeline import BronzeIngestion
+from tests.conftest import file_uri
 
 
 def _cfg(table, **overrides):
@@ -194,7 +195,7 @@ def test_pipeline_applies_comments_after_write(spark, tmp_path):
 
     table = f"cm_pipe_{uuid.uuid4().hex[:8]}"
     cfg = IngestionConfig(
-        source_path=f"file://{src}",
+        source_path=file_uri(src),
         table=table,
         schema_name="default",
         catalog=None,

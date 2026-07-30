@@ -5,11 +5,12 @@ import pytest
 
 from bronze_ingest.audit import AUDIT_SCHEMA, audited_run, tag_failure_stage
 from bronze_ingest.config import IngestionConfig
+from tests.conftest import file_uri
 
 
 def _cfg(spark, tmp_path, table_suffix, **overrides):
     return IngestionConfig(
-        source_path=f"file://{tmp_path}/dummy.json",
+        source_path=file_uri(tmp_path, "dummy.json"),
         table=f"audit_test_{table_suffix}",
         schema_name="default",
         catalog=None,

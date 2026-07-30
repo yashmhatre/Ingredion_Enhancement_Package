@@ -3,6 +3,7 @@ import time
 
 from bronze_ingest import json_reader as jr
 from bronze_ingest.config import IngestionConfig
+from tests.conftest import file_uri
 
 
 def _write(path, obj):
@@ -17,7 +18,7 @@ def test_read_json_retries_transient_load_failure(spark, tmp_path, monkeypatch):
     _write(file_path, {"id": 1})
 
     cfg = IngestionConfig(
-        source_path=f"file://{file_path}",
+        source_path=file_uri(file_path),
         multiline=True,
         table="t",
         retry_attempts=3,
@@ -47,7 +48,7 @@ def test_read_json_gives_up_after_retry_attempts_exhausted(spark, tmp_path, monk
     _write(file_path, {"id": 1})
 
     cfg = IngestionConfig(
-        source_path=f"file://{file_path}",
+        source_path=file_uri(file_path),
         multiline=True,
         table="t",
         retry_attempts=2,
@@ -92,7 +93,7 @@ def test_jsonl_reads_every_record_despite_multiline_true(spark, tmp_path):
     file_path = tmp_path / "events.jsonl"
     _write_lines(file_path, [{"id": 1}, {"id": 2}, {"id": 3}])
 
-    cfg = IngestionConfig(source_path=f"file://{file_path}", table="t", multiline=True)
+    cfg = IngestionConfig(source_path=file_uri(file_path), table="t", multiline=True)
     df = jr.read_json(spark, cfg)
 
     assert sorted(r["id"] for r in df.collect()) == [1, 2, 3]
@@ -109,7 +110,7 @@ def test_multiline_true_on_jsonl_would_have_lost_records(spark, tmp_path):
     file_path = tmp_path / "events.jsonl"
     _write_lines(file_path, [{"id": 1}, {"id": 2}, {"id": 3}])
 
-    raw = spark.read.option("multiLine", True).json(f"file://{file_path}")
+    raw = spark.read.option("multiLine", True).json(file_uri(file_path))
 
     assert raw.count() == 1
 
@@ -120,7 +121,7 @@ def test_json_extension_still_honours_multiline_config(spark, tmp_path):
     with open(file_path, "w") as fh:
         fh.write('{\n  "id": 1,\n  "customer": "acme"\n}\n')
 
-    cfg = IngestionConfig(source_path=f"file://{file_path}", table="t", multiline=True)
+    cfg = IngestionConfig(source_path=file_uri(file_path), table="t", multiline=True)
     df = jr.read_json(spark, cfg)
 
     assert df.count() == 1
@@ -158,7 +159,7 @@ def test_reader_options_can_override_the_extension_rule(spark, tmp_path):
         fh.write('{\n  "id": 1\n}\n')
 
     cfg = IngestionConfig(
-        source_path=f"file://{file_path}",
+        source_path=file_uri(file_path),
         table="t",
         multiline=False,
         reader_options={"multiLine": "true"},
