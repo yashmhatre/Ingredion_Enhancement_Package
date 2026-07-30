@@ -44,7 +44,12 @@ def _current_table_comment(spark, full_name: str) -> Optional[str]:
         for row in spark.sql(f"DESCRIBE TABLE EXTENDED {full_name}").collect():
             if row[0] == "Comment":
                 return row[1]
-    except Exception:  # noqa: BLE001 - no readable comment is indistinguishable from no comment set
+    # nosec B110 - the try/except/pass is the intended control flow, not a
+    # swallowed error. DESCRIBE TABLE EXTENDED is unavailable on some
+    # engines and fails on a table that does not exist yet; both mean "no
+    # comment is currently set", which is what the caller needs to diff
+    # against. Falling through to `return None` states that.
+    except Exception:  # noqa: BLE001 - no readable comment means no comment set  # nosec B110
         pass
     return None
 

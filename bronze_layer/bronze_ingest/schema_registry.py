@@ -117,7 +117,15 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
             return
 
         df.createOrReplaceTempView("_registry_updates")
-        spark.sql(f"""
+        # nosec B608 - `target` is not user input at this point. It is
+        # composed of catalog/schema/table identifiers that __post_init__
+        # ran through validate_identifier() at config load (#154), so it
+        # cannot carry quotes, semicolons or whitespace. The row VALUES are
+        # never interpolated - they arrive through a temp view built from a
+        # typed DataFrame. Spark SQL has no bind parameters for a table
+        # name, so interpolation here is unavoidable; validating at the
+        # boundary is the mitigation.
+        merge_sql = f"""
             MERGE INTO {target} AS t
             USING _registry_updates AS s
             ON t.table_name = s.table_name
@@ -127,7 +135,8 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
                 t.schema_json = s.schema_json,
                 t.last_updated_at = s.last_updated_at
             WHEN NOT MATCHED THEN INSERT *
-        """)
+        """  # nosec B608
+        spark.sql(merge_sql)
     except Exception as exc:  # noqa: BLE001 - the registry must never fail the ingestion it describes
         logger.warning(
             "Failed to write schema registry row for %s: %s",
