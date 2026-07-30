@@ -33,32 +33,47 @@ class JsonLinesTruncationError(Exception):
     """
 
 
-def multiline_actually_applied(config: IngestionConfig) -> bool:
+def should_guard_truncation(config: IngestionConfig) -> bool:
     """
-    The `multiLine` value the reader really used, including a
-    `reader_options` override.
+    Whether the truncation guard applies to this config at all.
 
-    `read_json_stream` sets `multiLine` from `effective_multiline` and THEN
-    applies `reader_options`, so a `reader_options: {multiLine: ...}` entry
-    wins. The guard has to reason about the same value the reader used, in
-    both directions:
+    The guard is not asking "what `multiLine` did the reader use?" - it is
+    asking the narrower question "could this silently truncate, and has the
+    operator not already told us they know?". Two conditions:
 
-      - override to "false" with `multiline: true` in config - the read is
-        correct and the guard must NOT fire, or a deliberate, working
-        override becomes a hard failure
-      - override to "true" with `multiline: false` - the read truncates and
-        the operator asked for exactly that, so the guard stays quiet; this
-        is the documented escape hatch
+    **1. An explicit `reader_options: {multiLine: ...}` suppresses the
+    guard, whatever its value.** `read_json_stream` applies `reader_options`
+    last, so such an entry is the operator overriding the package on
+    exactly this point. Both values end up in the same place:
 
-    YAML gives strings, a Python caller gives a bool, and Spark accepts
-    both, so both are coerced here rather than assumed.
+      - `"false"` - the read is correct, there is nothing to guard
+      - `"true"` - the documented escape hatch for `.jsonl` files that are
+        really single JSON documents. The operator asked for this parse and
+        must not be blocked from it
+
+    Because the value does not change the answer, it is never coerced -
+    which removes the YAML-string-vs-bool question entirely rather than
+    solving it.
+
+    An earlier version of this resolved the applied value instead and then
+    guarded on it, which read as more precise and was wrong: it fired on
+    the escape hatch, turning the documented way out of this failure into
+    another instance of it.
+
+    **2. Otherwise, guard exactly when `multiLine` is on.** With it off,
+    JSON-lines files read correctly, and a single JSON document read as
+    JSON-lines fails LOUDLY into `_corrupt_record` - visible already, and
+    not this function's problem.
+
+    Note the asymmetry with the batch reader: there, `.jsonl` in the path
+    forces `multiLine` off and the file is simply read correctly. Here
+    `source_path` is usually a directory, so `effective_multiline` returns
+    the configured value unchanged and this returns True - which is the
+    whole reason the guard exists.
     """
-    override = (config.reader_options or {}).get("multiLine")
-    if override is None:
-        return effective_multiline(config)
-    if isinstance(override, bool):
-        return override
-    return str(override).strip().lower() == "true"
+    if "multiLine" in (config.reader_options or {}):
+        return False
+    return effective_multiline(config)
 
 
 def json_lines_files(paths: Iterable[str]) -> List[str]:
@@ -162,10 +177,7 @@ def assert_no_silent_truncation(micro_batch_df, config: IngestionConfig, lineage
     documents in `replay.py`). On the healthy path the filter matches
     nothing and this is one pass with no shuffle and no collect.
     """
-    if not multiline_actually_applied(config):
-        # multiLine=false reads JSON-lines correctly - and reads a
-        # pretty-printed .json document into _corrupt_record LOUDLY, which
-        # needs no guard because it is already visible.
+    if not should_guard_truncation(config):
         return
 
     if lineage_col not in micro_batch_df.columns:

@@ -72,38 +72,38 @@ def test_json_lines_files_dedupes_and_sorts():
     assert got == ["/x/a.ndjson", "/x/b.jsonl"]
 
 
-# ---- which multiLine value actually reached the reader (pure) ----
+# ---- whether the guard applies at all (pure) ----
 
-def test_multiline_actually_applied_defaults_to_config():
-    assert sr.multiline_actually_applied(_cfg(multiline=True)) is True
-    assert sr.multiline_actually_applied(_cfg(multiline=False)) is False
-
-
-def test_multiline_actually_applied_honours_reader_options_override():
-    """read_json_stream applies reader_options AFTER multiLine, so an
-    override wins - and the guard has to reason about the same value the
-    reader used, or it fires on a working config."""
-    cfg = _cfg(multiline=True, reader_options={"multiLine": "false"})
-    assert sr.multiline_actually_applied(cfg) is False
-
-    cfg = _cfg(multiline=False, reader_options={"multiLine": "true"})
-    assert sr.multiline_actually_applied(cfg) is True
+def test_should_guard_follows_multiline_when_no_override():
+    assert sr.should_guard_truncation(_cfg(multiline=True)) is True
+    assert sr.should_guard_truncation(_cfg(multiline=False)) is False
 
 
-def test_multiline_actually_applied_coerces_yaml_strings_and_bools():
-    """YAML gives strings, a Python caller gives a bool, Spark takes both."""
-    for value, expected in [
-        ("true", True), ("True", True), ("TRUE", True), (" true ", True), (True, True),
-        ("false", False), ("False", False), ("no", False), ("", False), (False, False),
-    ]:
-        cfg = _cfg(multiline=False, reader_options={"multiLine": value})
-        assert sr.multiline_actually_applied(cfg) is expected, value
+def test_any_explicit_reader_options_multiline_suppresses_the_guard():
+    """An explicit override is the operator overriding the package on this
+    exact point, so the guard steps aside whatever the value.
+
+    "true" is the documented escape hatch for .jsonl files that really are
+    single JSON documents - firing on it would turn the way out of this
+    failure into another instance of it. "false" means the read is correct
+    and there is nothing to guard.
+    """
+    for value in ["true", "True", True, "false", "False", False, "", "anything"]:
+        for configured in (True, False):
+            cfg = _cfg(multiline=configured, reader_options={"multiLine": value})
+            assert sr.should_guard_truncation(cfg) is False, (value, configured)
 
 
-def test_multiline_actually_applied_single_file_source_forces_off():
+def test_should_guard_ignores_unrelated_reader_options():
+    """Only a multiLine entry suppresses it - not reader_options generally."""
+    cfg = _cfg(multiline=True, reader_options={"encoding": "UTF-8"})
+    assert sr.should_guard_truncation(cfg) is True
+
+
+def test_should_guard_off_for_a_single_jsonl_file_source():
     """A streaming source pointed straight at a .jsonl file is unambiguous,
-    so the batch rule applies and no guard is needed."""
-    assert sr.multiline_actually_applied(
+    so effective_multiline forces multiLine off and nothing can truncate."""
+    assert sr.should_guard_truncation(
         _cfg(source_path="/Volumes/x/events.jsonl", multiline=True)
     ) is False
 
