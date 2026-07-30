@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from pyspark.sql import Row
 from pyspark.sql.types import (
     BooleanType,
     LongType,
@@ -115,7 +114,30 @@ def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
         )
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 
-        row = Row(**row_dict)
+        # Projected into AUDIT_SCHEMA's field order explicitly, rather than
+        # relying on the caller's dict happening to be built in that order.
+        #
+        # `Row(**row_dict)` + an explicit schema binds POSITIONALLY, so a dict
+        # whose keys are in a different order than the schema silently
+        # produces a row with values in the wrong columns - or a type error,
+        # which this function's never-raise contract then swallows into a
+        # warning. The visible symptom is not a bad row: it is no table at
+        # all, and every later read failing with TABLE_OR_VIEW_NOT_FOUND a
+        # long way from the cause.
+        #
+        # That is not hypothetical - it happened while adding #149's columns,
+        # and only the tests that read the table back caught it.
+        unexpected = sorted(set(row_dict) - {f.name for f in AUDIT_SCHEMA.fields})
+        if unexpected:
+            # A typo'd key would otherwise be dropped here and read as a NULL
+            # column, which looks like "the pipeline did not record that".
+            logger.warning(
+                "Ignoring unknown audit field(s) %s - not in AUDIT_SCHEMA. This is a "
+                "bug in the caller, not in the data.",
+                unexpected,
+            )
+
+        row = tuple(row_dict.get(field.name) for field in AUDIT_SCHEMA.fields)
         df = spark.createDataFrame([row], schema=AUDIT_SCHEMA)
         df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(
             config.resolved_audit_table

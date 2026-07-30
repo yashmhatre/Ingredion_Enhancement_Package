@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -272,3 +273,69 @@ def test_audited_run_success_records_schema_fingerprint(spark, tmp_path):
     row = spark.read.table(cfg.resolved_audit_table).collect()[0]
     assert row["schema_fingerprint"] == "abc123"
     assert row["schema_changed"] is True
+
+
+def test_audit_row_is_written_by_field_name_not_dict_order(spark, tmp_path):
+    """
+    The regression that made #149 fail in CI and pass locally.
+
+    `_write_audit_row` used `Row(**row_dict)` with an explicit schema, which
+    binds POSITIONALLY. When #149 added columns, the dict was built in a
+    different order than AUDIT_SCHEMA, so every write raised - and the
+    never-raise contract turned that into a warning nobody saw. The symptom
+    was not a wrong row; it was NO TABLE AT ALL, surfacing as
+    TABLE_OR_VIEW_NOT_FOUND in six unrelated tests.
+
+    Passing a deliberately shuffled dict proves the projection is by name.
+    """
+    from bronze_ingest.audit import AUDIT_SCHEMA, _write_audit_row
+
+    cfg = _cfg(spark, tmp_path, "field_order")
+    shuffled = {
+        "source_path": "/some/path",
+        "status": "success",
+        "run_id": "r-1",
+        "rows_updated": 2,
+        "table_name": cfg.full_table_name,
+        "row_count": 5,
+        "started_at": datetime(2026, 7, 30, tzinfo=timezone.utc),
+        "write_mode": "merge",
+    }
+    _write_audit_row(spark, cfg, shuffled)
+
+    row = spark.read.table(cfg.resolved_audit_table).collect()[0]
+    assert row["run_id"] == "r-1"
+    assert row["status"] == "success"
+    assert row["row_count"] == 5
+    assert row["rows_updated"] == 2
+    assert row["write_mode"] == "merge"
+    assert row["source_path"] == "/some/path"
+    # Fields the caller omitted are NULL, not shifted from a neighbour.
+    assert row["rows_inserted"] is None
+    assert row["stream_batch_id"] is None
+    # And the schema is intact.
+    assert [f.name for f in spark.read.table(cfg.resolved_audit_table).schema.fields] == [
+        f.name for f in AUDIT_SCHEMA.fields
+    ]
+
+
+def test_unknown_audit_field_is_reported_not_silently_dropped(spark, tmp_path, caplog):
+    """A typo'd key would otherwise be dropped and read as a NULL column,
+    which looks like 'the pipeline did not record that'."""
+    from bronze_ingest.audit import _write_audit_row
+
+    cfg = _cfg(spark, tmp_path, "unknown_field")
+    _write_audit_row(
+        spark,
+        cfg,
+        {
+            "run_id": "r-2",
+            "table_name": cfg.full_table_name,
+            "status": "success",
+            "started_at": datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "rows_inserted_typo": 3,
+        },
+    )
+
+    assert "Ignoring unknown audit field(s)" in caplog.text
+    assert "rows_inserted_typo" in caplog.text
