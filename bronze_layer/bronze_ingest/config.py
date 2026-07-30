@@ -123,6 +123,11 @@ class IngestionConfig:
     # --- Reliability ---
     retry_attempts: int = 3
     retry_delay_seconds: float = 10.0
+    # Ceiling on time spent SLEEPING between retries, not on the operation
+    # itself (#152). attempts=5 with delay_seconds=30 is otherwise up to 8
+    # minutes of driver sleep with no way to bound it. None means unbounded,
+    # which is the previous behaviour.
+    retry_max_total_seconds: Optional[float] = 120.0
     # txnAppId/txnVersion for batch append/overwrite when batch_id is explicit (see #63)
     idempotent_batch_writes: bool = True
 
@@ -284,6 +289,12 @@ class IngestionConfig:
                 f"retry_delay_seconds must be >= 0, got {self.retry_delay_seconds}. "
                 "A negative delay reaches time.sleep() and raises mid-run, on a "
                 "cluster, after work has already been paid for."
+            )
+        if self.retry_max_total_seconds is not None and self.retry_max_total_seconds < 0:
+            raise ValueError(
+                f"retry_max_total_seconds must be >= 0 or None, got "
+                f"{self.retry_max_total_seconds}. 0 means 'never sleep between "
+                f"attempts'; None means unbounded."
             )
         if self.max_files_per_trigger is not None and self.max_files_per_trigger < 1:
             raise ValueError(

@@ -155,7 +155,11 @@ def read_json(spark, config: IngestionConfig):
 
     from pyspark.sql.functions import col
 
-    @with_retry(attempts=config.retry_attempts, delay_seconds=config.retry_delay_seconds)
+    @with_retry(
+        attempts=config.retry_attempts,
+        delay_seconds=config.retry_delay_seconds,
+        max_total_seconds=config.retry_max_total_seconds,
+    )
     def _do_read():
         # Track provenance regardless of flatten mode - cheap and always useful in bronze.
         # Uses _metadata.file_path (works on Unity Catalog shared clusters,

@@ -743,7 +743,50 @@ auto-generated defaults (a fresh timestamp / UUID per run).
 
 **Retries.** Both read and write paths wrap transient failures (throttling,
 concurrent-write conflicts) in exponential-backoff retries via
-`retry_attempts` / `retry_delay_seconds`.
+`retry_attempts` / `retry_delay_seconds` / `retry_max_total_seconds`. **Only
+failures a retry could plausibly fix are retried** — see below.
+
+### Retries: what is and is not retried
+
+| Failure | Retried? | Why |
+|---|---|---|
+| Storage throttling, 429/503, connection reset, timeout | **Yes** | The next attempt genuinely may succeed |
+| `ConcurrentAppendException` and siblings | **Yes** | Delta's own concurrency conflicts are the case backoff exists for |
+| An unrecognised failure | **Yes** | The default. See the note below |
+| `NullMergeKeyError`, `DuplicateMergeKeyError` | **No** | The data is identical on every attempt |
+| `DataQualityError`, `JsonLinesTruncationError` | **No** | Same |
+| `ValueError` / `TypeError` — unknown `write_mode`, missing order-by column | **No** | Config and programming errors |
+| `PERMISSION_DENIED`, `TABLE_OR_VIEW_NOT_FOUND`, `AnalysisException`, `PARSE_SYNTAX_ERROR` | **No** | Nothing changes between attempts |
+
+Before this, `retry.py` caught `Exception` and every call site took that
+default, so all of the above were retried three times with 10s and 20s
+sleeps. Directory ingestion processes units sequentially with per-unit
+failure isolation, so **a directory of 50 broken files spent 25 minutes
+sleeping** — and the log showed two `Retrying in 10.0s...` warnings per
+file for conditions that were never going to succeed.
+
+Three things worth knowing before changing this:
+
+- **Unknown failures are retried, deliberately.** Wrongly retrying a
+  permanent failure costs a bounded amount of time; wrongly refusing to
+  retry a transient one costs a failed run. The classifier exists to stop
+  the *known* permanent cases from burning the budget, not to be an
+  exhaustive taxonomy.
+- **Server-side conditions are matched on message text.** PySpark surfaces a
+  large family of distinct failures as one exception type, so the message is
+  the only signal available. That is a compromise forced by the platform,
+  kept in one place (`retry.PERMANENT_MESSAGE_MARKERS` /
+  `TRANSIENT_MESSAGE_MARKERS`) so it can be corrected in one place. Transient
+  markers are checked *first*, so a concurrency conflict that names a table
+  is not misread as a missing-table error.
+- **`retry_max_total_seconds` (default 120s) bounds sleeping, not the
+  operation.** Without it, `retry_attempts: 5` with `retry_delay_seconds: 30`
+  is up to 8 minutes of driver sleep with no ceiling. Set `None` for the old
+  unbounded behaviour.
+
+Backoff uses **full jitter** (`sleep(uniform(0, wait))`). Concurrent writers
+that collide on a `ConcurrentAppendException` and retry on identical fixed
+backoff simply collide again, in lockstep.
 
 **Directory ingestion resilience.** Multi-file sources get per-file failure
 isolation, automatic archival of successfully-ingested files, retry-limit

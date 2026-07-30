@@ -96,6 +96,17 @@ the final exception. Verified directly: a function failing twice then
 succeeding was retried with delays of ~0.2s then ~0.4s (2x backoff)
 before returning its result.
 
+> **Superseded in part by #152.** The observation above was accurate and
+> incomplete: `with_retry` retried up to `attempts` times *for every
+> exception*, because the default was `exceptions=(Exception,)` and every
+> call site took it. So `NullMergeKeyError`, an unknown `write_mode`, and
+> `PERMISSION_DENIED` were all retried with 10s and 20s sleeps before
+> surfacing — 25 minutes of sleeping for a directory of 50 broken files.
+> `retry.py` now classifies failures, bounds total sleep via
+> `retry_max_total_seconds`, and jitters the backoff. The test gap noted in
+> this document is closed: `tests/test_retry.py` exists, with a case per
+> class of exception.
+
 **Originally found a gap, now fixed (#81):** the README's "Retries"
 section states *"Both read and write paths wrap transient failures ...
 in exponential-backoff retries via `retry_attempts` /

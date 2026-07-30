@@ -11,6 +11,7 @@ from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
 
 from .config import IngestionConfig
+from .errors import DuplicateMergeKeyError, NullMergeKeyError
 from .logging_utils import logger
 from .retry import with_retry
 from .sql_utils import quote_literal, row_content_hash
@@ -76,10 +77,6 @@ def add_audit_columns(df, config: IngestionConfig, batch_id: Optional[str] = Non
     return df
 
 
-class NullMergeKeyError(Exception):
-    pass
-
-
 def _assert_no_null_merge_keys(df, merge_keys):
     """
     NULL = NULL evaluates to NULL (not true) in a SQL MERGE condition, so a
@@ -101,10 +98,6 @@ def _assert_no_null_merge_keys(df, merge_keys):
             "duplicates on every run. Add these columns to required_columns so "
             "the quality gate filters/fails on them before the write."
         )
-
-
-class DuplicateMergeKeyError(Exception):
-    pass
 
 
 def _dedupe_for_merge(df, config: IngestionConfig):
@@ -507,7 +500,11 @@ def write_bronze(spark, df, config: IngestionConfig):
                 "this guarantee."
             )
 
-    @with_retry(attempts=config.retry_attempts, delay_seconds=config.retry_delay_seconds)
+    @with_retry(
+        attempts=config.retry_attempts,
+        delay_seconds=config.retry_delay_seconds,
+        max_total_seconds=config.retry_max_total_seconds,
+    )
     def _do_write():
         return _write_core(spark, df, config, txn_options=txn_options)
 
@@ -539,7 +536,11 @@ def write_bronze_micro_batch(spark, micro_batch_df, batch_id: int, config: Inges
     txn_app_id = config.checkpoint_location or config.full_table_name
     txn_options = {"txnAppId": txn_app_id, "txnVersion": str(batch_id)}
 
-    @with_retry(attempts=config.retry_attempts, delay_seconds=config.retry_delay_seconds)
+    @with_retry(
+        attempts=config.retry_attempts,
+        delay_seconds=config.retry_delay_seconds,
+        max_total_seconds=config.retry_max_total_seconds,
+    )
     def _do_write():
         return _write_core(spark, micro_batch_df, config, txn_options=txn_options)
 
