@@ -57,7 +57,7 @@ def test_list_json_files_finds_only_json(spark, json_test_dir):
     os.makedirs(os.path.join(write_dir, "subdir"), exist_ok=True)
 
     files = list_json_files(spark, source_dir)
-    names = sorted(f.split("/")[-1] for f in files)
+    names = sorted(os.path.basename(f) for f in files)
     assert names == ["a.json", "b.JSON"]
 
 
@@ -69,7 +69,7 @@ def test_list_json_files_includes_jsonl(spark, json_test_dir):
     _write(write_dir, "notes.txt", "ignore me")
 
     files = list_json_files(spark, source_dir)
-    names = sorted(f.split("/")[-1] for f in files)
+    names = sorted(os.path.basename(f) for f in files)
     assert names == ["a.json", "b.jsonl", "c.JSONL"]
 
 
@@ -253,7 +253,7 @@ def test_retry_state_file_never_treated_as_data(spark, json_test_dir):
     di_module._write_retry_state(source_dir, {"some/file.json": 1})
 
     files = di_module.list_json_files(spark, source_dir)
-    names = [f.split("/")[-1] for f in files]
+    names = [os.path.basename(f) for f in files]
     assert "retry_state.json" not in names
     assert names == ["a.json"]
 

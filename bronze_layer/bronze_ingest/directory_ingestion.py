@@ -34,6 +34,35 @@ from .json_reader import read_json
 from .logging_utils import logger
 
 
+def local_path_from_uri(path: str) -> str:
+    r"""
+    The local filesystem path for a `file://` URI, on any platform (#74).
+
+    Six call sites did this by hand as `path[len("file://"):]`, which is
+    correct on POSIX and wrong on Windows. `file:///tmp/x` yields `/tmp/x`,
+    which os.listdir and shutil.move accept. `file:///C:/Users/x` yields
+    `/C:/Users/x`, which they do not:
+
+        [WinError 123] The filename, directory name, or volume label
+        syntax is incorrect: '/C:'
+
+    The archival path therefore reported `failed_left_in_place` for every
+    file locally on Windows - a real bug in package code, not a test
+    artifact, though it only reaches this fallback off-Databricks (dbutils
+    handles the move where it is available).
+
+    Leaves a non-URI path untouched, so callers can pass either.
+    """
+    if not path.startswith("file://"):
+        return path
+    stripped = path[len("file://") :]
+    # `/C:/Users/...` -> `C:/Users/...`. A leading slash before a drive
+    # letter is part of the URI form, not the path.
+    if re.match(r"^/[A-Za-z]:", stripped):
+        return stripped[1:]
+    return stripped
+
+
 def sanitize_table_name(filename: str) -> str:
     """
     Converts a filename into a valid Databricks/Unity Catalog table name:
@@ -80,11 +109,14 @@ def _try_posix_ls(source_dir: str) -> Optional[List[str]]:
     """File listing via os.listdir for POSIX-style paths: local file:/ paths
     and FUSE-mounted locations like /Volumes/... . Returns None if the path
     isn't visible as a local directory."""
-    local = source_dir[len("file://") :] if source_dir.startswith("file://") else source_dir
+    local = local_path_from_uri(source_dir)
     if not os.path.isdir(local):
         return None
+    # "/" explicitly, not os.path.join: these are URI-shaped strings that the
+    # rest of the module joins and splits on "/", and os.path.join would use
+    # "\\" on Windows (#74).
     return sorted(
-        os.path.join(source_dir.rstrip("/"), f)
+        f"{source_dir.rstrip('/')}/{f}"
         for f in os.listdir(local)
         if f.lower().endswith((".json", ".jsonl")) and os.path.isfile(os.path.join(local, f))
     )
@@ -102,11 +134,11 @@ def _try_dbutils_ls_dirs(source_dir: str) -> Optional[List[str]]:
 
 def _try_posix_ls_dirs(source_dir: str) -> Optional[List[str]]:
     """Lists immediate subdirectories via os.listdir for local/FUSE paths."""
-    local = source_dir[len("file://") :] if source_dir.startswith("file://") else source_dir
+    local = local_path_from_uri(source_dir)
     if not os.path.isdir(local):
         return None
     return sorted(
-        os.path.join(source_dir.rstrip("/"), d)
+        f"{source_dir.rstrip('/')}/{d}"
         for d in os.listdir(local)
         if os.path.isdir(os.path.join(local, d))
     )
@@ -199,8 +231,8 @@ def _move_file_direct(src_path: str, dest_path: str) -> None:
         dbutils.fs.mv(src_path, dest_path)
         return
 
-    local_src = src_path[len("file://") :] if src_path.startswith("file://") else src_path
-    local_dest = dest_path[len("file://") :] if dest_path.startswith("file://") else dest_path
+    local_src = local_path_from_uri(src_path)
+    local_dest = local_path_from_uri(dest_path)
     os.makedirs(os.path.dirname(local_dest), exist_ok=True)
     shutil.move(local_src, local_dest)
 
@@ -219,7 +251,7 @@ def _move_file(
     Returns the destination path. Raises on failure - caller decides how
     to handle it; this function does not swallow errors.
     """
-    filename = file_path.rsplit("/", 1)[-1]
+    filename = file_path.replace("\\", "/").rsplit("/", 1)[-1]
     subpath = f"{relative_subpath.strip('/')}/" if relative_subpath else ""
     dest_path = f"{source_dir.rstrip('/')}/{dest_subfolder}/{subpath}{filename}"
     _move_file_direct(file_path, dest_path)
@@ -506,7 +538,7 @@ def _read_retry_state(source_dir: str) -> Dict[str, int]:
             return {}
 
     if content is None:
-        local_path = path[len("file://") :] if path.startswith("file://") else path
+        local_path = local_path_from_uri(path)
         try:
             with open(local_path) as f:
                 content = f.read()
@@ -539,7 +571,7 @@ def _write_retry_state(source_dir: str, state: Dict[str, int]) -> None:
             return
 
     try:
-        local_path = path[len("file://") :] if path.startswith("file://") else path
+        local_path = local_path_from_uri(path)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "w") as f:
             f.write(content)

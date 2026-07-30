@@ -1,4 +1,5 @@
 import os
+import pathlib
 import sys
 
 # Make the package importable regardless of entry point (notebook cell,
@@ -16,6 +17,36 @@ if _package_parent not in sys.path:
 import uuid
 
 import pytest
+
+
+def file_uri(*parts) -> str:
+    r"""
+    A valid `file://` URI for a local path, on any platform (#74).
+
+    Tests built these by hand as `f"file://{tmp_path}"`, which works on
+    POSIX only by accident: `/tmp/x` already starts with a slash, so the
+    result happens to be the well-formed `file:///tmp/x`. On Windows
+    `tmp_path` is `C:\Users\...`, and the same f-string produces
+    `file://C:\Users\...` - two slashes, a drive letter where the host
+    should be, and backslash separators. Spark rejects it outright:
+    `IllegalArgumentException: Wrong FS: file://C:\..., expected: file:///`.
+
+    Built explicitly rather than with `pathlib.Path.as_uri()`, which the
+    issue suggested. `as_uri()` percent-encodes, so it would change the URI
+    this produces on Linux - where CI runs and everything currently passes -
+    for no benefit on the platform that was broken. This construction is
+    byte-identical to the old behaviour on POSIX and merely correct on
+    Windows, which makes it the lower-risk fix.
+
+    The trade-off that buys: a path containing a space or a `#` still
+    produces an unencoded URI. pytest sanitises tmp_path names, so this does
+    not arise here - but if a test ever needs such a path, use `as_uri()`
+    for that case deliberately.
+    """
+    text = str(pathlib.PurePath(*parts)).replace("\\", "/")
+    if not text.startswith("/"):
+        text = "/" + text  # Windows: C:/Users/... -> /C:/Users/...
+    return "file://" + text
 
 
 def _get_dbutils():
@@ -95,7 +126,7 @@ def json_test_dir(tmp_path):
         yield scratch, scratch
         dbutils.fs.rm(scratch, recurse=True)
     else:
-        yield str(tmp_path), f"file://{tmp_path}"
+        yield str(tmp_path), file_uri(tmp_path)
 
 
 # ---------------------------------------------------------------------------
