@@ -96,3 +96,190 @@ def json_test_dir(tmp_path):
         dbutils.fs.rm(scratch, recurse=True)
     else:
         yield str(tmp_path), f"file://{tmp_path}"
+
+
+# ---------------------------------------------------------------------------
+# Notebook harness (#157)
+# ---------------------------------------------------------------------------
+#
+# bronze_layer/notebooks/ holds the deployed job entrypoints - the code that
+# actually runs in production - and until now nothing tested them. Both known
+# live defects (#144, #145) were there, and neither could have been caught by
+# any number of library tests, because CI did not even watch the path.
+#
+# They are plain Python files with `# COMMAND ----------` separators, so the
+# only thing standing between them and pytest is the handful of names the
+# Databricks kernel injects: `dbutils`, `spark`, `display`. Supplying those
+# makes the whole layer testable with no Spark, no Java and no workspace.
+
+
+class NotebookExit(Exception):
+    """
+    Raised by the fake `dbutils.notebook.exit()`.
+
+    On Databricks, `exit()` stops the notebook immediately and returns a value
+    to the caller. Modelling it as an exception reproduces the control flow
+    that matters: statements after an `exit()` do not run. A stub that merely
+    recorded the value would let execution continue and quietly test a path
+    production never takes.
+    """
+
+    def __init__(self, value):
+        super().__init__(value)
+        self.value = value
+
+
+class FakeWidgets:
+    """
+    `dbutils.widgets`, recording declarations and serving values.
+
+    `get()` on an undeclared widget raises, as it does on Databricks. That is
+    not pedantry - it is the failure shape of #145's whole class, where the
+    bundle and the notebook disagree about a parameter name and the mismatch
+    surfaces as a default silently taking effect.
+    """
+
+    def __init__(self, values=None):
+        self.declared = {}
+        self.values = dict(values or {})
+
+    def text(self, name, defaultValue="", label=None):  # noqa: N803 - Databricks' own casing
+        self.declared[name] = defaultValue
+
+    def dropdown(self, name, defaultValue, choices, label=None):  # noqa: N803
+        self.declared[name] = defaultValue
+        self.choices = getattr(self, "choices", {})
+        self.choices[name] = choices
+
+    def get(self, name):
+        if name not in self.declared:
+            raise ValueError(f"No widget named {name} is defined")
+        return self.values.get(name, self.declared[name])
+
+    def remove(self, name):
+        self.declared.pop(name, None)
+
+    def removeAll(self):  # noqa: N802 - Databricks' own casing
+        self.declared.clear()
+
+
+class FakeNotebook:
+    def exit(self, value):
+        raise NotebookExit(value)
+
+
+class FakeFs:
+    """Enough of `dbutils.fs` that a notebook touching it does not explode."""
+
+    def __init__(self):
+        self.calls = []
+
+    def _record(self, name, *args):
+        self.calls.append((name, args))
+        return []
+
+    def ls(self, *a):
+        return self._record("ls", *a)
+
+    def mkdirs(self, *a):
+        return self._record("mkdirs", *a)
+
+    def mv(self, *a):
+        return self._record("mv", *a)
+
+    def rm(self, *a):
+        return self._record("rm", *a)
+
+    def head(self, *a):
+        return self._record("head", *a)
+
+
+class FakeDbutils:
+    def __init__(self, widget_values=None):
+        self.widgets = FakeWidgets(widget_values)
+        self.notebook = FakeNotebook()
+        self.fs = FakeFs()
+
+
+class FakeDataFrame:
+    def __init__(self, rows, schema=None):
+        self.rows = list(rows)
+        self.schema = schema
+
+    def count(self):
+        return len(self.rows)
+
+
+class FakeSpark:
+    """
+    Records `createDataFrame` calls so a test can assert what the summary was
+    built from, without needing a session.
+    """
+
+    def __init__(self):
+        self.created = []
+
+    def createDataFrame(self, data, schema=None):  # noqa: N802 - Spark's own casing
+        rows = list(data)
+        if not rows and schema is None:
+            # Mirrors the real failure #144 hit, so a regression cannot pass
+            # here and fail on a cluster.
+            raise ValueError(
+                "[CANNOT_INFER_EMPTY_SCHEMA] Can not infer schema from an empty dataset."
+            )
+        self.created.append((rows, schema))
+        return FakeDataFrame(rows, schema)
+
+
+class NotebookRun:
+    def __init__(self, exit_value, displayed, dbutils, spark, namespace):
+        self.exit_value = exit_value
+        self.displayed = displayed
+        self.dbutils = dbutils
+        self.spark = spark
+        self.namespace = namespace
+
+    @property
+    def exited(self):
+        return self.exit_value is not None
+
+
+NOTEBOOK_DIR = os.path.join(_package_parent, "notebooks")
+
+
+@pytest.fixture
+def run_notebook(monkeypatch):
+    """
+    Executes a notebook with a faked Databricks kernel and returns its outcome.
+
+    Notebooks are executed rather than imported: they are scripts, not modules,
+    and `exec` keeps each run's namespace isolated so one test cannot leak
+    top-level state into the next.
+    """
+    import builtins
+
+    def _run(name, widgets=None, patches=(), spark=None):
+        path = os.path.join(NOTEBOOK_DIR, name if name.endswith(".py") else f"{name}.py")
+        fake_dbutils = FakeDbutils(widgets)
+        fake_spark = spark if spark is not None else FakeSpark()
+        displayed = []
+
+        monkeypatch.setattr(builtins, "dbutils", fake_dbutils, raising=False)
+        monkeypatch.setattr(builtins, "spark", fake_spark, raising=False)
+        monkeypatch.setattr(builtins, "display", displayed.append, raising=False)
+        for target, attr, value in patches:
+            monkeypatch.setattr(target, attr, value)
+
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+
+        namespace = {"__name__": "__databricks_notebook__", "__file__": path}
+        exit_value = None
+        try:
+            exec(compile(source, path, "exec"), namespace)  # noqa: S102 - executing a notebook is the point
+        except NotebookExit as stop:
+            exit_value = stop.value
+
+        return NotebookRun(exit_value, displayed, fake_dbutils, fake_spark, namespace)
+
+    return _run

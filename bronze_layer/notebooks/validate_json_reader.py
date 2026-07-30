@@ -349,15 +349,21 @@ check("schema_hint_type_mismatch_nulls_and_rescues", _check_type_mismatch)
 
 # COMMAND ----------
 
-import pandas as pd
+# Explicit schema, no pandas (#157). pandas was imported here and in
+# run_directory_ingestion but declared in no extra of setup.py - it worked
+# only because the Databricks runtime happens to ship it, and nothing
+# asserted that. A runtime version that dropped it would have failed in
+# production on a line whose only job is to render a report.
+#
+# `results` is already a list of (case, status, detail) tuples, so this needs
+# no reshaping - the DataFrame was only ever being used to render and to
+# count.
+display(spark.createDataFrame(results, schema="case STRING, status STRING, detail STRING"))
 
-report_df = pd.DataFrame(results, columns=["case", "status", "detail"])
-display(spark.createDataFrame(report_df))
-
-failed = report_df[report_df["status"] != "PASS"]
-if len(failed) > 0:
+failed = [r for r in results if r[1] != "PASS"]
+if failed:
     dbutils.notebook.exit(
-        f"FAILED: {len(failed)}/{len(report_df)} case(s) failed: {list(failed['case'])}"
+        f"FAILED: {len(failed)}/{len(results)} case(s) failed: {[r[0] for r in failed]}"
     )
 
-dbutils.notebook.exit(f"SUCCESS: all {len(report_df)} case(s) passed")
+dbutils.notebook.exit(f"SUCCESS: all {len(results)} case(s) passed")
