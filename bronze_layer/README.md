@@ -464,9 +464,45 @@ Idempotent on the success path: re-running finds nothing left matching
 the filter once a replay has succeeded, so it re-promotes nothing.
 Cross-table transactions aren't available in Delta, so the bronze write
 happens before the quarantine delete; if the delete itself then fails
-after a successful write, the affected `_quarantine_id`(s) are logged
-clearly so they can be reconciled manually rather than silently risking
-a duplicate promotion on the next replay.
+after a successful write, the log names the `_batch_id` to reconcile on
+rather than silently risking a duplicate promotion on the next replay.
+
+### Replay is bounded, on purpose
+
+Replay is not a steady-state trickle. It is what an operator runs **after
+fixing an upstream source**, against a quarantine table that has been
+accumulating since the problem started — so *"we fixed the feed, replay
+everything"* is simultaneously the natural usage and the unbounded case.
+
+`reprocess_quarantine` therefore refuses to promote more than
+**500,000 rows** in one call by default, with a message pointing at the
+`batch_id` and `since` filters. Raise it deliberately, or pass
+`max_rows=None` to lift it:
+
+```python
+reprocess_quarantine(spark, config, max_rows=2_000_000)   # deliberate
+reprocess_quarantine(spark, config, max_rows=None)        # no ceiling
+```
+
+The deployed replay notebook exposes the same control as a `max_rows`
+widget (blank = default, `none` = no limit).
+
+**Scale characteristics.** The delete is a distributed MERGE against the
+promoted ids — no row data is brought to the driver, and no SQL `IN` list
+is generated. That matters because the previous implementation did both:
+~200 bytes of driver heap per id, and ~39 bytes of SQL text per id in a
+single predicate. At a million rows that was ~200MB of driver memory (on
+serverless, whose driver size the operator does not control) and a ~39MB
+SQL string, which Spark's parser fails on well before that — at a
+version-dependent threshold somewhere in the tens of thousands.
+
+That failure mode was worse than a slow one. The bronze write commits
+*first*, so a parser failure in the delete left rows in **both** tables,
+ready to be promoted again by the next replay — deterministically, since
+the retry built the same oversized statement. **If you see the
+"failed to remove them from quarantine" error, do not simply re-run
+replay**: reconcile using the `replay-<timestamp>` `_batch_id` named in
+the log first.
 
 Every replay run writes one row to the same run-level audit table as
 normal ingestion, with a distinguishable `status` of `success_replay` -

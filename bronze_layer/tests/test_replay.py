@@ -222,3 +222,141 @@ def test_replay_does_not_leak_quarantine_bookkeeping_into_bronze(spark):
         "_quarantine_reason",
     ):
         assert leaked not in bronze_cols, f"{leaked} leaked into bronze table"
+
+
+# ---------------------------------------------------------------------------
+# Scale characteristics (#155)
+# ---------------------------------------------------------------------------
+
+
+def test_replay_uses_no_driver_side_collect_of_row_data():
+    """
+    Static guard on the property, not just on one execution.
+
+    The old form was `[r["_quarantine_id"] for r in ...collect()]` followed by
+    a driver-built `IN (...)` list. Both scaled linearly with the replayed row
+    count and neither had a bound: ~200 bytes of driver heap per id, and ~39
+    bytes of SQL text per id in a single predicate. A test at a realistic size
+    would not have caught it - the old code worked fine at the scale it was
+    tested at. That is the whole point of #155.
+    """
+    import inspect
+
+    from bronze_ingest import replay
+
+    source = inspect.getsource(replay.reprocess_quarantine)
+    assert ".collect()" not in source, (
+        "reprocess_quarantine must not collect per-row data to the driver - "
+        "replay is exactly the operation that gets large"
+    )
+    assert "IN (" not in source, "the quarantine delete must not build a SQL IN list"
+    assert "whenMatchedDelete" in source, "the delete should be a distributed MERGE"
+
+
+def test_replay_promotes_and_removes_a_batch_far_larger_than_the_old_in_list(spark):
+    """
+    5,000 quarantined rows - comfortably past the low tens of thousands where
+    the old `IN (...)` predicate started failing unpredictably, and large
+    enough that a driver-side collect would show up, while still quick.
+
+    Asserts the invariant the whole operation rests on: the set promoted to
+    bronze and the set removed from quarantine are the same set.
+    """
+    table = f"replay_scale_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["id"], fail_on_quality_error=False)
+
+    # Every row fails the gate (id is null), so all 5,000 land in quarantine.
+    rows = [(None, f"payload-{i}") for i in range(5000)]
+    df = spark.createDataFrame(rows, "id STRING, note STRING")
+    assert _quarantine(spark, df, cfg) == 5000
+    assert spark.read.table(cfg.resolved_quarantine_table).count() == 5000
+
+    # Drop the rule so every row now passes, then replay.
+    relaxed = _cfg(
+        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+    )
+    result = reprocess_quarantine(spark, relaxed)
+
+    assert result["replayed_row_count"] == 5000
+    assert result["still_quarantined_row_count"] == 0
+    assert spark.read.table(_table(table)).count() == 5000
+    # Removed from quarantine, not left behind to be promoted again.
+    assert spark.read.table(cfg.resolved_quarantine_table).count() == 0
+
+
+def test_replay_is_idempotent_after_a_full_promotion(spark):
+    """A second replay must find nothing left, which is only true if the
+    delete actually removed what the write promoted."""
+    table = f"replay_idem_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["id"], fail_on_quality_error=False)
+
+    df = spark.createDataFrame([(None, "a"), (None, "b")], "id STRING, note STRING")
+    _quarantine(spark, df, cfg)
+
+    relaxed = _cfg(
+        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+    )
+    first = reprocess_quarantine(spark, relaxed)
+    second = reprocess_quarantine(spark, relaxed)
+
+    assert first["replayed_row_count"] == 2
+    assert second["replayed_row_count"] == 0
+    assert spark.read.table(_table(table)).count() == 2, "no double promotion"
+
+
+def test_max_rows_guard_refuses_an_oversized_replay_before_writing(spark):
+    """
+    The guard must fire BEFORE the bronze write. Failing afterwards would
+    leave rows in both tables, which is the state #155 is about avoiding.
+    """
+    import pytest
+
+    table = f"replay_guard_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["id"], fail_on_quality_error=False)
+
+    df = spark.createDataFrame([(None, f"r{i}") for i in range(10)], "id STRING, note STRING")
+    _quarantine(spark, df, cfg)
+
+    relaxed = _cfg(
+        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+    )
+    with pytest.raises(ValueError, match="exceeds max_rows"):
+        reprocess_quarantine(spark, relaxed, max_rows=3)
+
+    # Nothing promoted, nothing removed - the quarantine table is untouched.
+    assert not spark.catalog.tableExists(_table(table))
+    assert spark.read.table(cfg.resolved_quarantine_table).count() == 10
+
+
+def test_max_rows_message_points_at_the_way_out(spark):
+    """An operator who hits this needs to know what to do next, not just
+    that a number was exceeded."""
+    import pytest
+
+    table = f"replay_guard_msg_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["id"], fail_on_quality_error=False)
+    df = spark.createDataFrame([(None, "a"), (None, "b")], "id STRING, note STRING")
+    _quarantine(spark, df, cfg)
+
+    relaxed = _cfg(
+        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+    )
+    with pytest.raises(ValueError) as excinfo:
+        reprocess_quarantine(spark, relaxed, max_rows=1)
+
+    message = str(excinfo.value)
+    assert "batch_id" in message and "since" in message
+    assert "max_rows" in message
+
+
+def test_max_rows_none_lifts_the_guard(spark):
+    table = f"replay_nolimit_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["id"], fail_on_quality_error=False)
+    df = spark.createDataFrame([(None, "a"), (None, "b")], "id STRING, note STRING")
+    _quarantine(spark, df, cfg)
+
+    relaxed = _cfg(
+        table, required_columns=[], fail_on_quality_error=False, audit_table=cfg.audit_table
+    )
+    result = reprocess_quarantine(spark, relaxed, max_rows=None)
+    assert result["replayed_row_count"] == 2
