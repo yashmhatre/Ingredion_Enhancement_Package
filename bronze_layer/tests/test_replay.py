@@ -2,12 +2,10 @@ import json
 import os
 import uuid
 
-import pytest
-
 import bronze_ingest.directory_ingestion as di
+from bronze_ingest.bronze_writer import add_audit_columns
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.quality import enforce_quality, write_quarantine
-from bronze_ingest.bronze_writer import add_audit_columns
 from bronze_ingest.replay import reprocess_quarantine, reprocess_quarantined_files
 
 

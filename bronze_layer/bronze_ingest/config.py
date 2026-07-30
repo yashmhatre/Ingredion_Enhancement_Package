@@ -6,9 +6,9 @@ comes from, how nested fields should be handled, and where/how the result
 is written as a Delta bronze table.
 """
 
-from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any
 import json
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 from .logging_utils import logger
 from .sql_utils import validate_identifier, validate_identifiers
@@ -82,61 +82,49 @@ ALLOWED_READER_OPTION_PREFIXES = ("cloudFiles.",)
 @dataclass
 class IngestionConfig:
     # --- Source ---
-    source_path: (
-        str  # any Spark-readable URI: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/...
-    )
+    # any Spark-readable URI: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/...
+    source_path: str
     multiline: bool = True  # set True if each file is a single JSON document (not JSON-lines)
-    schema_hint_ddl: Optional[str] = (
-        None  # optional DDL string to enforce a read schema instead of inferring it
-    )
-    reader_options: Dict[str, Any] = field(
-        default_factory=dict
-    )  # extra options passed straight to spark.read.options(); keys must be on ALLOWED_READER_OPTIONS
-    allow_unsafe_reader_options: bool = (
-        False  # opt out of the reader_options allowlist (#154); logs what it lets through
-    )
+    # optional DDL string to enforce a read schema instead of inferring it
+    schema_hint_ddl: Optional[str] = None
+    # extra options passed straight to spark.read.options();
+    # keys must be on ALLOWED_READER_OPTIONS
+    reader_options: Dict[str, Any] = field(default_factory=dict)
+    # opt out of the reader_options allowlist (#154); logs what it lets through
+    allow_unsafe_reader_options: bool = False
 
     # --- Ingestion mode (batch one-off read vs incremental Auto Loader) ---
     ingestion_mode: str = "batch"  # "batch" | "streaming"
-    checkpoint_location: Optional[str] = (
-        None  # required for streaming - Auto Loader progress + foreachBatch checkpoint
-    )
-    schema_location: Optional[str] = (
-        None  # required for streaming - Auto Loader inferred schema store
-    )
+    # required for streaming - Auto Loader progress + foreachBatch checkpoint
+    checkpoint_location: Optional[str] = None
+    # required for streaming - Auto Loader inferred schema store
+    schema_location: Optional[str] = None
     schema_evolution_mode: str = "addNewColumns"  # cloudFiles.schemaEvolutionMode for streaming
-    rescued_data_column: str = (
-        "_rescued_data"  # column that captures fields that don't fit the inferred/enforced schema
-    )
-    corrupt_record_column: str = (
-        "_corrupt_record"  # column that captures unparseable JSON records (batch mode, PERMISSIVE)
-    )
+    # column that captures fields that don't fit the inferred/enforced schema
+    rescued_data_column: str = "_rescued_data"
+    # column that captures unparseable JSON records (batch mode, PERMISSIVE)
+    corrupt_record_column: str = "_corrupt_record"
     max_files_per_trigger: Optional[int] = None
     trigger_mode: str = "availableNow"  # "availableNow" | "once" | "processingTime"
-    trigger_processing_time: Optional[str] = (
-        None  # e.g. "30 seconds", required if trigger_mode == "processingTime"
-    )
+    # e.g. "30 seconds", required if trigger_mode == "processingTime"
+    trigger_processing_time: Optional[str] = None
 
     # --- Data quality ---
-    required_columns: List[str] = field(
-        default_factory=list
-    )  # columns that must be non-null in every row
-    unique_columns: Optional[List[str]] = (
-        None  # columns whose combination must be unique within a batch; duplicates (all but the first, by dedupe_order_by) are treated as bad rows
-    )
-    fail_on_quality_error: bool = (
-        True  # if False, bad rows are quarantined instead of failing the run
-    )
-    quarantine_table: Optional[str] = (
-        None  # e.g. "bronze.orders_raw_quarantine" - defaults to f"{table}_quarantine"
-    )
+    # columns that must be non-null in every row
+    required_columns: List[str] = field(default_factory=list)
+    # columns whose combination must be unique within a batch; duplicates
+    # (all but the first, by dedupe_order_by) are treated as bad rows
+    unique_columns: Optional[List[str]] = None
+    # if False, bad rows are quarantined instead of failing the run
+    fail_on_quality_error: bool = True
+    # e.g. "bronze.orders_raw_quarantine" - defaults to f"{table}_quarantine"
+    quarantine_table: Optional[str] = None
 
     # --- Reliability ---
     retry_attempts: int = 3
     retry_delay_seconds: float = 10.0
-    idempotent_batch_writes: bool = (
-        True  # txnAppId/txnVersion for batch append/overwrite when batch_id is explicit (see #63)
-    )
+    # txnAppId/txnVersion for batch append/overwrite when batch_id is explicit (see #63)
+    idempotent_batch_writes: bool = True
 
     # --- Target table ---
     catalog: Optional[str] = None  # Unity Catalog catalog name, omit for hive_metastore
@@ -144,41 +132,37 @@ class IngestionConfig:
     table: str = ""  # target table name (required)
     write_mode: str = "append"  # "append" | "overwrite" | "merge"
     merge_keys: Optional[List[str]] = None  # required when write_mode == "merge"
-    partition_by: Optional[List[str]] = (
-        None  # hive-style partitioning - discouraged for new tables, see cluster_by
-    )
+    # hive-style partitioning - discouraged for new tables, see cluster_by
+    partition_by: Optional[List[str]] = None
     merge_schema: bool = True  # allow schema evolution on write (mergeSchema)
+    # Keep one row per merge key before MERGE (else raise on duplicates).
+    #
     # None (the default) behaves as True on the merge path. It is not simply
     # `True` so that config load can tell "the user asked for this" from "the
     # user never mentioned it" and only warn about the former - see
     # _warn_on_ignored_settings. Read it through
     # `resolved_dedupe_before_merge`, never directly: None is falsy, so a bare
     # truth test would silently disable deduplication by default.
-    dedupe_before_merge: Optional[bool] = (
-        None  # keep one row per merge key before MERGE (else raise on duplicates)
-    )
-    dedupe_order_by: Optional[str] = (
-        None  # column to break ties by, highest wins; defaults to audit_ingest_ts_col for merge dedupe, or an arbitrary-but-deterministic order for the unique_columns quality check (which runs before audit columns exist)
-    )
+    dedupe_before_merge: Optional[bool] = None
+    # column to break ties by, highest wins. Defaults to audit_ingest_ts_col
+    # for merge dedupe, or to an arbitrary-but-deterministic order for the
+    # unique_columns quality check (which runs before audit columns exist).
+    dedupe_order_by: Optional[str] = None
 
     # --- Table layout: liquid clustering (recommended) vs. partition_by (legacy) ---
-    cluster_by: Optional[List[str]] = (
-        None  # explicit liquid-clustering columns; mutually exclusive with partition_by/cluster_by_auto
-    )
-    cluster_by_auto: bool = (
-        False  # CLUSTER BY AUTO - Databricks Runtime only, not supported by OSS/local Delta
-    )
-    table_properties: Dict[str, str] = field(
-        default_factory=dict
-    )  # e.g. {"delta.enableChangeDataFeed": "true"}
+    # explicit liquid-clustering columns; mutually exclusive with
+    # partition_by / cluster_by_auto
+    cluster_by: Optional[List[str]] = None
+    # CLUSTER BY AUTO - Databricks Runtime only, not supported by OSS/local Delta
+    cluster_by_auto: bool = False
+    # e.g. {"delta.enableChangeDataFeed": "true"}
+    table_properties: Dict[str, str] = field(default_factory=dict)
 
     # --- Catalog documentation (see catalog_metadata.py, #64) ---
-    table_comment: Optional[str] = (
-        None  # COMMENT ON TABLE - catalog documentation for the bronze table
-    )
-    column_comments: Dict[str, str] = field(
-        default_factory=dict
-    )  # {column_name: comment}; top-level columns only
+    # COMMENT ON TABLE - catalog documentation for the bronze table
+    table_comment: Optional[str] = None
+    # {column_name: comment}; top-level columns only
+    column_comments: Dict[str, str] = field(default_factory=dict)
 
     # --- Audit / lineage columns added automatically ---
     add_audit_columns: bool = True
@@ -245,11 +229,13 @@ class IngestionConfig:
             )
         if self.ingestion_mode not in VALID_INGESTION_MODES:
             raise ValueError(
-                f"ingestion_mode must be one of {VALID_INGESTION_MODES}, got {self.ingestion_mode!r}"
+                f"ingestion_mode must be one of {VALID_INGESTION_MODES}, "
+                f"got {self.ingestion_mode!r}"
             )
         if self.schema_evolution_mode not in VALID_SCHEMA_EVOLUTION_MODES:
             raise ValueError(
-                f"schema_evolution_mode must be one of {VALID_SCHEMA_EVOLUTION_MODES}, got {self.schema_evolution_mode!r}"
+                f"schema_evolution_mode must be one of {VALID_SCHEMA_EVOLUTION_MODES}, "
+                f"got {self.schema_evolution_mode!r}"
             )
         if self.trigger_mode not in VALID_TRIGGER_MODES:
             raise ValueError(
@@ -555,14 +541,14 @@ class IngestionConfig:
 
     @classmethod
     def from_json(cls, path: str) -> "IngestionConfig":
-        with open(path, "r") as fh:
+        with open(path) as fh:
             return cls.from_dict(json.load(fh))
 
     @classmethod
     def from_yaml(cls, path: str) -> "IngestionConfig":
         if yaml is None:
             raise ImportError("pyyaml is required to load YAML configs: pip install pyyaml")
-        with open(path, "r") as fh:
+        with open(path) as fh:
             return cls.from_dict(yaml.safe_load(fh))
 
     @classmethod

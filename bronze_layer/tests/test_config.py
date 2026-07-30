@@ -1,4 +1,5 @@
 import pytest
+
 from bronze_ingest.config import IngestionConfig
 
 

@@ -24,15 +24,14 @@ from typing import Optional, Tuple
 from pyspark.sql import Row
 from pyspark.sql.functions import col
 from pyspark.sql.types import (
-    StructType,
-    StructField,
     StringType,
+    StructField,
+    StructType,
     TimestampType,
 )
 
 from .config import IngestionConfig
 from .logging_utils import logger
-
 
 REGISTRY_SCHEMA = StructType(
     [
@@ -88,7 +87,7 @@ def _read_current_row(spark, config: IngestionConfig):
             .collect()
         )
         return rows[0] if rows else None
-    except Exception:
+    except Exception:  # noqa: BLE001 - no readable registry row means 'first time seen'
         return None
 
 
@@ -129,7 +128,7 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
                 t.last_updated_at = s.last_updated_at
             WHEN NOT MATCHED THEN INSERT *
         """)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - the registry must never fail the ingestion it describes
         logger.warning(
             "Failed to write schema registry row for %s: %s",
             config.full_table_name,
@@ -191,6 +190,6 @@ def record_schema(
             fingerprint,
         )
         return fingerprint, True
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - as above - drift detection is advisory, never a gate
         logger.warning("Schema registry check failed for %s: %s", config.full_table_name, exc)
         return None, False

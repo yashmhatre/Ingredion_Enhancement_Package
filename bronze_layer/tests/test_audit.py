@@ -2,8 +2,8 @@ import uuid
 
 import pytest
 
+from bronze_ingest.audit import AUDIT_SCHEMA, audited_run, tag_failure_stage
 from bronze_ingest.config import IngestionConfig
-from bronze_ingest.audit import audited_run, tag_failure_stage, AUDIT_SCHEMA
 
 
 def _cfg(spark, tmp_path, table_suffix, **overrides):
@@ -126,7 +126,7 @@ def test_audited_run_failure_recovers_bad_count_and_stage_from_exception(spark, 
         pass
 
     with pytest.raises(_FakeQualityError):
-        with audited_run(spark, cfg, source_path=cfg.source_path) as audit:
+        with audited_run(spark, cfg, source_path=cfg.source_path):
             exc = _FakeQualityError("17 rows failed data quality checks")
             exc.bad_count = 17
             tag_failure_stage(exc, "quality")

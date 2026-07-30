@@ -6,13 +6,13 @@ schema evolution.
 
 from datetime import datetime, timezone
 
-from pyspark.sql.functions import lit, current_timestamp, col, row_number
+from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
 
 from .config import IngestionConfig
-from .retry import with_retry
 from .logging_utils import logger
-from .sql_utils import row_content_hash, quote_literal
+from .retry import with_retry
+from .sql_utils import quote_literal, row_content_hash
 
 
 def add_audit_columns(df, config: IngestionConfig):
@@ -144,7 +144,7 @@ def _describe_current_layout(spark, full_name):
             .collect()[0]
         )
         return row["clusteringColumns"], (row["properties"] or {})
-    except Exception:
+    except Exception:  # noqa: BLE001 - DESCRIBE DETAIL is unavailable on some engines; absent state is the answer
         return None, {}
 
 
@@ -198,7 +198,7 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
     if config.cluster_by_auto:
         try:
             spark.sql(f"ALTER TABLE {full_name} CLUSTER BY AUTO")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - CLUSTER BY AUTO is DBR-only; unsupported elsewhere is expected, not fatal
             logger.warning(
                 "cluster_by_auto=True but this engine doesn't support CLUSTER BY AUTO "
                 "(expected outside Databricks Runtime, which manages predictive "
@@ -275,7 +275,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         writer = writer.option("mergeSchema", "true")
     if config.partition_by:
         writer = writer.partitionBy(*config.partition_by)
-    if txn_options:  # idempotent-write options (txnAppId/txnVersion) - streaming foreachBatch or batch retry-safety (#63)
+    # idempotent-write options (txnAppId/txnVersion) - streaming foreachBatch
+    # or batch retry-safety (#63)
+    if txn_options:
         for k, v in txn_options.items():
             writer = writer.option(k, v)
 

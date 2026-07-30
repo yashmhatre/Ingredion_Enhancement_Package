@@ -15,17 +15,17 @@ from typing import Any, Dict, Optional
 
 from pyspark.sql.functions import col, current_timestamp, lit
 
-from .config import IngestionConfig
-from .quality import split_good_bad
-from .bronze_writer import write_bronze
 from .audit import record_replay_run
+from .bronze_writer import write_bronze
+from .config import IngestionConfig
 from .directory_ingestion import (
     _move_file_direct,
-    list_json_files,
     _read_retry_state,
     _write_retry_state,
+    list_json_files,
 )
 from .logging_utils import logger
+from .quality import split_good_bad
 from .sql_utils import quote_literal
 
 
@@ -149,7 +149,7 @@ def reprocess_quarantine(
         # to the driver and pasted into one IN list, which is #155.
         id_list = ", ".join(f"'{quote_literal(qid)}'" for qid in quarantine_ids)
         target.delete(f"_quarantine_id IN ({id_list})")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - bronze write already succeeded; the message tells an operator how to recover
         logger.error(
             "Replayed %d row(s) to %s successfully, but failed to remove them from "
             "quarantine table %s: %s. These _quarantine_id(s) may be re-promoted "
@@ -236,7 +236,7 @@ def reprocess_quarantined_files(
             logger.info(
                 "Restored quarantined file %s -> %s for reprocessing.", file_path, dest_path
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - per-file isolation; the failure is reported in the results list
             logger.error("Failed to restore quarantined file %s: %s", file_path, exc)
             moved.append({"file": file_path, "status": "failed", "error": str(exc)})
 

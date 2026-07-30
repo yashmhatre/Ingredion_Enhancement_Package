@@ -20,18 +20,18 @@ Each file is processed independently: one bad file is logged and reported in
 the results list, but does not stop the remaining files from loading.
 """
 
+import json as _json
 import os
 import re
-from typing import Dict, Any, List, Optional
-
-from .databricks_fs import get_dbutils, list_entries
 import shutil
-import json as _json
-from datetime import datetime, timezone
-from .config import IngestionConfig
-from .logging_utils import logger
-from .json_reader import read_json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from .config import IngestionConfig
+from .databricks_fs import get_dbutils, list_entries
+from .json_reader import read_json
+from .logging_utils import logger
 
 
 def sanitize_table_name(filename: str) -> str:
@@ -251,7 +251,7 @@ def _archive_ingested_file(
         )
         logger.info("Archived %s -> %s", file_path, dest)
         return {"move_status": "moved", "move_detail": dest}
-    except Exception as move_exc:
+    except Exception as move_exc:  # noqa: BLE001 - archival failure must not lose the file; quarantine is attempted next
         logger.warning("Failed to archive %s (%s) - attempting quarantine", file_path, move_exc)
         try:
             dest = _move_file(
@@ -259,9 +259,10 @@ def _archive_ingested_file(
             )
             logger.warning("Quarantined %s -> %s (original archive move failed)", file_path, dest)
             return {"move_status": "quarantined", "move_detail": dest}
-        except Exception as quarantine_exc:
+        except Exception as quarantine_exc:  # noqa: BLE001 - both moves failed - leave the file in place rather than lose it
             logger.error(
-                "Failed to archive or quarantine %s - left in place for manual review (backlog): %s",
+                "Failed to archive or quarantine %s - left in place for manual "
+                "review (backlog): %s",
                 file_path,
                 quarantine_exc,
             )
@@ -403,7 +404,7 @@ def _ingest_folder_as_table(
                             "move_detail": dest,
                         }
                     )
-                except Exception as move_exc:
+                except Exception as move_exc:  # noqa: BLE001 - one file's move failure must not abandon the rest of the folder
                     file_results.append(
                         {
                             "file": file_path,
@@ -498,7 +499,7 @@ def _read_retry_state(source_dir: str) -> Dict[str, int]:
     if dbutils is not None:
         try:
             content = dbutils.fs.head(path, 1_000_000)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a missing retry-state file is the normal first-run case
             # A missing state file is the normal first-run case, so this
             # stays tolerant even on Databricks - unlike the move/list paths,
             # losing retry counts is explicitly a minor issue.
@@ -507,14 +508,14 @@ def _read_retry_state(source_dir: str) -> Dict[str, int]:
     if content is None:
         local_path = path[len("file://") :] if path.startswith("file://") else path
         try:
-            with open(local_path, "r") as f:
+            with open(local_path) as f:
                 content = f.read()
-        except Exception:
+        except Exception:  # noqa: BLE001 - as above, on the POSIX fallback path
             return {}
 
     try:
         return _json.loads(content)
-    except Exception:
+    except Exception:  # noqa: BLE001 - unparseable retry state starts fresh rather than blocking the run
         logger.warning("Could not parse retry state at %s - starting fresh.", path)
         return {}
 
@@ -530,7 +531,7 @@ def _write_retry_state(source_dir: str, state: Dict[str, int]) -> None:
         try:
             dbutils.fs.put(path, content, overwrite=True)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - losing retry counts is minor; failing the run over it is not
             # Tolerated, but no longer silent: losing retry counts is minor,
             # yet a persistent failure here means the retry limit never
             # advances and permanently-failing files are retried forever.
@@ -542,7 +543,7 @@ def _write_retry_state(source_dir: str, state: Dict[str, int]) -> None:
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "w") as f:
             f.write(content)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - as above, on the POSIX fallback path
         logger.warning("Could not persist retry state to %s: %s", path, exc)
 
 
@@ -758,7 +759,7 @@ def ingest_directory_to_bronze(
                                 "move_detail": dest,
                             }
                         )
-                    except Exception as move_exc:
+                    except Exception as move_exc:  # noqa: BLE001 - per-unit isolation: one unit's failure must not stop the others
                         logger.error(
                             "%s failed ingestion %d time(s) and could not be quarantined: %s",
                             file_path,

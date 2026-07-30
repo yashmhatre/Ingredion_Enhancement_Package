@@ -11,9 +11,8 @@ function just centralizes the read options driven by config.
 from typing import Optional
 
 from .config import IngestionConfig
-from .retry import with_retry
 from .logging_utils import logger
-
+from .retry import with_retry
 
 #: Extensions that mean "one JSON value per line" by definition of the
 #: format. `.json` is deliberately absent: a .json file may legitimately be

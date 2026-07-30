@@ -14,6 +14,7 @@ if _package_parent not in sys.path:
     sys.path.insert(0, _package_parent)
 
 import uuid
+
 import pytest
 
 
@@ -24,7 +25,7 @@ def _get_dbutils():
         import IPython
 
         return IPython.get_ipython().user_ns["dbutils"]
-    except Exception:
+    except Exception:  # noqa: BLE001 - no IPython/dbutils is the normal local-pytest case
         return None
 
 

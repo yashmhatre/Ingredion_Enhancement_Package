@@ -5,17 +5,17 @@ This is the single entry point most users need. It wires together:
   json_reader.read_json -> add audit columns -> bronze_writer.write_bronze
 """
 
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
+from .audit import audited_run, tag_failure_stage
+from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
+from .catalog_metadata import apply_catalog_metadata
 from .config import IngestionConfig
 from .json_reader import read_json
-from .streaming_reader import read_json_stream, get_trigger_kwargs, assert_no_silent_truncation
-from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
-from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
-from .audit import audited_run, tag_failure_stage
+from .quality import enforce_quality, write_quarantine
 from .schema_registry import record_schema
-from .catalog_metadata import apply_catalog_metadata
+from .streaming_reader import assert_no_silent_truncation, get_trigger_kwargs, read_json_stream
 
 
 class BronzeIngestion:

@@ -16,7 +16,6 @@ from .config import IngestionConfig
 from .json_reader import JSON_LINES_EXTENSIONS, effective_multiline, is_json_lines_path
 from .logging_utils import logger
 
-
 #: How many offending file names to name in the error. Enough to recognise
 #: the pattern, few enough that the message stays readable when an entire
 #: directory is JSON-lines.

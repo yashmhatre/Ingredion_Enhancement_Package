@@ -19,18 +19,18 @@ Bronze's (see the discussion on #59/#95 and silver_layer/_archive/README.md
 for why the flattener was pulled out of Bronze for the same reason).
 """
 
-from typing import Tuple, List, Optional
+from typing import List, Optional, Tuple
 
 from pyspark.sql.functions import (
     col,
-    lit,
-    when,
     concat,
     concat_ws,
-    row_number,
-    first,
     count,
     current_timestamp,
+    first,
+    lit,
+    row_number,
+    when,
 )
 from pyspark.sql.window import Window
 

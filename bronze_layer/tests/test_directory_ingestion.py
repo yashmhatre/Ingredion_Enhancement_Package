@@ -1,14 +1,12 @@
 import json
 import os
+
 import pytest
+
 from bronze_ingest.directory_ingestion import (
-    sanitize_table_name,
     build_table_name,
     list_json_files,
-)
-from bronze_ingest.directory_ingestion import (
-    _move_file,
-    _archive_ingested_file,
+    sanitize_table_name,
 )
 
 
@@ -159,8 +157,6 @@ def test_archive_ingested_file_leaves_file_in_place_when_all_moves_fail(json_tes
 
 
 # ---- retry-limit before quarantine tests ----
-
-from bronze_ingest.directory_ingestion import ingest_directory_to_bronze
 
 
 def _make_failing_config_class(fail_on_filenames):
@@ -339,8 +335,8 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     _write(write_dir, "orders/good1.json", json.dumps({"id": 1}))
     _write(write_dir, "orders/good2.json", json.dumps({"id": 2}))
 
-    from bronze_ingest.pipeline import BronzeIngestion
     from bronze_ingest import json_reader as jr
+    from bronze_ingest.pipeline import BronzeIngestion
 
     real_read_json = jr.read_json
 

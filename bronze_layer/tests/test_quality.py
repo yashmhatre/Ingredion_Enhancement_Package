@@ -2,12 +2,13 @@ import uuid
 from dataclasses import replace
 
 import pytest
+
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.quality import (
+    DataQualityError,
     enforce_quality,
     split_good_bad,
     write_quarantine,
-    DataQualityError,
 )
 
 
@@ -345,7 +346,8 @@ def test_split_partitions_rows_differing_only_in_null_position(spark):
 
     # repr-keyed: these rows contain nulls, which sorted() cannot compare
     # against strings.
-    by_repr = lambda rs: sorted(rs, key=repr)
+    def by_repr(rs):
+        return sorted(rs, key=repr)
 
     assert len(good_rows) == 1 and len(bad_rows) == 1
     assert by_repr(good_rows + bad_rows) == by_repr(rows)

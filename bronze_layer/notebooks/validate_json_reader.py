@@ -42,7 +42,7 @@ def check(name, fn):
         results.append((name, "PASS", ""))
     except AssertionError as e:
         results.append((name, "FAIL", str(e)))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a validation harness reports every failure rather than stopping at the first
         results.append((name, "ERROR", f"{type(e).__name__}: {e}"))
 
 
@@ -266,7 +266,7 @@ def _check_missing_source_raises():
     raised = False
     try:
         read_json(spark, cfg(f"{BASE}/does_not_exist.json")).count()
-    except Exception:
+    except Exception:  # noqa: BLE001 - the assertion under test is that SOMETHING raised
         raised = True
     assert raised, "expected an error reading a nonexistent source_path"
 
@@ -336,7 +336,8 @@ def _check_type_mismatch():
         "expected original mistyped value preserved in _rescued_data"
     )
     assert "not_a_number" in row["_rescued_data"], (
-        f"expected original value 'not_a_number' recoverable in _rescued_data, got {row['_rescued_data']}"
+        "expected original value 'not_a_number' recoverable in _rescued_data, "
+        f"got {row['_rescued_data']}"
     )
 
 

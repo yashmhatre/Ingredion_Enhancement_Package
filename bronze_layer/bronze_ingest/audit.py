@@ -14,17 +14,16 @@ from datetime import datetime, timezone
 
 from pyspark.sql import Row
 from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    LongType,
     BooleanType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
     TimestampType,
 )
 
 from .config import IngestionConfig
 from .logging_utils import logger
-
 
 # Fixed schema - see Phase 1 task for the design rationale (strict,
 # no catch-all column, no reshaping/transformation details).
@@ -89,7 +88,7 @@ def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
         df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(
             config.resolved_audit_table
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - the audit trail must never fail the ingestion it records
         logger.warning(
             "Failed to write audit record for run against %s: %s",
             config.full_table_name,

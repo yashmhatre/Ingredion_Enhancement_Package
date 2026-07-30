@@ -3,14 +3,14 @@ import uuid
 
 import pytest
 
-from bronze_ingest.config import IngestionConfig
 from bronze_ingest.bronze_writer import (
-    write_bronze,
-    add_audit_columns,
-    NullMergeKeyError,
     DuplicateMergeKeyError,
+    NullMergeKeyError,
     _resolve_idempotent_txn_version,
+    add_audit_columns,
+    write_bronze,
 )
+from bronze_ingest.config import IngestionConfig
 
 
 def _cfg(table, **overrides):
@@ -89,7 +89,7 @@ def test_concurrent_first_loads_do_not_duplicate_rows(spark):
         try:
             barrier.wait(timeout=10)
             write_bronze(spark, spark.createDataFrame(rows, ["id", "name"]), cfg)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - collects whatever a concurrent writer thread raised, for later assertion
             errors.append(exc)
 
     t1 = threading.Thread(target=_run, args=([(1, "a"), (2, "b")],))

@@ -18,7 +18,7 @@
 # the same wheel into the session first:
 #   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
-from bronze_ingest import ingest_directory_to_bronze, get_logger
+from bronze_ingest import get_logger, ingest_directory_to_bronze
 
 logger = get_logger()
 

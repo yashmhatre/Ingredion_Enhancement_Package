@@ -26,8 +26,8 @@ needs a run on Databricks.
 
 import pytest
 
-from bronze_ingest.config import IngestionConfig
 from bronze_ingest import streaming_reader as sr
+from bronze_ingest.config import IngestionConfig
 from bronze_ingest.json_reader import is_json_lines_path
 
 

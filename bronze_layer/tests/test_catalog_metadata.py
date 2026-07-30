@@ -10,13 +10,13 @@ import uuid
 
 import pytest
 
-from bronze_ingest.config import IngestionConfig
 from bronze_ingest.catalog_metadata import (
-    apply_catalog_metadata,
-    _current_table_comment,
     _current_column_comments,
+    _current_table_comment,
     _quote,
+    apply_catalog_metadata,
 )
+from bronze_ingest.config import IngestionConfig
 from bronze_ingest.pipeline import BronzeIngestion
 
 

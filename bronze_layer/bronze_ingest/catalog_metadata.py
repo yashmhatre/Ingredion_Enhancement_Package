@@ -28,8 +28,7 @@ from typing import Dict, Optional
 
 from .config import IngestionConfig
 from .logging_utils import logger
-from .sql_utils import quote_literal, quote_ident
-
+from .sql_utils import quote_ident, quote_literal
 
 #: Kept as a module-level alias so existing references and tests keep
 #: working; the implementation now lives in sql_utils so every module escapes
@@ -45,7 +44,7 @@ def _current_table_comment(spark, full_name: str) -> Optional[str]:
         for row in spark.sql(f"DESCRIBE TABLE EXTENDED {full_name}").collect():
             if row[0] == "Comment":
                 return row[1]
-    except Exception:
+    except Exception:  # noqa: BLE001 - no readable comment is indistinguishable from no comment set
         pass
     return None
 
@@ -61,7 +60,7 @@ def _current_column_comments(spark, full_name: str) -> Dict[str, str]:
     """
     try:
         return {c.name: c.description for c in spark.catalog.listColumns(full_name)}
-    except Exception:
+    except Exception:  # noqa: BLE001 - listColumns is unavailable outside UC; an empty map means 'nothing to diff'
         return {}
 
 
@@ -141,7 +140,7 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
                     full_name,
                     result["columns_applied"],
                 )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - documentation must never fail a successful write
         logger.warning("Failed to apply catalog metadata for %s: %s", full_name, exc)
 
     return result

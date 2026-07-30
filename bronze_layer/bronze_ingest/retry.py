@@ -4,8 +4,8 @@ operations (cloud storage reads, table writes that can hit throttling or
 concurrent-write conflicts).
 """
 
-import time
 import functools
+import time
 
 from .logging_utils import logger
 

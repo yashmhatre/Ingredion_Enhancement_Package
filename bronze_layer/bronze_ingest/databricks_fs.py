@@ -68,7 +68,7 @@ def _workspace_client() -> Optional[Any]:
         from databricks.sdk import WorkspaceClient
 
         return WorkspaceClient()
-    except Exception:
+    except Exception:  # noqa: BLE001 - SDK absent or unconfigured is the normal non-Databricks case
         return None
 
 
@@ -81,7 +81,7 @@ def _notebook_dbutils() -> Optional[Any]:
         import IPython
 
         return IPython.get_ipython().user_ns["dbutils"]  # type: ignore[union-attr]
-    except Exception:
+    except Exception:  # noqa: BLE001 - no IPython/dbutils is the normal local-pytest case
         return None
 
 
@@ -94,7 +94,7 @@ def get_dbutils() -> Optional[Any]:
     if client is not None:
         try:
             return client.dbutils
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - SDK present but dbutils unavailable falls back to the notebook object
             logger.warning("Databricks SDK is available but dbutils could not be obtained: %s", exc)
     return _notebook_dbutils()
 

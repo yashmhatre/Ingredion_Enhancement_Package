@@ -13,7 +13,6 @@ import pytest
 import bronze_ingest.databricks_fs as dfs
 import bronze_ingest.directory_ingestion as di
 
-
 # ---- fakes ----
 
 

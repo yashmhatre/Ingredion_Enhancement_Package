@@ -15,8 +15,7 @@ for itself, some sites decide wrong.
 
 import re
 
-from pyspark.sql.functions import col, sha2, to_json, struct
-
+from pyspark.sql.functions import col, sha2, struct, to_json
 
 #: Unity Catalog object names: letters, digits, underscores, not leading with
 #: a digit. Deliberately NARROWER than what UC will actually accept (it

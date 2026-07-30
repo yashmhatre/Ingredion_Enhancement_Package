@@ -1,8 +1,8 @@
 import json
 import time
 
-from bronze_ingest.config import IngestionConfig
 from bronze_ingest import json_reader as jr
+from bronze_ingest.config import IngestionConfig
 
 
 def _write(path, obj):
@@ -65,7 +65,7 @@ def test_read_json_gives_up_after_retry_attempts_exhausted(spark, tmp_path, monk
 
     try:
         jr.read_json(spark, cfg)
-        assert False, "expected RuntimeError to propagate"
+        raise AssertionError("expected RuntimeError to propagate")
     except RuntimeError:
         pass
 

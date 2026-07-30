@@ -20,9 +20,9 @@
 
 from bronze_ingest import (
     IngestionConfig,
+    get_logger,
     reprocess_quarantine,
     reprocess_quarantined_files,
-    get_logger,
 )
 
 logger = get_logger()
