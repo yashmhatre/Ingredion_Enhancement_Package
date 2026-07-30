@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 
 from .config import IngestionConfig
 from .json_reader import read_json
-from .streaming_reader import read_json_stream, get_trigger_kwargs
+from .streaming_reader import read_json_stream, get_trigger_kwargs, assert_no_silent_truncation
 from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
 from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
@@ -172,6 +172,18 @@ class BronzeIngestion:
 
         def _process_batch(micro_batch_df, batch_id):
             with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
+                try:
+                    # Before anything reads the data: a JSON-lines file read
+                    # with multiLine=true has already lost all but its first
+                    # record (#146). Raising here leaves the batch
+                    # uncommitted, so the checkpoint does not advance and the
+                    # files are re-read once the config is fixed. Tagged as a
+                    # read failure because that is the stage that went wrong.
+                    assert_no_silent_truncation(micro_batch_df, self.config)
+                except Exception as exc:
+                    tag_failure_stage(exc, "read")
+                    raise
+
                 try:
                     good_df, bad_df, bad_count = enforce_quality(micro_batch_df, self.config)
                 except Exception as exc:

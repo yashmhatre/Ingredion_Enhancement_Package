@@ -135,7 +135,7 @@ def test_effective_multiline_decides_by_extension():
     """Unit-level: the decision itself, without touching Spark."""
     def eff(path, configured):
         cfg = IngestionConfig(source_path=path, table="t", multiline=configured)
-        return jr._effective_multiline(cfg)
+        return jr.effective_multiline(cfg)
 
     # JSON-lines extensions are forced off whatever the config says.
     assert eff("/Volumes/x/events.jsonl", True) is False

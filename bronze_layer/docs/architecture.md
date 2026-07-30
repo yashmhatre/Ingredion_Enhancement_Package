@@ -80,6 +80,37 @@ surprise as the fixture-folder incident documented in
 source directory was auto-ingested unnoticed. Explicit configuration is
 preferred over implicit discovery.
 
+**Why `multiline` IS inferred per file, when `source_format` is not.** The
+two look like the same decision and are not, so the apparent inconsistency
+is deliberate (#146).
+
+`source_format` decides **which files are ingested**. Inferring it can
+surprise someone with data they never asked for, and the failure is
+recoverable but noisy — a table exists that should not.
+
+`multiline` decides **how a file already selected for ingestion is
+parsed**. Inferring it cannot pull in unexpected data; the only thing it
+can change is whether a `.jsonl` file yields all its records or just the
+first. Getting it wrong destroys data *silently*: `multiLine=true` on
+JSON-lines returns one row, with no error and nothing in
+`_corrupt_record`.
+
+So the asymmetry follows from the consequences, not from a general
+preference. Inference is rejected where the downside is unexpected data
+and accepted where the downside is silent data loss. `.json` stays
+config-driven in both directions, because it is genuinely ambiguous — it
+may be one pretty-printed document or JSON-lines — and only `.jsonl` /
+`.ndjson` state their format unambiguously.
+
+The rule is applied per file on the batch path, where discovery
+enumerates files and reads them one at a time. Auto Loader cannot work
+that way: it is given a directory and a fixed `multiLine` at stream start,
+and files arriving later cannot be classified in advance. The streaming
+path therefore pairs the same extension rule (for single-file sources)
+with a per-micro-batch guard that fails the batch rather than committing a
+truncated read — see `streaming_reader.assert_no_silent_truncation`, and
+the README's "Streaming and JSON-lines" table.
+
 ### What multi-format does not change
 
 Everything downstream of the reader is already format-agnostic — it

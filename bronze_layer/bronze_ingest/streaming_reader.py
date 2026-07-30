@@ -8,10 +8,70 @@ schedule, and evolves the schema safely instead of re-scanning the whole
 source directory on every run.
 """
 
-from pyspark.sql.functions import col
+from typing import Iterable, List
+
+from pyspark.sql.functions import col, lower
 
 from .config import IngestionConfig
+from .json_reader import JSON_LINES_EXTENSIONS, effective_multiline, is_json_lines_path
 from .logging_utils import logger
+
+
+#: How many offending file names to name in the error. Enough to recognise
+#: the pattern, few enough that the message stays readable when an entire
+#: directory is JSON-lines.
+_MAX_REPORTED_FILES = 5
+
+
+class JsonLinesTruncationError(Exception):
+    """
+    Raised when a streaming micro-batch was read with `multiLine=true` but
+    contains files whose extension says JSON-lines (#146).
+
+    Deliberately fatal. See `assert_no_silent_truncation` for why failing is
+    the recoverable outcome and succeeding is not.
+    """
+
+
+def multiline_actually_applied(config: IngestionConfig) -> bool:
+    """
+    The `multiLine` value the reader really used, including a
+    `reader_options` override.
+
+    `read_json_stream` sets `multiLine` from `effective_multiline` and THEN
+    applies `reader_options`, so a `reader_options: {multiLine: ...}` entry
+    wins. The guard has to reason about the same value the reader used, in
+    both directions:
+
+      - override to "false" with `multiline: true` in config - the read is
+        correct and the guard must NOT fire, or a deliberate, working
+        override becomes a hard failure
+      - override to "true" with `multiline: false` - the read truncates and
+        the operator asked for exactly that, so the guard stays quiet; this
+        is the documented escape hatch
+
+    YAML gives strings, a Python caller gives a bool, and Spark accepts
+    both, so both are coerced here rather than assumed.
+    """
+    override = (config.reader_options or {}).get("multiLine")
+    if override is None:
+        return effective_multiline(config)
+    if isinstance(override, bool):
+        return override
+    return str(override).strip().lower() == "true"
+
+
+def json_lines_files(paths: Iterable[str]) -> List[str]:
+    """
+    The subset of `paths` whose extension means JSON-lines, deduplicated and
+    sorted.
+
+    Split out from the DataFrame work so the decision this guard makes is a
+    pure function that can be tested without a Spark session - which matters
+    because Auto Loader cannot run outside Databricks at all, so the
+    surrounding code is not locally testable.
+    """
+    return sorted({p for p in paths if p and is_json_lines_path(p)})
 
 
 def read_json_stream(spark, config: IngestionConfig):
@@ -20,7 +80,12 @@ def read_json_stream(spark, config: IngestionConfig):
         .option("cloudFiles.format", "json")
         .option("cloudFiles.schemaLocation", config.schema_location)
         .option("cloudFiles.schemaEvolutionMode", config.schema_evolution_mode)
-        .option("multiLine", config.multiline)
+        # Not config.multiline directly (#146) - same rule as the batch
+        # reader. This only bites when source_path names a single .jsonl
+        # file; for the usual directory source it returns config.multiline
+        # unchanged and `assert_no_silent_truncation` is what protects the
+        # data. See that function.
+        .option("multiLine", effective_multiline(config))
         .option("rescuedDataColumn", config.rescued_data_column)
     )
 
@@ -49,6 +114,116 @@ def read_json_stream(spark, config: IngestionConfig):
     )
 
     return df
+
+
+def assert_no_silent_truncation(micro_batch_df, config: IngestionConfig, lineage_col: str = "_input_file_name"):
+    """
+    Fails the micro-batch if it was read with `multiLine=true` and contains
+    JSON-lines files, whose records have therefore already been discarded.
+
+    Why this exists as well as `effective_multiline` (#146)
+    ------------------------------------------------------
+    The batch reader decides `multiLine` per file, because directory
+    ingestion enumerates files and reads them one at a time. Auto Loader
+    cannot work that way: it is handed a directory and one `multiLine` value
+    fixed when the stream is constructed, and it streams whatever appears in
+    that directory afterwards. A file that does not exist yet cannot be
+    classified by any amount of validation at config load - which is why
+    this is a runtime guard and not a `__post_init__` check.
+
+    What goes wrong without it is the same silent loss the batch path had:
+    `multiLine=true` on a JSON-lines file parses the first JSON value and
+    discards the rest of the bytes. No error, nothing in `_corrupt_record`,
+    a plausible row count on the audit row. 10,000 records become 1.
+
+    Why raising is the SAFE option here
+    -----------------------------------
+    This runs after the read, so the records are already gone from this
+    micro-batch - raising cannot recover them in-flight, and at first glance
+    failing looks like it only converts silent loss into an outage.
+
+    It does more than that, and this is the whole point. Structured
+    Streaming commits a batch to the checkpoint only when the `foreachBatch`
+    handler returns normally. Raising means the batch is never committed, so
+    Auto Loader does not mark these files as processed: after the config is
+    corrected and the stream restarted, the same files are read again, in
+    full. The data is recovered.
+
+    Succeeding is what makes the loss permanent. A committed batch advances
+    the checkpoint past those files, and a later run sees no new files to
+    read - there is no second chance and no signal that one is needed. That
+    asymmetry is why this raises rather than warns.
+
+    Cost
+    ----
+    One filtered scan of a micro-batch that is about to be scanned anyway,
+    bounded by `limit` so a fully-offending batch stops after a handful of
+    rows rather than collecting every path to the driver (the mistake #155
+    documents in `replay.py`). On the healthy path the filter matches
+    nothing and this is one pass with no shuffle and no collect.
+    """
+    if not multiline_actually_applied(config):
+        # multiLine=false reads JSON-lines correctly - and reads a
+        # pretty-printed .json document into _corrupt_record LOUDLY, which
+        # needs no guard because it is already visible.
+        return
+
+    if lineage_col not in micro_batch_df.columns:
+        # read_json_stream always attaches this. A caller passing a
+        # hand-built DataFrame gets no protection rather than a crash -
+        # this guard must never be the reason a working stream fails.
+        logger.warning(
+            "%s not present on the micro-batch, so the JSON-lines truncation "
+            "guard (#146) cannot run. Records in any .jsonl file in this batch "
+            "may have been silently discarded.",
+            lineage_col,
+        )
+        return
+
+    ext_match = None
+    for ext in JSON_LINES_EXTENSIONS:
+        cond = lower(col(lineage_col)).endswith(ext)
+        ext_match = cond if ext_match is None else (ext_match | cond)
+
+    # distinct() BEFORE limit(), so the cap counts distinct FILES rather
+    # than rows. Limiting first would sample rows, and a batch where one
+    # .jsonl file contributed every row would report a single offender and
+    # omit the "possibly others" hint while other offending files went
+    # unmentioned - an error message that quietly understates the problem.
+    # The distinct is a shuffle, but only over rows that already matched the
+    # filter: nothing on the healthy path, and on the failing path this
+    # batch is being abandoned anyway.
+    offenders = json_lines_files(
+        row[0] for row in (
+            micro_batch_df.select(lineage_col)
+            .filter(ext_match)
+            .distinct()
+            .limit(_MAX_REPORTED_FILES + 1)
+            .collect()
+        )
+    )
+    if not offenders:
+        return
+
+    shown = offenders[:_MAX_REPORTED_FILES]
+    more = " (and possibly others)" if len(offenders) > _MAX_REPORTED_FILES else ""
+
+    raise JsonLinesTruncationError(
+        f"This micro-batch was read with multiLine=true but contains JSON-lines "
+        f"file(s){more}: {shown}. multiLine=true on a JSON-lines file returns only "
+        f"its FIRST record and discards the rest with no error (#146), so these "
+        f"rows are incomplete and have not been written.\n\n"
+        f"This batch has not been committed, so the checkpoint at "
+        f"{config.checkpoint_location!r} has NOT advanced past these files. They "
+        f"will be re-read in full once the config is corrected - nothing is lost "
+        f"yet.\n\n"
+        f"To fix, choose one:\n"
+        f"  - set multiline: false, if this source is JSON-lines (most likely)\n"
+        f"  - point this stream at a source containing only one of the two "
+        f"formats, and run a second stream for the other\n"
+        f"  - set reader_options: {{'multiLine': 'true'}} to override deliberately, "
+        f"if these files are misnamed and really are single JSON documents"
+    )
 
 
 def get_trigger_kwargs(config: IngestionConfig):
