@@ -52,6 +52,7 @@ from .logging_utils import logger
 
 class Entry(NamedTuple):
     """One filesystem entry. `is_dir` is authoritative, never inferred."""
+
     path: str
     name: str
     is_dir: bool
@@ -146,6 +147,5 @@ def list_entries(path: str) -> Optional[List[Entry]]:
     # than an explicit flag, so it has to be inferred here - unlike the SDK
     # path above, which reports it directly.
     return [
-        Entry(e.path, os.path.basename(e.path.rstrip("/")), e.path.endswith("/"))
-        for e in entries
+        Entry(e.path, os.path.basename(e.path.rstrip("/")), e.path.endswith("/")) for e in entries
     ]

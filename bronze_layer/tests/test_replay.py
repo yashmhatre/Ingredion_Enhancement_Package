@@ -43,12 +43,15 @@ def _write(dir_path, name, content):
 
 # ---- row replay ----
 
+
 def test_reprocess_quarantine_no_table_is_noop(spark):
     cfg = _cfg(f"replay_no_table_{uuid.uuid4().hex[:8]}")
     result = reprocess_quarantine(spark, cfg)
     assert result == {
-        "table": cfg.full_table_name, "replayed_row_count": 0,
-        "still_quarantined_row_count": 0, "replay_batch_id": None,
+        "table": cfg.full_table_name,
+        "replayed_row_count": 0,
+        "still_quarantined_row_count": 0,
+        "replay_batch_id": None,
     }
 
 
@@ -87,7 +90,9 @@ def test_reprocess_quarantine_promotes_now_passing_and_leaves_still_failing(spar
     remaining = spark.read.table(replay_cfg.resolved_quarantine_table).collect()
     assert len(remaining) == 1
     assert remaining[0]["id"] == 2
-    assert remaining[0]["_quarantine_reason"] == "null:email"  # untouched, specific to the still-null column
+    assert (
+        remaining[0]["_quarantine_reason"] == "null:email"
+    )  # untouched, specific to the still-null column
 
 
 def test_reprocess_quarantine_is_idempotent_on_rerun(spark):
@@ -102,7 +107,9 @@ def test_reprocess_quarantine_is_idempotent_on_rerun(spark):
     second = reprocess_quarantine(spark, replay_cfg)
     assert second["replayed_row_count"] == 0
 
-    assert spark.read.table(_table(table)).count() == 1, "re-running replay must not duplicate bronze rows"
+    assert spark.read.table(_table(table)).count() == 1, (
+        "re-running replay must not duplicate bronze rows"
+    )
 
 
 def test_reprocess_quarantine_filters_by_batch_id(spark):
@@ -142,6 +149,7 @@ def test_reprocess_quarantine_records_audit_row(spark):
 
 
 # ---- file replay ----
+
 
 def test_reprocess_quarantined_files_moves_files_back(spark, json_test_dir):
     write_dir, source_dir = json_test_dir
@@ -209,6 +217,10 @@ def test_replay_does_not_leak_quarantine_bookkeeping_into_bronze(spark):
 
     assert result["replayed_row_count"] == 1
     bronze_cols = spark.read.table(_table(table)).columns
-    for leaked in ("_occurrence_count", "_first_quarantined_at", "_quarantine_id",
-                   "_quarantine_reason"):
+    for leaked in (
+        "_occurrence_count",
+        "_first_quarantined_at",
+        "_quarantine_id",
+        "_quarantine_reason",
+    ):
         assert leaked not in bronze_cols, f"{leaked} leaked into bronze table"

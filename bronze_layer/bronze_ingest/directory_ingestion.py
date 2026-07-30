@@ -72,9 +72,7 @@ def _try_dbutils_ls(source_dir: str) -> Optional[List[str]]:
         return None
 
     return sorted(
-        e.path
-        for e in entries
-        if not e.is_dir and e.name.lower().endswith((".json", ".jsonl"))
+        e.path for e in entries if not e.is_dir and e.name.lower().endswith((".json", ".jsonl"))
     )
 
 
@@ -82,7 +80,7 @@ def _try_posix_ls(source_dir: str) -> Optional[List[str]]:
     """File listing via os.listdir for POSIX-style paths: local file:/ paths
     and FUSE-mounted locations like /Volumes/... . Returns None if the path
     isn't visible as a local directory."""
-    local = source_dir[len("file://"):] if source_dir.startswith("file://") else source_dir
+    local = source_dir[len("file://") :] if source_dir.startswith("file://") else source_dir
     if not os.path.isdir(local):
         return None
     return sorted(
@@ -104,7 +102,7 @@ def _try_dbutils_ls_dirs(source_dir: str) -> Optional[List[str]]:
 
 def _try_posix_ls_dirs(source_dir: str) -> Optional[List[str]]:
     """Lists immediate subdirectories via os.listdir for local/FUSE paths."""
-    local = source_dir[len("file://"):] if source_dir.startswith("file://") else source_dir
+    local = source_dir[len("file://") :] if source_dir.startswith("file://") else source_dir
     if not os.path.isdir(local):
         return None
     return sorted(
@@ -134,13 +132,12 @@ def list_subfolders(spark, source_dir: str) -> List[str]:
             raise FileNotFoundError(f"source_dir does not exist: {source_dir}")
         statuses = fs.listStatus(path)
         dirs = sorted(
-            str(status.getPath().toString())
-            for status in statuses
-            if status.isDirectory()
+            str(status.getPath().toString()) for status in statuses if status.isDirectory()
         )
 
     return [
-        d for d in dirs
+        d
+        for d in dirs
         if not os.path.basename(d.rstrip("/")).startswith("_")
         and os.path.basename(d.rstrip("/")) not in ("processed", "quarantine_files")
     ]
@@ -176,12 +173,14 @@ def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> 
         files = sorted(
             str(status.getPath().toString())
             for status in statuses
-            if status.isFile() and str(status.getPath().getName()).lower().endswith((".json", ".jsonl"))
+            if status.isFile()
+            and str(status.getPath().getName()).lower().endswith((".json", ".jsonl"))
         )
 
     if max_files is not None:
         files = files[:max_files]
     return files
+
 
 def _move_file_direct(src_path: str, dest_path: str) -> None:
     """
@@ -200,13 +199,15 @@ def _move_file_direct(src_path: str, dest_path: str) -> None:
         dbutils.fs.mv(src_path, dest_path)
         return
 
-    local_src = src_path[len("file://"):] if src_path.startswith("file://") else src_path
-    local_dest = dest_path[len("file://"):] if dest_path.startswith("file://") else dest_path
+    local_src = src_path[len("file://") :] if src_path.startswith("file://") else src_path
+    local_dest = dest_path[len("file://") :] if dest_path.startswith("file://") else dest_path
     os.makedirs(os.path.dirname(local_dest), exist_ok=True)
     shutil.move(local_src, local_dest)
 
 
-def _move_file(source_dir: str, file_path: str, dest_subfolder: str, relative_subpath: str = "") -> str:
+def _move_file(
+    source_dir: str, file_path: str, dest_subfolder: str, relative_subpath: str = ""
+) -> str:
     """
     Moves a single file from its current location into `dest_subfolder`
     (relative to source_dir). relative_subpath, if given (e.g. "orders"),
@@ -225,7 +226,9 @@ def _move_file(source_dir: str, file_path: str, dest_subfolder: str, relative_su
     return dest_path
 
 
-def _archive_ingested_file(source_dir: str, file_path: str, relative_subpath: str = "") -> Dict[str, str]:
+def _archive_ingested_file(
+    source_dir: str, file_path: str, relative_subpath: str = ""
+) -> Dict[str, str]:
     """
     Moves a successfully-ingested file to processed/{date}/[relative_subpath/].
     If that move fails, falls back to quarantine_files/[relative_subpath/] for
@@ -243,21 +246,27 @@ def _archive_ingested_file(source_dir: str, file_path: str, relative_subpath: st
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     try:
-        dest = _move_file(source_dir, file_path, f"processed/{today}", relative_subpath=relative_subpath)
+        dest = _move_file(
+            source_dir, file_path, f"processed/{today}", relative_subpath=relative_subpath
+        )
         logger.info("Archived %s -> %s", file_path, dest)
         return {"move_status": "moved", "move_detail": dest}
     except Exception as move_exc:
         logger.warning("Failed to archive %s (%s) - attempting quarantine", file_path, move_exc)
         try:
-            dest = _move_file(source_dir, file_path, "quarantine_files", relative_subpath=relative_subpath)
+            dest = _move_file(
+                source_dir, file_path, "quarantine_files", relative_subpath=relative_subpath
+            )
             logger.warning("Quarantined %s -> %s (original archive move failed)", file_path, dest)
             return {"move_status": "quarantined", "move_detail": dest}
         except Exception as quarantine_exc:
             logger.error(
                 "Failed to archive or quarantine %s - left in place for manual review (backlog): %s",
-                file_path, quarantine_exc,
+                file_path,
+                quarantine_exc,
             )
             return {"move_status": "failed_left_in_place", "move_detail": str(quarantine_exc)}
+
 
 _ARCHIVE_MAX_WORKERS = 10
 
@@ -300,17 +309,25 @@ def _archive_files_parallel(source_dir, file_paths, relative_subpath=""):
 
     workers = min(_ARCHIVE_MAX_WORKERS, len(file_paths))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(
-            lambda fp: _archive_ingested_file(source_dir, fp, relative_subpath=relative_subpath),
-            file_paths,
-        ))
+        results = list(
+            pool.map(
+                lambda fp: _archive_ingested_file(
+                    source_dir, fp, relative_subpath=relative_subpath
+                ),
+                file_paths,
+            )
+        )
 
     return list(zip(file_paths, results))
+
 
 _RETRY_STATE_SUBFOLDER = "_state"
 _RETRY_STATE_FILENAME = "retry_state.json"
 
-def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config, stop_on_error, max_ingestion_retries):
+
+def _ingest_folder_as_table(
+    spark, source_dir, folder_path, table, shared_config, stop_on_error, max_ingestion_retries
+):
     """
     Handles a folder-as-table plan item: reads every file inside folder_path
     individually and validates each with a count() (catches bad files early,
@@ -342,7 +359,9 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
         # neither counted as a success nor treated as a failure.
         logger.warning("Folder %s contains no JSON files - skipping.", folder_path)
         return {
-            "file": folder_path, "table": table, "status": "skipped",
+            "file": folder_path,
+            "table": table,
+            "status": "skipped",
             "reason": "no JSON files in folder",
         }
 
@@ -353,11 +372,13 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
 
     for file_path in inner_files:
         try:
-            cfg = IngestionConfig.from_dict({**shared_config, "source_path": file_path, "table": table})
+            cfg = IngestionConfig.from_dict(
+                {**shared_config, "source_path": file_path, "table": table}
+            )
             df = read_json(spark, cfg)
             df.count()  # eagerly validate this file is actually readable,
-                        # without persisting - files stay in place, safe to
-                        # re-read again later at final write time
+            # without persisting - files stay in place, safe to
+            # re-read again later at final write time
             validated_dataframes.append(df)
             validated_file_paths.append(file_path)
         except Exception as exc:
@@ -369,29 +390,51 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
             if attempts >= max_ingestion_retries:
                 retry_state.pop(file_path, None)
                 try:
-                    dest = _move_file(source_dir, file_path, "quarantine_files", relative_subpath=folder_name)
-                    file_results.append({
-                        "file": file_path, "status": "failed", "error": str(exc), "attempts": attempts,
-                        "move_status": "quarantined", "move_detail": dest,
-                    })
+                    dest = _move_file(
+                        source_dir, file_path, "quarantine_files", relative_subpath=folder_name
+                    )
+                    file_results.append(
+                        {
+                            "file": file_path,
+                            "status": "failed",
+                            "error": str(exc),
+                            "attempts": attempts,
+                            "move_status": "quarantined",
+                            "move_detail": dest,
+                        }
+                    )
                 except Exception as move_exc:
-                    file_results.append({
-                        "file": file_path, "status": "failed", "error": str(exc), "attempts": attempts,
-                        "move_status": "failed_left_in_place", "move_detail": str(move_exc),
-                    })
+                    file_results.append(
+                        {
+                            "file": file_path,
+                            "status": "failed",
+                            "error": str(exc),
+                            "attempts": attempts,
+                            "move_status": "failed_left_in_place",
+                            "move_detail": str(move_exc),
+                        }
+                    )
             else:
                 retry_state[file_path] = attempts
-                file_results.append({
-                    "file": file_path, "status": "failed", "error": str(exc), "attempts": attempts,
-                })
+                file_results.append(
+                    {
+                        "file": file_path,
+                        "status": "failed",
+                        "error": str(exc),
+                        "attempts": attempts,
+                    }
+                )
 
     _write_retry_state(source_dir, retry_state)
 
     if not validated_dataframes:
         logger.error("All files in folder %s failed to read - no table written.", folder_path)
         return {
-            "file": folder_path, "table": table, "status": "failed",
-            "error": "all files in folder failed", "file_results": file_results,
+            "file": folder_path,
+            "table": table,
+            "status": "failed",
+            "error": "all files in folder failed",
+            "file_results": file_results,
         }
 
     merged_df = validated_dataframes[0]
@@ -399,15 +442,20 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
         merged_df = merged_df.unionByName(df, allowMissingColumns=True)
 
     try:
-        cfg = IngestionConfig.from_dict({**shared_config, "source_path": folder_path, "table": table})
+        cfg = IngestionConfig.from_dict(
+            {**shared_config, "source_path": folder_path, "table": table}
+        )
         summary = BronzeIngestion(spark, cfg).run_on_dataframe(merged_df)
     except Exception as exc:
         logger.error("Failed to write merged table for folder %s: %s", folder_path, exc)
         if stop_on_error:
             raise
         return {
-            "file": folder_path, "table": table, "status": "failed",
-            "error": str(exc), "file_results": file_results,
+            "file": folder_path,
+            "table": table,
+            "status": "failed",
+            "error": str(exc),
+            "file_results": file_results,
         }
 
     # Write succeeded - now safe to archive the validated files, since
@@ -433,7 +481,7 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
         "file_results": file_results,
     }
 
-    
+
 def _retry_state_path(source_dir: str) -> str:
     return f"{source_dir.rstrip('/')}/{_RETRY_STATE_SUBFOLDER}/{_RETRY_STATE_FILENAME}"
 
@@ -457,7 +505,7 @@ def _read_retry_state(source_dir: str) -> Dict[str, int]:
             return {}
 
     if content is None:
-        local_path = path[len("file://"):] if path.startswith("file://") else path
+        local_path = path[len("file://") :] if path.startswith("file://") else path
         try:
             with open(local_path, "r") as f:
                 content = f.read()
@@ -490,25 +538,26 @@ def _write_retry_state(source_dir: str, state: Dict[str, int]) -> None:
             return
 
     try:
-        local_path = path[len("file://"):] if path.startswith("file://") else path
+        local_path = path[len("file://") :] if path.startswith("file://") else path
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "w") as f:
             f.write(content)
     except Exception as exc:
         logger.warning("Could not persist retry state to %s: %s", path, exc)
 
+
 def ingest_directory_to_bronze(
-        spark,
-        source_dir: str,
-        table_name_template: str = "{filename}_bronze",
-        max_files: Optional[int] = None,
-        stop_on_error: bool = False,
-        max_ingestion_retries: int = 3,
-        allow_overwrite_in_directory_mode: bool = False,
-        base_config: Optional[Dict[str, Any]] = None,
-        per_file_config: Optional[Dict[str, Dict[str, Any]]] = None,
-        **config_overrides,
-    ) -> List[Dict[str, Any]]:
+    spark,
+    source_dir: str,
+    table_name_template: str = "{filename}_bronze",
+    max_files: Optional[int] = None,
+    stop_on_error: bool = False,
+    max_ingestion_retries: int = 3,
+    allow_overwrite_in_directory_mode: bool = False,
+    base_config: Optional[Dict[str, Any]] = None,
+    per_file_config: Optional[Dict[str, Dict[str, Any]]] = None,
+    **config_overrides,
+) -> List[Dict[str, Any]]:
     """
     Discovers JSON files in source_dir and loads each into its own bronze
     table named via table_name_template.
@@ -559,7 +608,9 @@ def ingest_directory_to_bronze(
     shared.update(config_overrides)
     for forbidden in ("source_path", "table"):
         if forbidden in shared:
-            raise ValueError(f"{forbidden!r} is derived per file and cannot be set for directory ingestion")
+            raise ValueError(
+                f"{forbidden!r} is derived per file and cannot be set for directory ingestion"
+            )
 
     # Reject unknown config keys loudly. IngestionConfig.from_dict filters
     # unrecognised keys silently by design, so anything misspelled or
@@ -588,7 +639,9 @@ def ingest_directory_to_bronze(
     subfolders = list_subfolders(spark, source_dir)
     logger.info(
         "Discovered %d JSON file(s) and %d subfolder(s) in %s",
-        len(files), len(subfolders), source_dir,
+        len(files),
+        len(subfolders),
+        source_dir,
     )
     if not files and not subfolders:
         logger.warning("No .json files or subfolders found in %s - nothing to do.", source_dir)
@@ -634,7 +687,8 @@ def ingest_directory_to_bronze(
         logger.warning(
             "per_file_config entries matched no discovered file or folder: %s. "
             "Those overrides will not be applied. Discovered: %s",
-            unmatched, sorted(discovered_names),
+            unmatched,
+            sorted(discovered_names),
         )
 
     results: List[Dict[str, Any]] = []
@@ -645,14 +699,17 @@ def ingest_directory_to_bronze(
         if overrides:
             logger.info(
                 "Applying per-file config override for %s: %s",
-                item["source"], sorted(overrides),
+                item["source"],
+                sorted(overrides),
             )
 
         if item["type"] == "file":
             file_path = item["source"]
             logger.info("Ingesting %s -> %s", file_path, table)
             try:
-                cfg = IngestionConfig.from_dict({**item_config, "source_path": file_path, "table": table})
+                cfg = IngestionConfig.from_dict(
+                    {**item_config, "source_path": file_path, "table": table}
+                )
                 summary = BronzeIngestion(spark, cfg).run()
 
                 retry_state = _read_retry_state(source_dir)
@@ -661,14 +718,16 @@ def ingest_directory_to_bronze(
                     _write_retry_state(source_dir, retry_state)
 
                 move_result = _archive_ingested_file(source_dir, file_path)
-                results.append({
-                    "file": file_path,
-                    "table": summary["table"],
-                    "status": "success",
-                    "rows": summary["row_count"],
-                    "quarantined_rows": summary.get("quarantined_row_count", 0),
-                    **move_result,
-                })
+                results.append(
+                    {
+                        "file": file_path,
+                        "table": summary["table"],
+                        "status": "success",
+                        "rows": summary["row_count"],
+                        "quarantined_rows": summary.get("quarantined_row_count", 0),
+                        **move_result,
+                    }
+                )
             except Exception as exc:
                 logger.error("Failed to ingest %s: %s", file_path, exc)
                 if stop_on_error:
@@ -683,40 +742,69 @@ def ingest_directory_to_bronze(
                     try:
                         dest = _move_file(source_dir, file_path, "quarantine_files")
                         logger.warning(
-                            "%s failed ingestion %d time(s) - quarantined to %s", file_path, attempts, dest
+                            "%s failed ingestion %d time(s) - quarantined to %s",
+                            file_path,
+                            attempts,
+                            dest,
                         )
-                        results.append({
-                            "file": file_path, "table": table, "status": "failed",
-                            "error": str(exc), "attempts": attempts,
-                            "move_status": "quarantined", "move_detail": dest,
-                        })
+                        results.append(
+                            {
+                                "file": file_path,
+                                "table": table,
+                                "status": "failed",
+                                "error": str(exc),
+                                "attempts": attempts,
+                                "move_status": "quarantined",
+                                "move_detail": dest,
+                            }
+                        )
                     except Exception as move_exc:
                         logger.error(
                             "%s failed ingestion %d time(s) and could not be quarantined: %s",
-                            file_path, attempts, move_exc,
+                            file_path,
+                            attempts,
+                            move_exc,
                         )
-                        results.append({
-                            "file": file_path, "table": table, "status": "failed",
-                            "error": str(exc), "attempts": attempts,
-                            "move_status": "failed_left_in_place", "move_detail": str(move_exc),
-                        })
+                        results.append(
+                            {
+                                "file": file_path,
+                                "table": table,
+                                "status": "failed",
+                                "error": str(exc),
+                                "attempts": attempts,
+                                "move_status": "failed_left_in_place",
+                                "move_detail": str(move_exc),
+                            }
+                        )
                 else:
                     retry_state[file_path] = attempts
                     _write_retry_state(source_dir, retry_state)
                     logger.warning(
                         "%s failed ingestion (attempt %d/%d) - left in raw/ for retry",
-                        file_path, attempts, max_ingestion_retries,
+                        file_path,
+                        attempts,
+                        max_ingestion_retries,
                     )
-                    results.append({
-                        "file": file_path, "table": table, "status": "failed",
-                        "error": str(exc), "attempts": attempts,
-                    })
+                    results.append(
+                        {
+                            "file": file_path,
+                            "table": table,
+                            "status": "failed",
+                            "error": str(exc),
+                            "attempts": attempts,
+                        }
+                    )
 
         elif item["type"] == "folder":
             folder_path = item["source"]
             folder_result = _ingest_folder_as_table(
-                spark, source_dir, folder_path, table, item_config,
-                stop_on_error=stop_on_error, max_ingestion_retries=max_ingestion_retries,
+                spark,
+                source_dir,
+                folder_path,
+                table,
+                item_config,
+                stop_on_error=stop_on_error,
+                max_ingestion_retries=max_ingestion_retries,
             )
             results.append(folder_result)
 
@@ -725,6 +813,9 @@ def ingest_directory_to_bronze(
     skipped = sum(1 for r in results if r["status"] == "skipped")
     logger.info(
         "Directory ingestion finished: %d succeeded, %d failed, %d skipped (of %d unit(s))",
-        ok, failed, skipped, len(results),
+        ok,
+        failed,
+        skipped,
+        len(results),
     )
     return results

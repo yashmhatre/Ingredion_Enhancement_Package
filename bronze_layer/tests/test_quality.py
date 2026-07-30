@@ -3,7 +3,13 @@ from dataclasses import replace
 
 import pytest
 from bronze_ingest.config import IngestionConfig
-from bronze_ingest.quality import enforce_quality, split_good_bad, write_quarantine, DataQualityError
+from bronze_ingest.quality import (
+    enforce_quality,
+    split_good_bad,
+    write_quarantine,
+    DataQualityError,
+)
+
 
 def _df(spark):
     return spark.createDataFrame(
@@ -30,7 +36,9 @@ def test_split_good_bad_partitions_nulls(spark):
 
 def test_enforce_quality_raises_when_fail_on_error(spark):
     df = _df(spark)
-    cfg = IngestionConfig(source_path="x", table="t", required_columns=["name"], fail_on_quality_error=True)
+    cfg = IngestionConfig(
+        source_path="x", table="t", required_columns=["name"], fail_on_quality_error=True
+    )
     with pytest.raises(DataQualityError):
         enforce_quality(df, cfg)
 
@@ -39,7 +47,9 @@ def test_data_quality_error_carries_bad_count(spark):
     """#50: the failure audit row needs to recover how many rows failed -
     DataQualityError must carry bad_count when enforce_quality raises it."""
     df = _df(spark)
-    cfg = IngestionConfig(source_path="x", table="t", required_columns=["name"], fail_on_quality_error=True)
+    cfg = IngestionConfig(
+        source_path="x", table="t", required_columns=["name"], fail_on_quality_error=True
+    )
     with pytest.raises(DataQualityError) as exc_info:
         enforce_quality(df, cfg)
     assert exc_info.value.bad_count == 1
@@ -47,7 +57,9 @@ def test_data_quality_error_carries_bad_count(spark):
 
 def test_missing_required_column_error_has_no_bad_count(spark):
     df = _df(spark)
-    cfg = IngestionConfig(source_path="x", table="t", required_columns=["does_not_exist"], fail_on_quality_error=True)
+    cfg = IngestionConfig(
+        source_path="x", table="t", required_columns=["does_not_exist"], fail_on_quality_error=True
+    )
     with pytest.raises(DataQualityError) as exc_info:
         enforce_quality(df, cfg)
     assert exc_info.value.bad_count is None
@@ -55,7 +67,9 @@ def test_missing_required_column_error_has_no_bad_count(spark):
 
 def test_enforce_quality_quarantines_when_not_failing(spark):
     df = _df(spark)
-    cfg = IngestionConfig(source_path="x", table="t", required_columns=["name"], fail_on_quality_error=False)
+    cfg = IngestionConfig(
+        source_path="x", table="t", required_columns=["name"], fail_on_quality_error=False
+    )
     good, bad, bad_count = enforce_quality(df, cfg)
     assert bad_count == 1
     assert good.count() == 2
@@ -63,7 +77,9 @@ def test_enforce_quality_quarantines_when_not_failing(spark):
 
 def test_missing_required_column_always_raises(spark):
     df = _df(spark)
-    cfg = IngestionConfig(source_path="x", table="t", required_columns=["does_not_exist"], fail_on_quality_error=False)
+    cfg = IngestionConfig(
+        source_path="x", table="t", required_columns=["does_not_exist"], fail_on_quality_error=False
+    )
     with pytest.raises(DataQualityError):
         enforce_quality(df, cfg)
 
@@ -79,8 +95,12 @@ def test_split_good_bad_does_not_leak_tag_column(spark):
 def test_write_quarantine_writes_rows_when_bad_count_positive(spark):
     table = f"quality_quarantine_{uuid.uuid4().hex[:8]}"
     cfg = IngestionConfig(
-        source_path="x", table=table, schema_name="default", catalog=None,
-        required_columns=["name"], fail_on_quality_error=False,
+        source_path="x",
+        table=table,
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
     )
     good, bad, bad_count = enforce_quality(_df(spark), cfg)
 
@@ -94,8 +114,12 @@ def test_write_quarantine_adds_unique_quarantine_id(spark):
     quarantined rows were successfully re-promoted to bronze."""
     table = f"quality_quarantine_id_{uuid.uuid4().hex[:8]}"
     cfg = IngestionConfig(
-        source_path="x", table=table, schema_name="default", catalog=None,
-        required_columns=["name"], fail_on_quality_error=False,
+        source_path="x",
+        table=table,
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
     )
     df = spark.createDataFrame([(1, None), (2, None)], "id INT, name STRING")
     good, bad, bad_count = enforce_quality(df, cfg)
@@ -111,8 +135,12 @@ def test_write_quarantine_adds_unique_quarantine_id(spark):
 def test_write_quarantine_uses_specific_reason(spark):
     table = f"quality_quarantine_reason_{uuid.uuid4().hex[:8]}"
     cfg = IngestionConfig(
-        source_path="x", table=table, schema_name="default", catalog=None,
-        required_columns=["name"], fail_on_quality_error=False,
+        source_path="x",
+        table=table,
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
     )
     good, bad, bad_count = enforce_quality(_df(spark), cfg)
     write_quarantine(spark, bad, bad_count, cfg)
@@ -121,6 +149,7 @@ def test_write_quarantine_uses_specific_reason(spark):
 
 
 # ---- unique_columns (#59, narrowed scope) ----
+
 
 def test_split_good_bad_partitions_duplicates(spark):
     df = spark.createDataFrame(
@@ -152,7 +181,11 @@ def test_null_and_duplicate_reasons_combine(spark):
         "id INT, name STRING, ts STRING",
     )
     cfg = IngestionConfig(
-        source_path="x", table="t", required_columns=["name"], unique_columns=["id"], dedupe_order_by="ts",
+        source_path="x",
+        table="t",
+        required_columns=["name"],
+        unique_columns=["id"],
+        dedupe_order_by="ts",
     )
     good, bad = split_good_bad(df, cfg)
     reasons = {r["id"]: r["_quarantine_reason"] for r in bad.collect()}
@@ -163,7 +196,9 @@ def test_null_and_duplicate_reasons_combine(spark):
 
 def test_enforce_quality_raises_on_duplicates_when_fail_on_error(spark):
     df = spark.createDataFrame([(1, "Alice"), (1, "Bob")], ["id", "name"])
-    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"], fail_on_quality_error=True)
+    cfg = IngestionConfig(
+        source_path="x", table="t", unique_columns=["id"], fail_on_quality_error=True
+    )
     with pytest.raises(DataQualityError) as exc_info:
         enforce_quality(df, cfg)
     assert exc_info.value.bad_count == 1
@@ -171,7 +206,9 @@ def test_enforce_quality_raises_on_duplicates_when_fail_on_error(spark):
 
 def test_enforce_quality_quarantines_duplicates_when_not_failing(spark):
     df = spark.createDataFrame([(1, "Alice"), (1, "Bob")], ["id", "name"])
-    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"], fail_on_quality_error=False)
+    cfg = IngestionConfig(
+        source_path="x", table="t", unique_columns=["id"], fail_on_quality_error=False
+    )
     good, bad, bad_count = enforce_quality(df, cfg)
     assert bad_count == 1
     assert good.count() == 1
@@ -179,7 +216,9 @@ def test_enforce_quality_quarantines_duplicates_when_not_failing(spark):
 
 def test_missing_unique_column_always_raises(spark):
     df = _df(spark)
-    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["does_not_exist"], fail_on_quality_error=False)
+    cfg = IngestionConfig(
+        source_path="x", table="t", unique_columns=["does_not_exist"], fail_on_quality_error=False
+    )
     with pytest.raises(DataQualityError):
         enforce_quality(df, cfg)
 
@@ -208,8 +247,12 @@ def test_duplicate_tie_break_without_dedupe_order_by_is_deterministic(spark):
 def test_write_quarantine_skips_when_bad_count_zero(spark):
     table = f"quality_quarantine_skip_{uuid.uuid4().hex[:8]}"
     cfg = IngestionConfig(
-        source_path="x", table=table, schema_name="default", catalog=None,
-        required_columns=["name"], fail_on_quality_error=False,
+        source_path="x",
+        table=table,
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
     )
     all_good_df = spark.createDataFrame([(1, "Alice"), (2, "Bob")], ["id", "name"])
     good, bad, bad_count = enforce_quality(all_good_df, cfg)
@@ -312,9 +355,7 @@ def test_dedupe_order_by_still_wins_over_the_tie_break(spark):
     """The content hash is the FINAL sort key, not the primary one."""
     rows = [(1, "old", 1), (1, "new", 2)]
     df = spark.createDataFrame(rows, ["id", "name", "ts"])
-    cfg = IngestionConfig(
-        source_path="x", table="t", unique_columns=["id"], dedupe_order_by="ts"
-    )
+    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["id"], dedupe_order_by="ts")
 
     good, _ = split_good_bad(df, cfg)
 
@@ -437,7 +478,9 @@ def test_first_quarantined_at_survives_a_later_batch(spark):
 
     bad = _bad_with_audit(spark, rows, cfg, batch_id="run-1")
     write_quarantine(spark, bad, bad.count(), cfg)
-    first_seen = spark.read.table(cfg.resolved_quarantine_table).collect()[0]["_first_quarantined_at"]
+    first_seen = spark.read.table(cfg.resolved_quarantine_table).collect()[0][
+        "_first_quarantined_at"
+    ]
 
     bad = _bad_with_audit(spark, rows, cfg, batch_id="run-2")
     write_quarantine(spark, bad, bad.count(), cfg)

@@ -100,9 +100,18 @@ def test_audited_run_disabled_writes_nothing(spark, tmp_path):
 def test_audit_schema_matches_documented_fields():
     field_names = {f.name for f in AUDIT_SCHEMA.fields}
     expected = {
-        "run_id", "table", "status", "row_count", "quarantined_row_count",
-        "failure_stage", "schema_fingerprint", "schema_changed",
-        "started_at", "finished_at", "error_message", "source_path",
+        "run_id",
+        "table",
+        "status",
+        "row_count",
+        "quarantined_row_count",
+        "failure_stage",
+        "schema_fingerprint",
+        "schema_changed",
+        "started_at",
+        "finished_at",
+        "error_message",
+        "source_path",
     }
     assert field_names == expected, "audit schema drifted from the documented 12-field design"
 

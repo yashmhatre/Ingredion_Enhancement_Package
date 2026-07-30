@@ -12,7 +12,7 @@ import sys
 _package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _package_parent not in sys.path:
     sys.path.insert(0, _package_parent)
-    
+
 import uuid
 import pytest
 
@@ -22,6 +22,7 @@ def _get_dbutils():
     notebook/workspace context, else None (e.g. local pytest, plain script)."""
     try:
         import IPython
+
         return IPython.get_ipython().user_ns["dbutils"]
     except Exception:
         return None
@@ -40,16 +41,18 @@ def spark():
         return
 
     builder = (
-        SparkSession.builder
-        .appName("bronze_layer-tests")
+        SparkSession.builder.appName("bronze_layer-tests")
         .master("local[2]")
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config(
+            "spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+        )
     )
 
     try:
         from delta import configure_spark_with_delta_pip
+
         builder = configure_spark_with_delta_pip(builder)
     except ImportError:
         pass  # delta-spark not installed - Delta-writing tests will fail with a clear error instead

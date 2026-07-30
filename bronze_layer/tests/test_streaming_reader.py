@@ -45,6 +45,7 @@ def _cfg(**overrides):
 
 # ---- path classification (pure) ----
 
+
 def test_is_json_lines_path_by_extension():
     assert is_json_lines_path("/Volumes/x/events.jsonl") is True
     assert is_json_lines_path("/Volumes/x/events.ndjson") is True
@@ -66,13 +67,21 @@ def test_is_json_lines_path_ignores_query_string():
 
 
 def test_json_lines_files_dedupes_and_sorts():
-    got = sr.json_lines_files([
-        "/x/b.jsonl", "/x/a.json", "/x/b.jsonl", "/x/a.ndjson", "", None,
-    ])
+    got = sr.json_lines_files(
+        [
+            "/x/b.jsonl",
+            "/x/a.json",
+            "/x/b.jsonl",
+            "/x/a.ndjson",
+            "",
+            None,
+        ]
+    )
     assert got == ["/x/a.ndjson", "/x/b.jsonl"]
 
 
 # ---- whether the guard applies at all (pure) ----
+
 
 def test_should_guard_follows_multiline_when_no_override():
     assert sr.should_guard_truncation(_cfg(multiline=True)) is True
@@ -103,9 +112,10 @@ def test_should_guard_ignores_unrelated_reader_options():
 def test_should_guard_off_for_a_single_jsonl_file_source():
     """A streaming source pointed straight at a .jsonl file is unambiguous,
     so effective_multiline forces multiLine off and nothing can truncate."""
-    assert sr.should_guard_truncation(
-        _cfg(source_path="/Volumes/x/events.jsonl", multiline=True)
-    ) is False
+    assert (
+        sr.should_guard_truncation(_cfg(source_path="/Volumes/x/events.jsonl", multiline=True))
+        is False
+    )
 
 
 # ---- the guard itself (needs a DataFrame, not a stream) ----
@@ -202,6 +212,7 @@ def test_guard_is_empty_batch_safe(spark):
 
 
 # ---- reader wiring (fake, not Spark) ----
+
 
 class _RecordingReader:
     """Records .option()/.schema() calls the way DataStreamReader would."""

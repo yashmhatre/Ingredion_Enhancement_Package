@@ -34,7 +34,8 @@ def add_audit_columns(df, config: IngestionConfig):
         logger.warning(
             "No _input_file_name column found - %s will be set to config.source_path "
             "(%r) instead of per-file lineage for every row.",
-            config.audit_source_file_col, config.source_path,
+            config.audit_source_file_col,
+            config.source_path,
         )
         df = df.withColumn(config.audit_source_file_col, lit(config.source_path))
 
@@ -189,7 +190,9 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
         if current_cluster_cols is not None:
             logger.warning(
                 "Cluster-by columns changed for %s: %s -> %s",
-                full_name, current_cluster_cols, config.cluster_by,
+                full_name,
+                current_cluster_cols,
+                config.cluster_by,
             )
 
     if config.cluster_by_auto:
@@ -199,12 +202,12 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
             logger.warning(
                 "cluster_by_auto=True but this engine doesn't support CLUSTER BY AUTO "
                 "(expected outside Databricks Runtime, which manages predictive "
-                "optimization for AUTO-clustered tables): %s", exc,
+                "optimization for AUTO-clustered tables): %s",
+                exc,
             )
 
     changed_props = {
-        k: v for k, v in (config.table_properties or {}).items()
-        if current_props.get(k) != v
+        k: v for k, v in (config.table_properties or {}).items() if current_props.get(k) != v
     }
     if changed_props:
         # Both sides escaped (#154). `table_properties` is a free-form
@@ -215,8 +218,7 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
         # dot-separated part, since they are dotted by convention
         # (delta.enableChangeDataFeed).
         props_clause = ", ".join(
-            f"'{quote_literal(k)}' = '{quote_literal(v)}'"
-            for k, v in changed_props.items()
+            f"'{quote_literal(k)}' = '{quote_literal(v)}'" for k, v in changed_props.items()
         )
         spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
@@ -358,7 +360,8 @@ def write_bronze(spark, df, config: IngestionConfig):
                 "idempotent_batch_writes=True but batch_id=%r isn't an integer or a "
                 "recognized timestamp format - can't derive a stable txnVersion, so this "
                 "write is not idempotent-protected. Pass an integer batch_id (e.g. a "
-                "Databricks job run ID) for retry-safe batch writes.", config.batch_id,
+                "Databricks job run ID) for retry-safe batch writes.",
+                config.batch_id,
             )
         else:
             logger.debug(

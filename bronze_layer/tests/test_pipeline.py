@@ -37,8 +37,10 @@ def test_run_failure_records_bad_count_and_quality_stage_in_audit(spark, tmp_pat
     """
     _write_json(tmp_path / "data.json", [{"id": 1, "name": "a"}, {"id": 2, "name": None}])
     cfg = _cfg(
-        tmp_path, f"pipeline_fail_{uuid.uuid4().hex[:8]}",
-        required_columns=["name"], fail_on_quality_error=True,
+        tmp_path,
+        f"pipeline_fail_{uuid.uuid4().hex[:8]}",
+        required_columns=["name"],
+        fail_on_quality_error=True,
     )
     job = BronzeIngestion(spark, cfg)
 
@@ -49,7 +51,9 @@ def test_run_failure_records_bad_count_and_quality_stage_in_audit(spark, tmp_pat
     assert row["status"] == "failed"
     assert row["quarantined_row_count"] == 1
     assert row["failure_stage"] == "quality"
-    assert not spark.catalog.tableExists(cfg.full_table_name), "bronze table should never have been written"
+    assert not spark.catalog.tableExists(cfg.full_table_name), (
+        "bronze table should never have been written"
+    )
 
 
 def test_run_success_records_schema_fingerprint_in_audit(spark, tmp_path):

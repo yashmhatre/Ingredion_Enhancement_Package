@@ -19,13 +19,21 @@ from .config import IngestionConfig
 from .quality import split_good_bad
 from .bronze_writer import write_bronze
 from .audit import record_replay_run
-from .directory_ingestion import _move_file_direct, list_json_files, _read_retry_state, _write_retry_state
+from .directory_ingestion import (
+    _move_file_direct,
+    list_json_files,
+    _read_retry_state,
+    _write_retry_state,
+)
 from .logging_utils import logger
 from .sql_utils import quote_literal
 
 
 def reprocess_quarantine(
-    spark, config: IngestionConfig, batch_id: Optional[str] = None, since=None,
+    spark,
+    config: IngestionConfig,
+    batch_id: Optional[str] = None,
+    since=None,
 ) -> Dict[str, Any]:
     """
     Re-runs quarantined rows through the CURRENT quality gate - the rule
@@ -64,8 +72,10 @@ def reprocess_quarantine(
     if not spark.catalog.tableExists(quarantine_table):
         logger.info("Quarantine table %s does not exist - nothing to replay.", quarantine_table)
         return {
-            "table": config.full_table_name, "replayed_row_count": 0,
-            "still_quarantined_row_count": 0, "replay_batch_id": None,
+            "table": config.full_table_name,
+            "replayed_row_count": 0,
+            "still_quarantined_row_count": 0,
+            "replay_batch_id": None,
         }
 
     quarantined_df = spark.read.table(quarantine_table)
@@ -102,15 +112,21 @@ def reprocess_quarantine(
     if good_count == 0:
         logger.info(
             "Replay for %s: 0 row(s) now pass (%d still quarantined) - nothing promoted.",
-            config.full_table_name, still_bad_count,
+            config.full_table_name,
+            still_bad_count,
         )
         record_replay_run(
-            spark, config, status="success_replay",
-            row_count=0, quarantined_row_count=still_bad_count,
+            spark,
+            config,
+            status="success_replay",
+            row_count=0,
+            quarantined_row_count=still_bad_count,
         )
         return {
-            "table": config.full_table_name, "replayed_row_count": 0,
-            "still_quarantined_row_count": still_bad_count, "replay_batch_id": replay_batch_id,
+            "table": config.full_table_name,
+            "replayed_row_count": 0,
+            "still_quarantined_row_count": still_bad_count,
+            "replay_batch_id": replay_batch_id,
         }
 
     replayed_df = (
@@ -138,25 +154,39 @@ def reprocess_quarantine(
             "Replayed %d row(s) to %s successfully, but failed to remove them from "
             "quarantine table %s: %s. These _quarantine_id(s) may be re-promoted "
             "(and duplicated in bronze) on the next replay unless cleaned up "
-            "manually: %s", good_count, table_name, quarantine_table, exc, quarantine_ids,
+            "manually: %s",
+            good_count,
+            table_name,
+            quarantine_table,
+            exc,
+            quarantine_ids,
         )
 
     record_replay_run(
-        spark, config, status="success_replay",
-        row_count=good_count, quarantined_row_count=still_bad_count,
+        spark,
+        config,
+        status="success_replay",
+        row_count=good_count,
+        quarantined_row_count=still_bad_count,
     )
     logger.info(
         "Replay for %s: %d row(s) promoted to bronze, %d row(s) still quarantined.",
-        config.full_table_name, good_count, still_bad_count,
+        config.full_table_name,
+        good_count,
+        still_bad_count,
     )
 
     return {
-        "table": table_name, "replayed_row_count": good_count,
-        "still_quarantined_row_count": still_bad_count, "replay_batch_id": replay_batch_id,
+        "table": table_name,
+        "replayed_row_count": good_count,
+        "still_quarantined_row_count": still_bad_count,
+        "replay_batch_id": replay_batch_id,
     }
 
 
-def reprocess_quarantined_files(spark, source_dir: str, pattern: Optional[str] = None) -> Dict[str, Any]:
+def reprocess_quarantined_files(
+    spark, source_dir: str, pattern: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Moves files from quarantine_files/ back into source_dir so the next
     ingest_directory_to_bronze() run picks them up - reuses all the usual
@@ -177,7 +207,9 @@ def reprocess_quarantined_files(spark, source_dir: str, pattern: Optional[str] =
     try:
         files = list_json_files(spark, quarantine_dir)
     except FileNotFoundError:
-        logger.info("No quarantine_files/ directory found under %s - nothing to replay.", source_dir)
+        logger.info(
+            "No quarantine_files/ directory found under %s - nothing to replay.", source_dir
+        )
         return {"moved": [], "count": 0}
 
     if pattern is not None:
@@ -186,7 +218,8 @@ def reprocess_quarantined_files(spark, source_dir: str, pattern: Optional[str] =
     if not files:
         logger.info(
             "No quarantined files found in %s%s - nothing to replay.",
-            quarantine_dir, f" matching {pattern!r}" if pattern else "",
+            quarantine_dir,
+            f" matching {pattern!r}" if pattern else "",
         )
         return {"moved": [], "count": 0}
 
@@ -200,7 +233,9 @@ def reprocess_quarantined_files(spark, source_dir: str, pattern: Optional[str] =
             retry_state.pop(dest_path, None)
             retry_state.pop(file_path, None)
             moved.append({"file": file_path, "destination": dest_path, "status": "moved"})
-            logger.info("Restored quarantined file %s -> %s for reprocessing.", file_path, dest_path)
+            logger.info(
+                "Restored quarantined file %s -> %s for reprocessing.", file_path, dest_path
+            )
         except Exception as exc:
             logger.error("Failed to restore quarantined file %s: %s", file_path, exc)
             moved.append({"file": file_path, "status": "failed", "error": str(exc)})

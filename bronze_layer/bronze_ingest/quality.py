@@ -138,7 +138,9 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
     if not config.required_columns and not config.unique_columns:
         return df, df.limit(0)
 
-    missing = _missing_columns(df, config.required_columns) + _missing_columns(df, config.unique_columns or [])
+    missing = _missing_columns(df, config.required_columns) + _missing_columns(
+        df, config.unique_columns or []
+    )
     if missing:
         # Columns that don't exist at all are a schema problem, not a per-row
         # quality problem - always a hard failure regardless of fail_on_quality_error.
@@ -155,7 +157,9 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
         for c in config.required_columns:
             cond = col(f"`{c}`").isNull()
             null_cond = cond if null_cond is None else (null_cond | cond)
-        null_reason = concat_ws(",", *[when(col(f"`{c}`").isNull(), lit(c)) for c in config.required_columns])
+        null_reason = concat_ws(
+            ",", *[when(col(f"`{c}`").isNull(), lit(c)) for c in config.required_columns]
+        )
         tagged = tagged.withColumn("_dq_null", null_cond)
         reason_parts.append(when(col("_dq_null"), concat(lit("null:"), null_reason)))
     else:
@@ -163,16 +167,19 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
 
     if config.unique_columns:
         tagged = tagged.withColumn("_dq_dup", _duplicate_flag_column(tagged, config))
-        reason_parts.append(when(col("_dq_dup"), lit("duplicate:" + ",".join(config.unique_columns))))
+        reason_parts.append(
+            when(col("_dq_dup"), lit("duplicate:" + ",".join(config.unique_columns)))
+        )
     else:
         tagged = tagged.withColumn("_dq_dup", lit(False))
 
-    tagged = (
-        tagged.withColumn("_dq_bad", col("_dq_null") | col("_dq_dup"))
-        .withColumn("_quarantine_reason", concat_ws("|", *reason_parts))
+    tagged = tagged.withColumn("_dq_bad", col("_dq_null") | col("_dq_dup")).withColumn(
+        "_quarantine_reason", concat_ws("|", *reason_parts)
     )
 
-    good_df = tagged.filter(~col("_dq_bad")).drop("_dq_null", "_dq_dup", "_dq_bad", "_quarantine_reason")
+    good_df = tagged.filter(~col("_dq_bad")).drop(
+        "_dq_null", "_dq_dup", "_dq_bad", "_quarantine_reason"
+    )
 
     # `_quarantine_id` is derived HERE, not in write_quarantine(), and that
     # placement is the point (#148).
@@ -252,13 +259,9 @@ def _align_quarantine_schema(spark, table_name: str, source_schema) -> None:
     existing = {f.name for f in spark.read.table(table_name).schema.fields}
 
     additions = {
-        f.name: f.dataType.simpleString()
-        for f in source_schema.fields
-        if f.name not in existing
+        f.name: f.dataType.simpleString() for f in source_schema.fields if f.name not in existing
     }
-    additions.update(
-        {c: t for c, t in _QUARANTINE_META_COLUMNS.items() if c not in existing}
-    )
+    additions.update({c: t for c, t in _QUARANTINE_META_COLUMNS.items() if c not in existing})
     if not additions:
         return
 

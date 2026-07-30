@@ -34,11 +34,6 @@ target-version = "py38"
 
 extend-exclude = ["build", "dist", "_archive"]
 
-[tool.ruff.lint]
-# E/W pycodestyle, F pyflakes, I import sorting, B bugbear, UP pyupgrade,
-# G logging-format, BLE blind-except.
-select = ["E", "F", "W", "I", "B", "UP", "G", "BLE"]
-
 # Injected into the namespace by the Databricks notebook kernel, so they are
 # genuinely defined at runtime but invisible to static analysis. Declaring
 # them is narrower than switching F821 off for notebooks/, which would also
@@ -49,6 +44,11 @@ select = ["E", "F", "W", "I", "B", "UP", "G", "BLE"]
 # mypy, which does not honour this setting and still reports the name as
 # undefined.
 builtins = ["dbutils", "spark", "display"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import sorting, B bugbear, UP pyupgrade,
+# G logging-format, BLE blind-except.
+select = ["E", "F", "W", "I", "B", "UP", "G", "BLE"]
 
 [tool.ruff.lint.per-file-ignores]
 # Databricks notebooks are cell-structured: `# COMMAND ----------` separates

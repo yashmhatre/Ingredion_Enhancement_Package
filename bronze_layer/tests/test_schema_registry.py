@@ -101,8 +101,12 @@ def test_registry_failure_never_raises(spark, tmp_path, monkeypatch):
 
 def test_registry_schema_matches_documented_fields():
     assert {f.name for f in REGISTRY_SCHEMA.fields} == {
-        "table_name", "source_path", "schema_fingerprint",
-        "schema_json", "first_seen_at", "last_updated_at",
+        "table_name",
+        "source_path",
+        "schema_fingerprint",
+        "schema_json",
+        "first_seen_at",
+        "last_updated_at",
     }
 
 

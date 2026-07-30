@@ -93,7 +93,8 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
     try:
         if not spark.catalog.tableExists(full_name):
             logger.warning(
-                "Skipping catalog metadata for %s: table does not exist.", full_name,
+                "Skipping catalog metadata for %s: table does not exist.",
+                full_name,
             )
             return result
 
@@ -130,11 +131,15 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
                     "Skipped column comments for %s: column(s) %s not present on the table "
                     "(nested paths like 'a.b' are not supported - bronze preserves nested "
                     "structures rather than flattening them). Available columns: %s",
-                    full_name, result["columns_skipped"], sorted(current),
+                    full_name,
+                    result["columns_skipped"],
+                    sorted(current),
                 )
             if result["columns_applied"]:
                 logger.info(
-                    "Applied column comments to %s: %s", full_name, result["columns_applied"],
+                    "Applied column comments to %s: %s",
+                    full_name,
+                    result["columns_applied"],
                 )
     except Exception as exc:
         logger.warning("Failed to apply catalog metadata for %s: %s", full_name, exc)

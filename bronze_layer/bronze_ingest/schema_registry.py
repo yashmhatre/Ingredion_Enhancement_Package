@@ -24,21 +24,26 @@ from typing import Optional, Tuple
 from pyspark.sql import Row
 from pyspark.sql.functions import col
 from pyspark.sql.types import (
-    StructType, StructField, StringType, TimestampType,
+    StructType,
+    StructField,
+    StringType,
+    TimestampType,
 )
 
 from .config import IngestionConfig
 from .logging_utils import logger
 
 
-REGISTRY_SCHEMA = StructType([
-    StructField("table_name", StringType(), nullable=False),
-    StructField("source_path", StringType(), nullable=True),
-    StructField("schema_fingerprint", StringType(), nullable=False),
-    StructField("schema_json", StringType(), nullable=False),
-    StructField("first_seen_at", TimestampType(), nullable=False),
-    StructField("last_updated_at", TimestampType(), nullable=False),
-])
+REGISTRY_SCHEMA = StructType(
+    [
+        StructField("table_name", StringType(), nullable=False),
+        StructField("source_path", StringType(), nullable=True),
+        StructField("schema_fingerprint", StringType(), nullable=False),
+        StructField("schema_json", StringType(), nullable=False),
+        StructField("first_seen_at", TimestampType(), nullable=False),
+        StructField("last_updated_at", TimestampType(), nullable=False),
+    ]
+)
 
 
 def _schema_pairs(df):
@@ -127,11 +132,14 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
     except Exception as exc:
         logger.warning(
             "Failed to write schema registry row for %s: %s",
-            config.full_table_name, exc,
+            config.full_table_name,
+            exc,
         )
 
 
-def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -> Tuple[Optional[str], bool]:
+def record_schema(
+    spark, config: IngestionConfig, df, source_path: str = None
+) -> Tuple[Optional[str], bool]:
     """
     Records the current schema for config's target table, but only if it
     differs from what's already registered.
@@ -159,14 +167,18 @@ def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -
             return fingerprint, False  # unchanged - nothing to write
 
         now = datetime.now(timezone.utc)
-        _write_row(spark, config, {
-            "table_name": config.full_table_name,
-            "source_path": source_path or config.source_path,
-            "schema_fingerprint": fingerprint,
-            "schema_json": _schema_json(df),
-            "first_seen_at": current["first_seen_at"] if current is not None else now,
-            "last_updated_at": now,
-        })
+        _write_row(
+            spark,
+            config,
+            {
+                "table_name": config.full_table_name,
+                "source_path": source_path or config.source_path,
+                "schema_fingerprint": fingerprint,
+                "schema_json": _schema_json(df),
+                "first_seen_at": current["first_seen_at"] if current is not None else now,
+                "last_updated_at": now,
+            },
+        )
 
         if current is None:
             logger.info("Registered schema for %s (%s)", config.full_table_name, fingerprint)
@@ -174,7 +186,9 @@ def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -
 
         logger.warning(
             "Schema drift detected for %s: %s -> %s",
-            config.full_table_name, current["schema_fingerprint"], fingerprint,
+            config.full_table_name,
+            current["schema_fingerprint"],
+            fingerprint,
         )
         return fingerprint, True
     except Exception as exc:

@@ -47,9 +47,7 @@ def validate_identifier(value, field_name: str) -> str:
     generated statement. Same fix either way.
     """
     if value is None or not isinstance(value, str) or not value.strip():
-        raise ValueError(
-            f"{field_name} must be a non-empty string identifier, got {value!r}."
-        )
+        raise ValueError(f"{field_name} must be a non-empty string identifier, got {value!r}.")
     if not _IDENTIFIER_RE.match(value):
         raise ValueError(
             f"{field_name}={value!r} is not a valid identifier. Expected letters, "

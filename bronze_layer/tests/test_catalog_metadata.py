@@ -12,7 +12,10 @@ import pytest
 
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.catalog_metadata import (
-    apply_catalog_metadata, _current_table_comment, _current_column_comments, _quote,
+    apply_catalog_metadata,
+    _current_table_comment,
+    _current_column_comments,
+    _quote,
 )
 from bronze_ingest.pipeline import BronzeIngestion
 
@@ -41,12 +44,14 @@ def _versions(spark, table):
 
 # ---- unit ----
 
+
 def test_quote_doubles_single_quotes():
     assert _quote("it's fine") == "it''s fine"
     assert _quote("plain") == "plain"
 
 
 # ---- table comment ----
+
 
 def test_applies_table_comment(spark):
     table = f"cm_tbl_{uuid.uuid4().hex[:8]}"
@@ -72,6 +77,7 @@ def test_table_comment_with_apostrophe_round_trips(spark):
 
 
 # ---- column comments ----
+
 
 def test_applies_column_comments(spark):
     table = f"cm_col_{uuid.uuid4().hex[:8]}"
@@ -102,6 +108,7 @@ def test_unknown_column_is_skipped_not_raised(spark):
 
 # ---- idempotency: the reason diff-and-apply exists ----
 
+
 def test_reapplying_identical_comments_issues_no_ddl(spark):
     """
     Comment DDL bumps the Delta table version even when the comment is
@@ -126,7 +133,9 @@ def test_changed_comment_is_reapplied(spark):
     table = f"cm_change_{uuid.uuid4().hex[:8]}"
     _make_table(spark, table)
 
-    apply_catalog_metadata(spark, _cfg(table, table_comment="old", column_comments={"email": "old"}))
+    apply_catalog_metadata(
+        spark, _cfg(table, table_comment="old", column_comments={"email": "old"})
+    )
     changed = _cfg(table, table_comment="new", column_comments={"email": "new"})
     result = apply_catalog_metadata(spark, changed)
 
@@ -137,6 +146,7 @@ def test_changed_comment_is_reapplied(spark):
 
 
 # ---- no-op / failure paths ----
+
 
 def test_noop_when_nothing_configured(spark):
     table = f"cm_noop_{uuid.uuid4().hex[:8]}"
@@ -157,6 +167,7 @@ def test_missing_table_does_not_raise(spark):
 
 def test_never_raises_on_broken_spark(spark):
     """Catalog documentation failing must never fail the ingestion run."""
+
     class Boom:
         @property
         def catalog(self):
@@ -168,12 +179,14 @@ def test_never_raises_on_broken_spark(spark):
 
 # ---- config validation ----
 
+
 def test_blank_column_comment_key_rejected():
     with pytest.raises(ValueError):
         IngestionConfig(source_path="s3://x", table="t", column_comments={"  ": "c"})
 
 
 # ---- pipeline integration ----
+
 
 def test_pipeline_applies_comments_after_write(spark, tmp_path):
     src = tmp_path / "orders.json"

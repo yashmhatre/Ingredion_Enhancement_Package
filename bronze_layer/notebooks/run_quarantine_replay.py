@@ -18,7 +18,12 @@
 # the same wheel into the session first:
 #   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
-from bronze_ingest import IngestionConfig, reprocess_quarantine, reprocess_quarantined_files, get_logger
+from bronze_ingest import (
+    IngestionConfig,
+    reprocess_quarantine,
+    reprocess_quarantined_files,
+    get_logger,
+)
 
 logger = get_logger()
 
@@ -27,16 +32,22 @@ logger = get_logger()
 dbutils.widgets.dropdown("replay_mode", "rows", ["rows", "files", "both"], "What to replay")
 
 # --- Row replay (reads from the quarantine table) ---
-dbutils.widgets.text("config_path", "", "Path to config YAML/JSON for the target table (row replay)")
+dbutils.widgets.text(
+    "config_path", "", "Path to config YAML/JSON for the target table (row replay)"
+)
 dbutils.widgets.text("catalog", "", "Catalog (optional, overrides config)")
 dbutils.widgets.text("schema_name", "", "Target schema (overrides config)")
 dbutils.widgets.text("table", "", "Target table (overrides config)")
 dbutils.widgets.text("batch_id", "", "Only replay rows from this original _batch_id (optional)")
-dbutils.widgets.text("since", "", "Only replay rows ingested at/after this ISO timestamp (optional)")
+dbutils.widgets.text(
+    "since", "", "Only replay rows ingested at/after this ISO timestamp (optional)"
+)
 
 # --- File replay (moves files back from quarantine_files/) ---
 dbutils.widgets.text("source_dir", "", "Directory ingestion's source_dir (file replay)")
-dbutils.widgets.text("pattern", "", "Only restore files matching this glob (optional, e.g. orders_*.json)")
+dbutils.widgets.text(
+    "pattern", "", "Only restore files matching this glob (optional, e.g. orders_*.json)"
+)
 
 # COMMAND ----------
 
