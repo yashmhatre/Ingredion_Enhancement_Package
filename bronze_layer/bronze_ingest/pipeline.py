@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 
 from .config import IngestionConfig
 from .json_reader import read_json
-from .streaming_reader import read_json_stream, get_trigger_kwargs
+from .streaming_reader import read_json_stream, get_trigger_kwargs, assert_no_silent_truncation
 from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
 from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
@@ -184,9 +184,21 @@ class BronzeIngestion:
         stream_df = read_json_stream(self.spark, self.config)
 
         def _process_batch(micro_batch_df, batch_id):
+            # #174's truncation guard runs as part of "reading" this
+            # micro-batch, rather than as a separate step before the shared
+            # body. That placement is what preserves both of its properties
+            # for free: it stays INSIDE audited_run, and _execute's own read
+            # try/except tags it failure_stage="read" - which is what it was
+            # tagged as before the consolidation. No extra parameter on
+            # _execute, and the guard stays where it belongs conceptually,
+            # since it is an Auto Loader concern and not a batch one.
+            def _accept_micro_batch():
+                assert_no_silent_truncation(micro_batch_df, self.config)
+                return micro_batch_df
+
             # build_summary=False: foreachBatch's handler must return None.
             self._execute(
-                lambda: micro_batch_df,
+                _accept_micro_batch,
                 lambda df: write_bronze_micro_batch(self.spark, df, batch_id, self.config),
                 f"Processing micro-batch {batch_id} -> %s",
                 build_summary=False,

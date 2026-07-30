@@ -177,3 +177,33 @@ def test_quarantine_table_is_reported_only_when_rows_were_quarantined(spark, tmp
     assert summary["row_count"] == 1
     assert summary["quarantined_row_count"] == 1
     assert summary["quarantine_table"] == cfg.resolved_quarantine_table
+
+
+def test_truncation_guard_failure_is_tagged_read_through_the_shared_body(spark, tmp_path):
+    """#146's guard used to sit in its own try/except at the top of
+    _process_batch, tagged failure_stage="read". #150 folded that method into
+    _execute, and the guard now runs inside the read_fn closure - so its tag
+    comes from _execute's read try/except instead of its own.
+
+    That equivalence is the whole basis of the conflict resolution between
+    the two, so it gets a test rather than an argument.
+    """
+    from bronze_ingest.streaming_reader import JsonLinesTruncationError
+
+    cfg = _cfg(tmp_path, f"pipeline_trunc_{uuid.uuid4().hex[:8]}")
+    job = BronzeIngestion(spark, cfg)
+
+    def _guard_then_read():
+        raise JsonLinesTruncationError("events.jsonl read with multiLine=true")
+
+    with pytest.raises(JsonLinesTruncationError):
+        job._execute(
+            _guard_then_read,
+            lambda df: None,
+            "should never get this far -> %s",
+            build_summary=False,
+        )
+
+    row = spark.read.table(cfg.resolved_audit_table).collect()[0]
+    assert row["status"] == "failed"
+    assert row["failure_stage"] == "read"

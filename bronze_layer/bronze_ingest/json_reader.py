@@ -8,19 +8,41 @@ path as long as the cluster/session has the right auth configured. This
 function just centralizes the read options driven by config.
 """
 
+from typing import Optional
+
 from .config import IngestionConfig
 from .retry import with_retry
 from .logging_utils import logger
 
 
-# Extensions that mean "one JSON value per line" by definition of the
-# format. `.json` is deliberately absent: a .json file may legitimately be
-# either a single pretty-printed document or JSON-lines, so only the config
-# can decide for it.
-_JSON_LINES_EXTENSIONS = (".jsonl", ".ndjson")
+#: Extensions that mean "one JSON value per line" by definition of the
+#: format. `.json` is deliberately absent: a .json file may legitimately be
+#: either a single pretty-printed document or JSON-lines, so only the config
+#: can decide for it.
+#:
+#: Public because `streaming_reader` needs the same rule (#146). The batch
+#: and streaming readers are peers, so this could equally live in a module
+#: of its own - it stays here because this is where "how JSON is read" is
+#: already documented, and two functions do not earn a module.
+JSON_LINES_EXTENSIONS = (".jsonl", ".ndjson")
 
 
-def _effective_multiline(config: IngestionConfig) -> bool:
+def is_json_lines_path(path: Optional[str]) -> bool:
+    """
+    True when `path` names a FILE whose extension states JSON-lines.
+
+    False for a directory, for `.json`, and for an empty/None path - none of
+    which are unambiguous enough to override a config value.
+
+    A query string is stripped first so a signed URL
+    (`.../events.jsonl?sig=...`) is still recognised, and a trailing slash is
+    stripped so a directory never matches by accident.
+    """
+    cleaned = (path or "").split("?", 1)[0].rstrip("/")
+    return cleaned.lower().endswith(JSON_LINES_EXTENSIONS)
+
+
+def effective_multiline(config: IngestionConfig) -> bool:
     """
     `multiLine` to actually use, which is not always `config.multiline`.
 
@@ -58,9 +80,15 @@ def _effective_multiline(config: IngestionConfig) -> bool:
     Escape hatch: `reader_options` is applied after this in `read_json`, so
     `reader_options: {multiLine: "true"}` still forces the issue if a
     source really does need it.
+
+    Streaming uses this too, but it can only ever help there when
+    `source_path` names a single file. Auto Loader is normally pointed at a
+    DIRECTORY, where there is no extension to inspect and files that do not
+    exist yet cannot be classified at all - so the streaming path pairs this
+    with a per-micro-batch guard. See `streaming_reader`.
     """
     path = (config.source_path or "").split("?", 1)[0].rstrip("/")
-    if not path.lower().endswith(_JSON_LINES_EXTENSIONS):
+    if not is_json_lines_path(path):
         return config.multiline
 
     if config.multiline:
@@ -86,7 +114,7 @@ def read_json(spark, config: IngestionConfig):
       - When a schema_hint_ddl is supplied, `rescued_data_column` captures
         any fields present in the source JSON that don't fit that schema
         (extra/renamed fields), so nothing is silently lost on drift.
-      - `multiLine` comes from `_effective_multiline(config)`, not straight
+      - `multiLine` comes from `effective_multiline(config)`, not straight
         from config: a `.jsonl`/`.ndjson` path forces it off, since
         multiLine=true on a JSON-lines file returns only its first record
         with no error (#146).
@@ -101,8 +129,8 @@ def read_json(spark, config: IngestionConfig):
         spark.read.format("json")
         # Not config.multiline directly - a JSON-lines extension overrides
         # it, because multiLine=true on such a file silently drops every
-        # record but the first (#146). See _effective_multiline.
-        .option("multiLine", _effective_multiline(config))
+        # record but the first (#146). See effective_multiline.
+        .option("multiLine", effective_multiline(config))
         .option("mode", "PERMISSIVE")
         .option("columnNameOfCorruptRecord", config.corrupt_record_column)
     )
