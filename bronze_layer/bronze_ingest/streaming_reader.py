@@ -11,6 +11,7 @@ source directory on every run.
 from pyspark.sql.functions import col
 
 from .config import IngestionConfig
+from .logging_utils import logger
 
 
 def read_json_stream(spark, config: IngestionConfig):
@@ -32,8 +33,11 @@ def read_json_stream(spark, config: IngestionConfig):
     if config.schema_hint_ddl:
         reader = reader.schema(config.schema_hint_ddl)
 
-    for key, value in (config.reader_options or {}).items():
-        reader = reader.option(key, value)
+    if config.reader_options:
+        # Keys only - see the equivalent note in json_reader (#154/#115).
+        logger.info("Applying reader_options: %s", sorted(config.reader_options))
+        for key, value in config.reader_options.items():
+            reader = reader.option(key, value)
 
     df = reader.load(config.source_path)
 

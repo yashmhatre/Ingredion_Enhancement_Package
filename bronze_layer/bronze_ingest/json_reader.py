@@ -112,8 +112,15 @@ def read_json(spark, config: IngestionConfig):
         # otherwise Spark infers a schema that already includes every field.
         reader = reader.option("rescuedDataColumn", config.rescued_data_column)
 
-    for key, value in (config.reader_options or {}).items():
-        reader = reader.option(key, value)
+    if config.reader_options:
+        # Log the KEYS, never the values (#154/#115): once reader_options can
+        # carry a secret reference, printing values would put it in the run
+        # log. Keys are enough to answer "what was applied to this read?".
+        logger.info(
+            "Applying reader_options: %s", sorted(config.reader_options),
+        )
+        for key, value in config.reader_options.items():
+            reader = reader.option(key, value)
 
     if config.schema_hint_ddl:
         reader = reader.schema(config.schema_hint_ddl)

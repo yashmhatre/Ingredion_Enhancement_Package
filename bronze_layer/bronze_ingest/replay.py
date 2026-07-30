@@ -21,6 +21,7 @@ from .bronze_writer import write_bronze
 from .audit import record_replay_run
 from .directory_ingestion import _move_file_direct, list_json_files, _read_retry_state, _write_retry_state
 from .logging_utils import logger
+from .sql_utils import quote_literal
 
 
 def reprocess_quarantine(
@@ -123,7 +124,14 @@ def reprocess_quarantine(
         from delta.tables import DeltaTable
 
         target = DeltaTable.forName(spark, quarantine_table)
-        id_list = ", ".join(f"'{qid}'" for qid in quarantine_ids)
+        # Escaped for consistency with every other literal this package
+        # builds, though these values cannot currently carry an injection:
+        # since #148 `_quarantine_id` is a SHA-256 hex digest, and hex
+        # contains no quote to break out with. #154 listed this alongside the
+        # genuinely unsafe sites; that framing is now out of date, and the
+        # real problem left here is scale, not safety - the ids are collected
+        # to the driver and pasted into one IN list, which is #155.
+        id_list = ", ".join(f"'{quote_literal(qid)}'" for qid in quarantine_ids)
         target.delete(f"_quarantine_id IN ({id_list})")
     except Exception as exc:
         logger.error(

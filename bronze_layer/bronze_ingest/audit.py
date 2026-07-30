@@ -67,10 +67,13 @@ def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
     single-row list.
     """
     try:
+        # resolved_audit_schema, not audit_schema_name: the latter is None by
+        # default and means "use schema_name" (#54). Reading the raw field
+        # here would produce "CREATE SCHEMA IF NOT EXISTS None".
         schema_ref = (
-            f"{config.audit_catalog or config.catalog}.{config.audit_schema_name}"
+            f"{config.audit_catalog or config.catalog}.{config.resolved_audit_schema}"
             if (config.audit_catalog or config.catalog)
-            else config.audit_schema_name
+            else config.resolved_audit_schema
         )
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 

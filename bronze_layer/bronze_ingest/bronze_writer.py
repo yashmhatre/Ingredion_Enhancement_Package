@@ -12,7 +12,7 @@ from pyspark.sql.window import Window
 from .config import IngestionConfig
 from .retry import with_retry
 from .logging_utils import logger
-from .sql_utils import row_content_hash
+from .sql_utils import row_content_hash, quote_literal
 
 
 def add_audit_columns(df, config: IngestionConfig):
@@ -207,7 +207,17 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
         if current_props.get(k) != v
     }
     if changed_props:
-        props_clause = ", ".join(f"'{k}' = '{v}'" for k, v in changed_props.items())
+        # Both sides escaped (#154). `table_properties` is a free-form
+        # Dict[str, str] straight from YAML, and both key and value landed in
+        # single-quoted SQL literals raw: a value containing an apostrophe
+        # broke the statement, and a crafted one appended arbitrary DDL to it.
+        # The keys are additionally validated at config load, per
+        # dot-separated part, since they are dotted by convention
+        # (delta.enableChangeDataFeed).
+        props_clause = ", ".join(
+            f"'{quote_literal(k)}' = '{quote_literal(v)}'"
+            for k, v in changed_props.items()
+        )
         spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
 
@@ -286,7 +296,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
 
         _assert_no_null_merge_keys(df, config.merge_keys)
 
-        if config.dedupe_before_merge:
+        # resolved_, not the raw field: it defaults to None so config load can
+        # tell an explicit choice from silence, and None is falsy (#54).
+        if config.resolved_dedupe_before_merge:
             df = _dedupe_for_merge(df, config)
         else:
             _assert_no_duplicate_merge_keys(df, config.merge_keys)
