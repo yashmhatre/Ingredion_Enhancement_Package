@@ -1,0 +1,130 @@
+# Build backend and tool configuration for bronze-ingest (#158).
+#
+# Package METADATA deliberately stays in setup.py. `_version()` there parses
+# __version__ out of bronze_ingest/__init__.py rather than declaring a second
+# copy, after the two drifted apart once (wheel built as 0.4.0 while the
+# installed package reported 0.3.0, which makes a deployed artifact's version
+# unknowable from inside a running job). CI asserts that agreement. Moving
+# metadata into a [project] table here would reintroduce the second copy, so
+# this file carries only the build backend and tool config.
+#
+# Before this existed, `python -m build --wheel` worked by falling back to
+# setuptools with no backend declared anywhere. That fallback is not a
+# guarantee, and the wheel is what Asset Bundles installs onto job compute.
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+# ---------------------------------------------------------------------------
+# ruff - lint + format
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+
+# Matches setup.py's python_requires=">=3.8". This is load-bearing rather
+# than cosmetic: with a newer target, ruff proposes PEP 604 (`str | None`)
+# and PEP 585 (`list[str]`) annotations, which are syntax errors at runtime
+# on 3.8/3.9. Auto-applying those "upgrades" would have broken the declared
+# floor silently. If the real floor is higher, raise it in setup.py FIRST and
+# then change this - not the other way round.
+target-version = "py38"
+
+extend-exclude = ["build", "dist", "_archive"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import sorting, B bugbear, UP pyupgrade,
+# G logging-format, BLE blind-except.
+select = ["E", "F", "W", "I", "B", "UP", "G", "BLE"]
+
+# Injected into the namespace by the Databricks notebook kernel, so they are
+# genuinely defined at runtime but invisible to static analysis. Declaring
+# them is narrower than switching F821 off for notebooks/, which would also
+# stop it catching real typos there.
+#
+# The gap this opens - a bare `spark` inside bronze_ingest/, where spark is
+# always a parameter and a bare reference would be a bug - is covered by
+# mypy, which does not honour this setting and still reports the name as
+# undefined.
+builtins = ["dbutils", "spark", "display"]
+
+[tool.ruff.lint.per-file-ignores]
+# Databricks notebooks are cell-structured: `# COMMAND ----------` separates
+# cells, and imports legitimately follow widget declarations because the
+# widgets must exist before the values they produce are used.
+"notebooks/*.py" = ["E402"]
+
+# conftest.py puts the package parent on sys.path before importing anything
+# from it, which is the entire point of the file and has to happen before
+# those imports.
+"tests/conftest.py" = ["E402"]
+
+# test_directory_ingestion.py imports inside test bodies to exercise import
+# behaviour itself.
+"tests/test_directory_ingestion.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bronze_ingest"]
+
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.11"
+
+# Deliberately non-strict to start. The value here is not exhaustive typing -
+# it is catching calls that pass a keyword the target function does not
+# accept, which is how #145 shipped a quality rule that was silently inert.
+# Tighten module by module afterwards; an all-at-once strict mode produces a
+# number too large to act on and gets switched off.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# Notebooks are not a package and have no __init__.py, so they would
+# otherwise collide on module name resolution.
+explicit_package_bases = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+# pyspark ships partial, sometimes wrong stubs; DataFrame operations are
+# dynamically typed by nature. Errors here would be noise about the library,
+# not about this code.
+module = ["pyspark.*", "delta.*", "databricks.*", "yaml.*", "IPython.*"]
+ignore_missing_imports = true
+
+
+# ---------------------------------------------------------------------------
+# pytest - moved from pytest.ini so there is one config file, not two
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+
+# ---------------------------------------------------------------------------
+# coverage - reported, not enforced (#158)
+# ---------------------------------------------------------------------------
+#
+# No `fail_under` yet, on purpose. A threshold picked before the real number
+# is known is either trivially met or immediately red, and neither tells
+# anyone anything. Add one once the number has been observed for a few runs.
+
+[tool.coverage.run]
+source = ["bronze_ingest"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
