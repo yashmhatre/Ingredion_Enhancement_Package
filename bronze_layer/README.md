@@ -493,6 +493,33 @@ reprocesses the whole source directory. Use `trigger_mode: availableNow`
 (default) to drain the current backlog and stop - the right mode for a
 scheduled Databricks Job; use `processingTime` for an always-on stream.
 
+**Streaming and JSON-lines (`.jsonl` / `.ndjson`).** The per-file rule
+described under [Directory ingestion](#directory-ingestion-multi-file-sources)
+cannot fully apply here. Auto Loader is handed a *directory* and one
+`multiLine` value fixed when the stream starts, then reads whatever appears
+in that directory later - so a file that does not exist yet cannot be
+classified in advance, by validation or by anything else.
+
+Two things cover the gap:
+
+| Situation | Behaviour |
+|---|---|
+| `source_path` names a single `.jsonl`/`.ndjson` file | `multiLine` forced off, same as batch, with a warning if `multiline: true` was configured |
+| A JSON-lines file arrives in a directory stream reading `multiLine=true` | The micro-batch **fails** with `JsonLinesTruncationError`, naming the files |
+
+**Failing is the recoverable outcome, which is why it fails.** Structured
+Streaming commits a batch to the checkpoint only when the batch handler
+returns normally, so raising leaves the checkpoint *un*advanced: those files
+are not marked processed, and re-reading them in full is a config fix and a
+restart away. Succeeding is what makes the loss permanent - the checkpoint
+moves past files whose records were silently dropped, and there is no second
+read and no signal that one is needed.
+
+If the files really are single JSON documents that happen to be named
+`.jsonl`, set `reader_options: {multiLine: "true"}`. That is applied last,
+wins, and suppresses the guard - the override is treated as a deliberate
+statement about the data.
+
 **Schema drift & bad records.** `schema_evolution_mode` controls how Auto
 Loader reacts to new/changed fields (`addNewColumns` is the sane default).
 `rescued_data_column` captures anything that doesn't fit an explicit
