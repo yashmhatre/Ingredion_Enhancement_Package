@@ -48,77 +48,44 @@ class BronzeIngestion:
         df = add_audit_columns(df, self.config)
         return df
 
-    def run_on_dataframe(self, raw_df) -> Dict[str, Any]:
+    # ---- the one orchestration body ----
+
+    def _execute(self, read_fn, writer, start_message, *, build_summary=True):
         """
-        Same as run(), but skips the read step and uses raw_df directly -
-        used by directory ingestion's folder-as-table path, where files
-        inside a folder are read and unioned individually beforehand
-        (so one bad file doesn't break the whole folder's read), rather
-        than letting this method read config.source_path itself.
+        The single ingestion sequence, shared by all three entry points:
+        read -> quality gate -> audit columns -> quarantine -> write ->
+        audit row / schema registry / catalog metadata.
+
+        This existed three times, byte-identical apart from two axes (#150).
+        Four open issues each wanted to change these ~40 lines, which meant
+        each fix landing in three places - and a fix that lands in two of
+        three is indistinguishable from a fix that landed, until the third
+        path runs.
+
+        read_fn: a ZERO-ARGUMENT CALLABLE, not a DataFrame. This is the one
+            place a naive extraction silently loses behaviour. `run()`
+            deliberately performs its read INSIDE the audited_run block, so
+            that a read failure is tagged failure_stage="read" and still
+            produces an audit row. Passing an already-materialised DataFrame
+            would move the read outside the block and a failing read would
+            vanish from the audit trail entirely. Covered by a regression
+            test.
+
+        writer: callable (df) -> table_name or None. A closure rather than
+            the (spark, df, config) + functools.partial shape #150 sketched:
+            every caller is a method with self already in scope, so the
+            closure carries what it needs without threading three arguments
+            through for the benefit of one parameter that varies.
+            write_bronze_micro_batch returns None (and returns early on an
+            empty batch), hence the fallback when logging.
+
+        build_summary: streaming's foreachBatch handler must return None.
         """
         with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
-            logger.info(
-                "Starting batch ingestion from pre-loaded DataFrame -> %s",
-                self.config.full_table_name,
-            )
+            logger.info(start_message, self.config.full_table_name)
 
             try:
-                good_df, bad_df, bad_count = enforce_quality(raw_df, self.config)
-            except Exception as exc:
-                tag_failure_stage(exc, "quality")
-                raise
-            final_df = add_audit_columns(good_df, self.config)
-
-            write_quarantine(
-                self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config
-            )
-
-            try:
-                table_name = write_bronze(self.spark, final_df, self.config)
-                row_count = final_df.count()
-            except Exception as exc:
-                tag_failure_stage(exc, "write")
-                raise
-
-            audit["row_count"] = row_count
-            audit["quarantined_row_count"] = bad_count
-            fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
-            audit["schema_fingerprint"] = fingerprint
-            audit["schema_changed"] = schema_changed
-            apply_catalog_metadata(self.spark, self.config)
-            logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
-
-            return {
-                "table": table_name,
-                "row_count": row_count,
-                "quarantined_row_count": bad_count,
-                "quarantine_table": self.config.resolved_quarantine_table
-                if bad_count > 0
-                else None,
-                "columns": final_df.columns,
-                "write_mode": self.config.write_mode,
-            }
-
-    def run(self) -> Dict[str, Any]:
-        """
-        Executes the full read -> transform -> quality-gate -> write pipeline
-        in batch mode. Returns a summary dict. Raises DataQualityError if
-        required_columns validation fails and fail_on_quality_error=True.
-        """
-        if self.config.ingestion_mode != "batch":
-            raise ValueError(
-                "run() is for ingestion_mode='batch'. Use run_streaming() for streaming."
-            )
-
-        with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
-            logger.info(
-                "Starting batch ingestion from %s -> %s",
-                self.config.source_path,
-                self.config.full_table_name,
-            )
-
-            try:
-                raw_df = self.read()
+                raw_df = read_fn()
             except Exception as exc:
                 tag_failure_stage(exc, "read")
                 raise
@@ -135,7 +102,7 @@ class BronzeIngestion:
             )
 
             try:
-                table_name = write_bronze(self.spark, final_df, self.config)
+                table_name = writer(final_df)
                 row_count = final_df.count()
             except Exception as exc:
                 tag_failure_stage(exc, "write")
@@ -147,7 +114,15 @@ class BronzeIngestion:
             audit["schema_fingerprint"] = fingerprint
             audit["schema_changed"] = schema_changed
             apply_catalog_metadata(self.spark, self.config)
-            logger.info("Wrote %d row(s) to %s (%d quarantined)", row_count, table_name, bad_count)
+            logger.info(
+                "Wrote %d row(s) to %s (%d quarantined)",
+                row_count,
+                table_name or self.config.full_table_name,
+                bad_count,
+            )
+
+            if not build_summary:
+                return None
 
             return {
                 "table": table_name,
@@ -159,6 +134,38 @@ class BronzeIngestion:
                 "columns": final_df.columns,
                 "write_mode": self.config.write_mode,
             }
+
+    def run_on_dataframe(self, raw_df) -> Dict[str, Any]:
+        """
+        Same as run(), but skips the read step and uses raw_df directly -
+        used by directory ingestion's folder-as-table path, where files
+        inside a folder are read and unioned individually beforehand
+        (so one bad file doesn't break the whole folder's read), rather
+        than letting this method read config.source_path itself.
+        """
+        return self._execute(
+            lambda: raw_df,
+            lambda df: write_bronze(self.spark, df, self.config),
+            "Starting batch ingestion from pre-loaded DataFrame -> %s",
+        )
+
+    def run(self) -> Dict[str, Any]:
+        """
+        Executes the full read -> transform -> quality-gate -> write pipeline
+        in batch mode. Returns a summary dict. Raises DataQualityError if
+        required_columns validation fails and fail_on_quality_error=True.
+        """
+        if self.config.ingestion_mode != "batch":
+            raise ValueError(
+                "run() is for ingestion_mode='batch'. Use run_streaming() for streaming."
+            )
+
+        # self.read, not self.read() - see the read_fn note on _execute.
+        return self._execute(
+            self.read,
+            lambda df: write_bronze(self.spark, df, self.config),
+            f"Starting batch ingestion from {self.config.source_path} -> %s",
+        )
 
     def run_streaming(self, await_termination: bool = True):
         """
@@ -189,43 +196,25 @@ class BronzeIngestion:
         stream_df = read_json_stream(self.spark, self.config)
 
         def _process_batch(micro_batch_df, batch_id):
-            with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
-                try:
-                    # Before anything reads the data: a JSON-lines file read
-                    # with multiLine=true has already lost all but its first
-                    # record (#146). Raising here leaves the batch
-                    # uncommitted, so the checkpoint does not advance and the
-                    # files are re-read once the config is fixed. Tagged as a
-                    # read failure because that is the stage that went wrong.
-                    assert_no_silent_truncation(micro_batch_df, self.config)
-                except Exception as exc:
-                    tag_failure_stage(exc, "read")
-                    raise
+            # #174's truncation guard runs as part of "reading" this
+            # micro-batch, rather than as a separate step before the shared
+            # body. That placement is what preserves both of its properties
+            # for free: it stays INSIDE audited_run, and _execute's own read
+            # try/except tags it failure_stage="read" - which is what it was
+            # tagged as before the consolidation. No extra parameter on
+            # _execute, and the guard stays where it belongs conceptually,
+            # since it is an Auto Loader concern and not a batch one.
+            def _accept_micro_batch():
+                assert_no_silent_truncation(micro_batch_df, self.config)
+                return micro_batch_df
 
-                try:
-                    good_df, bad_df, bad_count = enforce_quality(micro_batch_df, self.config)
-                except Exception as exc:
-                    tag_failure_stage(exc, "quality")
-                    raise
-                final_df = add_audit_columns(good_df, self.config)
-
-                write_quarantine(
-                    self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config
-                )
-
-                try:
-                    write_bronze_micro_batch(self.spark, final_df, batch_id, self.config)
-                    row_count = final_df.count()
-                except Exception as exc:
-                    tag_failure_stage(exc, "write")
-                    raise
-
-                audit["row_count"] = row_count
-                audit["quarantined_row_count"] = bad_count
-                fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
-                audit["schema_fingerprint"] = fingerprint
-                audit["schema_changed"] = schema_changed
-                apply_catalog_metadata(self.spark, self.config)
+            # build_summary=False: foreachBatch's handler must return None.
+            self._execute(
+                _accept_micro_batch,
+                lambda df: write_bronze_micro_batch(self.spark, df, batch_id, self.config),
+                f"Processing micro-batch {batch_id} -> %s",
+                build_summary=False,
+            )
 
         query = (
             stream_df.writeStream.foreachBatch(_process_batch)
@@ -256,19 +245,10 @@ def ingest_json_to_bronze(
 
     You can also pass a dict via `config=`, or a path to a .yaml/.json file
     via `config_path=`. kwargs override whatever is in config/config_path.
+    Passing both `config` and `config_path` raises rather than silently
+    ignoring one of them - see IngestionConfig.resolve.
     """
-    if config_path:
-        cfg = IngestionConfig.load(config_path)
-        if kwargs:
-            merged = cfg.to_dict()
-            merged.update(kwargs)
-            cfg = IngestionConfig.from_dict(merged)
-    elif config:
-        merged = dict(config)
-        merged.update(kwargs)
-        cfg = IngestionConfig.from_dict(merged)
-    else:
-        cfg = IngestionConfig.from_dict(kwargs)
+    cfg = IngestionConfig.resolve(config=config, config_path=config_path, **kwargs)
 
     job = BronzeIngestion(spark, cfg)
     if cfg.ingestion_mode == "streaming":

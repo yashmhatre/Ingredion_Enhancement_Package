@@ -403,3 +403,62 @@ def test_dedupe_before_merge_explicitly_false_is_respected():
         write_mode="merge", merge_keys=["id"], required_columns=["id"], dedupe_before_merge=False
     )
     assert cfg.resolved_dedupe_before_merge is False
+
+
+# ---- IngestionConfig.resolve (#150) ----
+#
+# The three-branch merge that lived in ingest_json_to_bronze. Moved here
+# because this class already owns from_dict / load / to_dict, and because it
+# gives the unknown-key check one place to live.
+
+
+def test_resolve_from_kwargs_only():
+    cfg = IngestionConfig.resolve(source_path="x", table="t")
+    assert cfg.table == "t"
+
+
+def test_resolve_overrides_beat_the_dict():
+    cfg = IngestionConfig.resolve(
+        config={"source_path": "x", "table": "from_dict", "schema_name": "s"},
+        table="from_kwargs",
+    )
+    assert cfg.table == "from_kwargs"
+    assert cfg.schema_name == "s"
+
+
+def test_resolve_overrides_beat_the_file(tmp_path):
+    import json
+
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"source_path": "x", "table": "from_file", "schema_name": "s"}))
+
+    cfg = IngestionConfig.resolve(config_path=str(path), table="from_kwargs")
+    assert cfg.table == "from_kwargs"
+    assert cfg.schema_name == "s"
+
+
+def test_resolve_rejects_both_config_and_config_path(tmp_path):
+    """The old code silently used config_path and discarded config entirely,
+    handing the caller a config they did not ask for with no signal."""
+    import json
+
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"source_path": "x", "table": "t"}))
+
+    with pytest.raises(ValueError, match="not both"):
+        IngestionConfig.resolve(config={"source_path": "x", "table": "t"}, config_path=str(path))
+
+
+def test_resolve_rejects_a_typo_in_kwargs():
+    """`tabel="orders"` used to be dropped, and the run then failed with
+    "table is required" - an error pointing at the wrong thing."""
+    with pytest.raises(ValueError, match="tabel"):
+        IngestionConfig.resolve(source_path="x", table="t", tabel="orders")
+
+
+def test_from_dict_stays_lenient_about_unknown_keys():
+    """Deliberately NOT strict, unlike resolve's kwargs: config files are
+    versioned artifacts that may carry keys a given package version does not
+    know yet. The strictness belongs where a human just typed the key."""
+    cfg = IngestionConfig.from_dict({"source_path": "x", "table": "t", "some_future_field": 1})
+    assert cfg.table == "t"

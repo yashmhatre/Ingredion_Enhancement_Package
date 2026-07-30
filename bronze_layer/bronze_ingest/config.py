@@ -552,6 +552,63 @@ class IngestionConfig:
             return cls.from_dict(yaml.safe_load(fh))
 
     @classmethod
+    def resolve(
+        cls,
+        config: Optional[Dict[str, Any]] = None,
+        config_path: Optional[str] = None,
+        **overrides: Any,
+    ) -> "IngestionConfig":
+        """
+        Builds a config from any combination of a dict, a file, and keyword
+        overrides. Overrides win.
+
+        This lived in `ingest_json_to_bronze` as three branches (#150). It
+        belongs here: this class already owns from_dict / load / to_dict, and
+        putting the merge beside them gives the unknown-key check one place
+        to live instead of one per entry point.
+
+        Two behaviours differ from the version this replaces, both
+        deliberate:
+
+        1. Passing BOTH `config` and `config_path` now raises. The old code
+           silently used config_path and discarded `config` entirely - the
+           caller got a config they did not ask for, with no signal.
+        2. Unknown keys in **overrides** raise, rather than being dropped.
+           `ingest_json_to_bronze(spark, tabel="orders")` previously
+           discarded the typo and then failed with "table is required",
+           which points at the wrong thing. Note this applies to overrides
+           only: `from_dict` stays lenient, because config FILES are
+           versioned artifacts that may legitimately carry keys a given
+           package version does not know, and #166 already made the
+           directory-ingestion entry point strict on the same reasoning.
+        """
+        if config is not None and config_path is not None:
+            raise ValueError(
+                "Pass either config= or config_path=, not both. The previous "
+                "behaviour silently ignored config= when both were given."
+            )
+
+        if overrides:
+            unknown = sorted(set(overrides) - set(cls.__dataclass_fields__))
+            if unknown:
+                raise ValueError(
+                    f"Unknown IngestionConfig field(s): {unknown}. Check for a typo - "
+                    f"these were previously dropped silently, which surfaced later as a "
+                    f"confusing error about a different field. Valid fields: "
+                    f"{sorted(cls.__dataclass_fields__)}"
+                )
+
+        if config_path:
+            merged = cls.load(config_path).to_dict()
+        elif config is not None:
+            merged = dict(config)
+        else:
+            merged = {}
+
+        merged.update(overrides)
+        return cls.from_dict(merged)
+
+    @classmethod
     def load(cls, path: str) -> "IngestionConfig":
         """Auto-detect based on extension (.yaml/.yml/.json)."""
         if path.endswith((".yaml", ".yml")):
