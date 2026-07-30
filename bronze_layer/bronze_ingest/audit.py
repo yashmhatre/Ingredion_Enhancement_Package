@@ -28,12 +28,45 @@ from .logging_utils import logger
 
 # Fixed schema - see Phase 1 task for the design rationale (strict,
 # no catch-all column, no reshaping/transformation details).
+#
+# Extended once, by #149 and #156 together (see each below for why). Doing
+# them in one change was deliberate: both open this schema, and two
+# migrations against a live table for what is one edit is the avoidable
+# version. `_write_audit_row` writes with mergeSchema, so existing rows get
+# NULLs in the new columns - acceptable, but it means rows written before
+# this change cannot be reinterpreted, only recognised as older by their
+# NULL `write_mode`.
 AUDIT_SCHEMA = StructType(
     [
         StructField("run_id", StringType(), nullable=False),
-        StructField("table", StringType(), nullable=False),
+        # Renamed from `table` (#149). `table` is a SQL reserved word and
+        # needed backticking in every query written against it - which every
+        # dashboard tile in #62 and every baseline query in #61 would have
+        # had to remember. `_schema_registry` already used `table_name`, so
+        # this also stops the two metadata tables disagreeing. Cheapest now,
+        # while nothing queries it.
+        StructField("table_name", StringType(), nullable=False),
         StructField("status", StringType(), nullable=False),
+        # Rows written to the TARGET by this run. Comparable across write
+        # modes, which it was not before #149.
         StructField("row_count", LongType(), nullable=True),
+        # Rows offered to the writer after the quality gate. Equal to
+        # row_count for append/overwrite; under merge the difference is the
+        # dedupe/no-op ratio.
+        StructField("source_row_count", LongType(), nullable=True),
+        # Merge only, NULL otherwise - an update is not an insert, and a
+        # single row_count could never say which happened.
+        StructField("rows_inserted", LongType(), nullable=True),
+        StructField("rows_updated", LongType(), nullable=True),
+        StructField("rows_deleted", LongType(), nullable=True),
+        # So a consumer can interpret the numbers above without joining back
+        # to a config it does not have.
+        StructField("write_mode", StringType(), nullable=True),
+        # Structured Streaming's micro-batch id (#156). NULL for batch runs.
+        # `run_id` identifies a job run and every micro-batch in a streaming
+        # run shares it; this is what makes each row individually
+        # addressable.
+        StructField("stream_batch_id", LongType(), nullable=True),
         StructField("quarantined_row_count", LongType(), nullable=True),
         StructField("failure_stage", StringType(), nullable=True),
         StructField("schema_fingerprint", StringType(), nullable=True),
@@ -45,12 +78,8 @@ AUDIT_SCHEMA = StructType(
     ]
 )
 
-AUDIT_SCHEMA_DDL = (
-    "run_id STRING, table STRING, status STRING, row_count LONG, "
-    "quarantined_row_count LONG, failure_stage STRING, "
-    "schema_fingerprint STRING, schema_changed BOOLEAN, "
-    "started_at TIMESTAMP, finished_at TIMESTAMP, error_message STRING, "
-    "source_path STRING"
+AUDIT_SCHEMA_DDL = ", ".join(
+    f"{field.name} {field.dataType.simpleString().upper()}" for field in AUDIT_SCHEMA.fields
 )
 
 
@@ -125,9 +154,18 @@ def record_replay_run(
         config,
         {
             "run_id": str(uuid.uuid4()),
-            "table": config.full_table_name,
+            "table_name": config.full_table_name,
             "status": status,
             "row_count": row_count,
+            # Replay promotes previously-rejected rows, so every promoted row
+            # was offered to the writer - source and target counts agree here
+            # by construction, unlike the merge path.
+            "source_row_count": row_count,
+            "rows_inserted": None,
+            "rows_updated": None,
+            "rows_deleted": None,
+            "write_mode": config.write_mode,
+            "stream_batch_id": None,
             "quarantined_row_count": quarantined_row_count,
             "failure_stage": None,
             "schema_fingerprint": None,
@@ -140,8 +178,29 @@ def record_replay_run(
     )
 
 
+#: Everything a caller may fill in on the yielded dict. Declared once so the
+#: success and failure paths cannot drift apart - they previously listed the
+#: same keys twice, which is how a new column gets recorded on success and
+#: silently omitted on failure.
+_CALLER_FIELDS = (
+    "row_count",
+    "source_row_count",
+    "rows_inserted",
+    "rows_updated",
+    "rows_deleted",
+    "quarantined_row_count",
+    "schema_fingerprint",
+    "schema_changed",
+)
+
+
 @contextmanager
-def audited_run(spark, config: IngestionConfig, source_path: Optional[str] = None):
+def audited_run(
+    spark,
+    config: IngestionConfig,
+    source_path: Optional[str] = None,
+    stream_batch_id: Optional[int] = None,
+):
     """
     Context manager wrapping a single ingestion run (or one streaming
     micro-batch). Writes exactly one audit row on exit, success or
@@ -168,55 +227,37 @@ def audited_run(spark, config: IngestionConfig, source_path: Optional[str] = Non
 
     run_id = config.run_id or str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
-    result = {
-        "row_count": None,
-        "quarantined_row_count": None,
-        "schema_fingerprint": None,
-        "schema_changed": None,
-    }
+    result = dict.fromkeys(_CALLER_FIELDS)
+
+    def _row(status, *, error_message=None, failure_stage=None):
+        return {
+            "run_id": run_id,
+            "table_name": config.full_table_name,
+            "status": status,
+            "write_mode": config.write_mode,
+            "stream_batch_id": stream_batch_id,
+            "failure_stage": failure_stage,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc),
+            "error_message": error_message,
+            "source_path": source_path or config.source_path,
+            **{field: result.get(field) for field in _CALLER_FIELDS},
+        }
 
     try:
         yield result
-        finished_at = datetime.now(timezone.utc)
-        _write_audit_row(
-            spark,
-            config,
-            {
-                "run_id": run_id,
-                "table": config.full_table_name,
-                "status": "success",
-                "row_count": result.get("row_count"),
-                "quarantined_row_count": result.get("quarantined_row_count"),
-                "failure_stage": None,
-                "schema_fingerprint": result.get("schema_fingerprint"),
-                "schema_changed": result.get("schema_changed"),
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "error_message": None,
-                "source_path": source_path or config.source_path,
-            },
-        )
+        _write_audit_row(spark, config, _row("success"))
     except Exception as exc:
-        finished_at = datetime.now(timezone.utc)
         bad_count = getattr(exc, "bad_count", None)
         if bad_count is not None and result.get("quarantined_row_count") is None:
             result["quarantined_row_count"] = bad_count
         _write_audit_row(
             spark,
             config,
-            {
-                "run_id": run_id,
-                "table": config.full_table_name,
-                "status": "failed",
-                "row_count": result.get("row_count"),
-                "quarantined_row_count": result.get("quarantined_row_count"),
-                "failure_stage": getattr(exc, "failure_stage", None),
-                "schema_fingerprint": result.get("schema_fingerprint"),
-                "schema_changed": result.get("schema_changed"),
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "error_message": str(exc),
-                "source_path": source_path or config.source_path,
-            },
+            _row(
+                "failed",
+                error_message=str(exc),
+                failure_stage=getattr(exc, "failure_stage", None),
+            ),
         )
         raise

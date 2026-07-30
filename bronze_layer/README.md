@@ -196,6 +196,42 @@ from the raised `DataQualityError`'s `bad_count`) and `failure_stage`
 (`read` | `quality` | `write`), so an operator can see *how many* rows
 failed and *at which stage* without parsing `error_message` text.
 
+#### What each count column means
+
+Take these from the table below rather than guessing — before #149 a single
+`row_count` meant something different for every write mode, which is how an
+ops surface loses trust in its first month.
+
+| Column | Meaning |
+|---|---|
+| `row_count` | Rows written to the **target table** by this run. Comparable across write modes. |
+| `source_row_count` | Rows offered to the writer after the quality gate. Equal to `row_count` for `append`/`overwrite`. |
+| `rows_inserted` / `rows_updated` / `rows_deleted` | `merge` only, `NULL` otherwise (`rows_deleted` also populated for `overwrite` where Delta reports it). |
+| `write_mode` | So a dashboard can interpret the above without joining back to a config it does not have. |
+| `stream_batch_id` | Structured Streaming's micro-batch id. `NULL` for batch runs. |
+| `quarantined_row_count` | Rows routed to the quarantine table by the quality gate. |
+
+Every number comes from **Delta's transaction log** (`operationMetrics` on
+the commit the run just made), not from recounting the DataFrame. That is
+free — it is a metadata read — and it is authoritative. The previous
+`final_df.count()` re-read the source and re-ran the entire quality gate to
+produce a number Delta already had, because `.cache()` is unavailable on
+serverless.
+
+Two things worth knowing before writing a query against this:
+
+- **`source_row_count - row_count` under `merge` is the dedupe/no-op ratio.**
+  A source that starts re-sending full daily dumps shows up here, and
+  nowhere else.
+- **Rows written before this change carry `NULL` in the new columns.** The
+  audit table is written with `mergeSchema`, so the migration is automatic,
+  but older rows cannot be reinterpreted — a `NULL` `write_mode` is how you
+  recognise one.
+
+The column formerly called `table` is now `table_name`, matching
+`_schema_registry`. `table` is a SQL reserved word and needed backticking in
+every query written against it.
+
 ### Schema registry
 
 Every ingestion records its target table's current schema to a dedicated

@@ -450,3 +450,45 @@ def test_idempotent_batch_writes_not_applied_to_merge(spark, monkeypatch):
     write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
 
     assert captured["txn_options"] is None
+
+
+def test_read_write_metrics_never_raises_on_an_unreadable_table(caplog):
+    """
+    #149: metrics come from Delta's transaction log, and reading them must
+    never fail a write that has ALREADY COMMITTED. A run that wrote its data
+    successfully and then lost its row counts is an annoyance; the same run
+    reported as failed is a false alarm someone gets paged for.
+
+    No Spark session needed - passing None makes the Delta call fail, which
+    is exactly the path under test.
+    """
+    from bronze_ingest.bronze_writer import EMPTY_WRITE_METRICS, read_write_metrics
+
+    metrics = read_write_metrics(None, "no.such.table", "append")
+
+    assert metrics == EMPTY_WRITE_METRICS
+    assert all(v is None for v in metrics.values())
+    assert "Could not read write metrics" in caplog.text
+
+
+def test_resolve_batch_id_is_stable_for_one_config_and_explicit_value():
+    """#148: an explicit batch_id must survive verbatim - the deployed job
+    passes {{job.run_id}} and #63's idempotency is keyed on it."""
+    from bronze_ingest.bronze_writer import resolve_batch_id
+
+    cfg = _cfg("t", batch_id="12345")
+    assert resolve_batch_id(cfg) == "12345"
+    assert resolve_batch_id(cfg) == "12345"
+
+
+def test_resolve_batch_id_generates_a_distinct_value_when_unset():
+    """
+    The generated form is a timestamp, so two SEPARATE runs get different
+    ids - which is correct. The bug #148 fixed was calling this twice within
+    ONE run, which is why the pipeline resolves it once and passes it down.
+    """
+    from bronze_ingest.bronze_writer import resolve_batch_id
+
+    cfg = _cfg("t")
+    first = resolve_batch_id(cfg)
+    assert first and first.endswith("Z")
