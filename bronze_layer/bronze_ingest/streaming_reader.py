@@ -13,6 +13,7 @@ from typing import Iterable, List
 from pyspark.sql.functions import col, lower
 
 from .config import IngestionConfig
+from .errors import JsonLinesTruncationError
 from .json_reader import JSON_LINES_EXTENSIONS, effective_multiline, is_json_lines_path
 from .logging_utils import logger
 
@@ -20,16 +21,6 @@ from .logging_utils import logger
 #: the pattern, few enough that the message stays readable when an entire
 #: directory is JSON-lines.
 _MAX_REPORTED_FILES = 5
-
-
-class JsonLinesTruncationError(Exception):
-    """
-    Raised when a streaming micro-batch was read with `multiLine=true` but
-    contains files whose extension says JSON-lines (#146).
-
-    Deliberately fatal. See `assert_no_silent_truncation` for why failing is
-    the recoverable outcome and succeeding is not.
-    """
 
 
 def should_guard_truncation(config: IngestionConfig) -> bool:

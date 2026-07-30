@@ -117,6 +117,14 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
             return
 
         df.createOrReplaceTempView("_registry_updates")
+        # NOTE: bandit logs "nosec encountered (B608), but no failed test on
+        # this file:line" for the marker below. That warning is spurious and
+        # the marker is load-bearing - verified by removing it, at which
+        # point B608 fires and the build fails. bandit anchors the finding on
+        # the line where the f-string opens but honours a nosec anywhere in
+        # the statement, so the two disagree about which line to name. Do not
+        # "clean up" the marker on the strength of the warning.
+        #
         # nosec B608 - `target` is not user input at this point. It is
         # composed of catalog/schema/table identifiers that __post_init__
         # ran through validate_identifier() at config load (#154), so it

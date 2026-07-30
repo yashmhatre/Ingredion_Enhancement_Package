@@ -19,7 +19,7 @@ Bronze's (see the discussion on #59/#95 and silver_layer/_archive/README.md
 for why the flattener was pulled out of Bronze for the same reason).
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from pyspark.sql.functions import (
     col,
@@ -35,20 +35,9 @@ from pyspark.sql.functions import (
 from pyspark.sql.window import Window
 
 from .config import IngestionConfig
+from .errors import DataQualityError
 from .logging_utils import logger
 from .sql_utils import row_content_hash
-
-
-class DataQualityError(Exception):
-    """
-    Carries bad_count (when known) so a failed audited_run can record how
-    many rows failed the quality gate, instead of leaving
-    quarantined_row_count None on the failure audit row (#50).
-    """
-
-    def __init__(self, message: str, bad_count: Optional[int] = None):
-        super().__init__(message)
-        self.bad_count = bad_count
 
 
 def _missing_columns(df, columns: List[str]) -> List[str]:
