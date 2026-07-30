@@ -104,6 +104,41 @@ Two known traps, both hit while setting these up:
   `field: Optional[str] = (None  # long comment)`. Put long comments *above*
   the line instead.
 
+### Notebooks need tests too
+
+`bronze_layer/notebooks/` holds the **deployed job entrypoints** — the code
+the Databricks job actually runs. A change there requires a test, exactly as
+a change to the package does.
+
+This is not a style rule. Both known live production defects (#144, #145)
+were in that layer, and neither could have been caught by any number of
+library tests, because nothing executed those files. `tests/test_notebooks.py`
+now does, using the `run_notebook` fixture in `conftest.py`, which supplies
+fakes for the three names the Databricks kernel injects (`dbutils`, `spark`,
+`display`). It needs no Spark, no Java and no workspace, and the whole file
+runs in under a second:
+
+```bash
+pytest tests/test_notebooks.py
+```
+
+Two contract tests there are worth knowing about before you rename anything:
+
+- **Widget ↔ bundle**, both directions. Every `base_parameters` key in
+  `resources/*.yml` must have a matching `dbutils.widgets.*` declaration, and
+  every blank-default widget must be supplied by the bundle. A mismatch means
+  the configured value is silently ignored and a default nobody chose takes
+  effect — which is precisely how a production quality rule came to be inert.
+- **Import surface.** Every name a notebook imports from `bronze_ingest` must
+  be in `__all__`, since notebooks run against the installed wheel and an
+  import error surfaces only after compute has started.
+
+**Do not add a dependency to a notebook without declaring it.** `pandas` was
+imported by two notebooks and declared in no extra of `setup.py`; it worked
+only because the Databricks runtime happens to ship it. Both now build their
+DataFrames with an explicit schema instead, and a test asserts no notebook
+imports it.
+
 ### Coverage
 
 Coverage is reported on every CI run and posted to the PR comment. It is

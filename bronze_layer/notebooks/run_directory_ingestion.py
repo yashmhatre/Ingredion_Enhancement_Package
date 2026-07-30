@@ -109,17 +109,49 @@ results = ingest_directory_to_bronze(
 # COMMAND ----------
 
 # An empty source directory is a "no work to do" outcome, not a failure.
-# spark.createDataFrame(pd.DataFrame([])) raises CANNOT_INFER_EMPTY_SCHEMA -
-# there are no columns to infer from - so the summary display has to be
-# skipped rather than attempted. Reporting a failure here would page someone
-# because a watched directory happened to be empty.
+# Reporting a failure here would page someone because a watched directory
+# happened to be empty.
 if not results:
     logger.info("Nothing to ingest - no JSON files or subfolders found in %s.", source_dir)
     dbutils.notebook.exit("SUCCESS: nothing to ingest (source directory is empty)")
 
-import pandas as pd
+# Built from an EXPLICIT schema rather than inferred, which is what removed
+# the pandas dependency (#157) and fixed #144 at its root rather than
+# guarding around it.
+#
+# Two problems were solved by the same change. `pandas` was imported here but
+# declared nowhere in setup.py - it worked only because the Databricks runtime
+# happens to ship it, and a serverless environment version that dropped it
+# would have failed in production on a line whose only job is to render a
+# table. And `spark.createDataFrame(pd.DataFrame([]))` raised
+# CANNOT_INFER_EMPTY_SCHEMA on an empty result set, because there are no
+# columns to infer from.
+#
+# An explicit schema also makes the summary stable. The per-unit result dicts
+# are deliberately heterogeneous - a skipped folder carries `reason`, a failed
+# one carries `error`, a successful one carries `rows` - so an inferred schema
+# changed shape depending on what happened to be in the directory that day.
+# `file_results` is left out on purpose: it is a nested per-file list, which is
+# detail for the logs, not a column in a summary table.
+_SUMMARY_FIELDS = ("file", "table", "status", "rows", "quarantined_rows", "detail")
 
-summary_df = spark.createDataFrame(pd.DataFrame(results))
+summary_rows = [
+    (
+        str(r.get("file", "")),
+        str(r.get("table", "")),
+        str(r.get("status", "")),
+        int(r.get("rows") or 0),
+        int(r.get("quarantined_rows") or 0),
+        str(r.get("error") or r.get("reason") or r.get("move_status") or ""),
+    )
+    for r in results
+]
+
+summary_df = spark.createDataFrame(
+    summary_rows,
+    schema="file STRING, table STRING, status STRING, "
+    "rows INT, quarantined_rows INT, detail STRING",
+)
 display(summary_df)
 
 failed = [r for r in results if r["status"] == "failed"]

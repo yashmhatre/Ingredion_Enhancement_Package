@@ -38,12 +38,20 @@ jobs:
       - name: Detect whether tested code changed
         id: changes
         env:
-          # Paths the pytest suite actually depends on. Docs, bundle config,
-          # notebooks and sample YAML are excluded - no test reads them.
+          # Paths the pytest suite actually depends on.
+          #
+          # `notebooks/` and `resources/` are watched as of #157, and the
+          # comment that used to sit here - "notebooks and sample YAML are
+          # excluded, no test reads them" - was accurate and was the problem.
+          # notebooks/ holds the deployed job entrypoints, both known live
+          # production defects (#144, #145) were there, and neither could ever
+          # have been caught while CI did not look at the path. tests/
+          # test_notebooks.py now reads both directories, including a contract
+          # test that parses resources/*.yml against the widget declarations.
           #
           # pytest.ini was folded into pyproject.toml (#158), which now also
           # carries the pytest config, so it is watched in its place.
-          WATCHED: '^bronze_layer/(bronze_ingest|tests)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^\.github/workflows/ci\.yml$'
+          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks|resources)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^\.github/workflows/ci\.yml$'
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -181,7 +189,7 @@ jobs:
         with:
           header: test-results
           message: |
-            ⏭️ **Test suite skipped** — no changes under `bronze_layer/bronze_ingest/`, `bronze_layer/tests/`, `setup.py`, `pyproject.toml`, or the CI workflow.
+            ⏭️ **Test suite skipped** — no changes under `bronze_layer/bronze_ingest/`, `bronze_layer/tests/`, `bronze_layer/notebooks/`, `bronze_layer/resources/`, `setup.py`, `pyproject.toml`, or the CI workflow.
 
             The suite last ran against the most recent commit that touched those paths. Push a change to any of them to re-run it.
 
@@ -396,3 +404,42 @@ jobs:
         if: '!cancelled() && steps.changes.outputs.run == ''true'''
         working-directory: bronze_layer
         run: pip-audit --progress-spinner off --skip-editable
+
+      # Catches malformed YAML, unresolved ${var.*} references and notebook
+      # paths that do not exist - the failure class of #118 and #122, both of
+      # which reached `dev` and were found only by an authenticated deploy
+      # (#157). Cheap to run here, expensive to find there.
+      #
+      # `validate` is a local operation: it resolves the bundle and checks its
+      # shape. It does not need a workspace, so the required variables are
+      # supplied with placeholder values rather than credentials - the point
+      # is that every reference RESOLVES, not that the values are real.
+      #
+      # Non-blocking on purpose, for now. Newer CLI versions have at times
+      # required authentication even for `validate`, and a gate that fails for
+      # a reason unrelated to the change is a gate people learn to ignore. If
+      # it proves stable across a few runs, drop continue-on-error and make it
+      # a real gate - that is the intended end state, not this.
+      - name: Install Databricks CLI
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        uses: databricks/setup-cli@main
+
+      - name: databricks bundle validate
+        id: bundle_validate
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        continue-on-error: true
+        run: |
+          databricks bundle validate -t dev \
+            --var="notification_email=ci@example.invalid" \
+            --var="run_as_service_principal=00000000-0000-0000-0000-000000000000"
+
+      - name: Note bundle validate outcome
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        run: |
+          if [ "${{ steps.bundle_validate.outcome }}" = "success" ]; then
+            echo "::notice::bundle validate passed"
+          else
+            echo "::warning::bundle validate did not pass. It is non-blocking today \
+          (see the comment in ci.yml). If this is a real bundle error, fix it; if it \
+          is an auth requirement, record that on #157 and drop the step."
+          fi
