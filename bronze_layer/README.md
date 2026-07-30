@@ -376,8 +376,9 @@ reprocess_quarantined_files(spark, source_dir="/Volumes/main/default/raw_json/")
 ```
 
 **Row replay** (`reprocess_quarantine`) reads `{table}_quarantine`, drops
-`_quarantine_reason` and the stale `_ingested_at`/`_batch_id` (the rule
-that quarantined a row may have changed since), and re-runs the rows
+the quarantine-only columns — `_quarantine_reason`, `_occurrence_count`,
+`_first_quarantined_at` and the stale `_ingested_at`/`_batch_id` (the rule
+that quarantined a row may have changed since) — and re-runs the rows
 through `required_columns`/`unique_columns` as currently configured. Rows that now pass
 are written to the bronze table with a fresh `_batch_id` of the form
 `replay-<timestamp>` (so replayed rows are identifiable in the bronze
@@ -485,6 +486,46 @@ so quarantine and replay (#60) are queryable per failure type:
 ```sql
 SELECT _quarantine_reason, count(*) FROM bronze.orders_raw_quarantine GROUP BY 1
 ```
+
+#### The quarantine table is keyed on content, and written with MERGE
+
+`_quarantine_id` is a **SHA-256 of the row's source content**, and the
+quarantine write is a `MERGE` on it rather than an append. That combination
+is what makes the write idempotent, and it matters because quarantine is
+written *before* the bronze write: a run that dies between the two and is
+retried quarantines the same rows again. `_quarantine_id` used to be
+`uuid()`, which is stable within one query plan but produces entirely
+different values on a fresh evaluation — so every attempt appended its own
+copy of the same bad rows, and replay treated them as distinct rows to
+re-promote (#148).
+
+Two consequences worth knowing before you query the table:
+
+- **Byte-identical bad rows collapse to one row.** They have to — Delta
+  refuses a `MERGE` where several source rows match one target row. Their
+  multiplicity is preserved in `_occurrence_count`, so `bad_count` in the
+  run log counts *rows* while the table counts *identities*, and
+  `SUM(_occurrence_count)` reconciles the two.
+- **`_occurrence_count` only increments when `_batch_id` changes**, so
+  re-running the same batch does not inflate it. That guarantee is only as
+  strong as `_batch_id`: the deployed job passes `{{job.run_id}}`, which is
+  stable across task attempts, but a config that leaves `batch_id` unset
+  gets a generated timestamp that differs per attempt and the count will
+  drift upward on retries. Row identity is correct either way — only the
+  count is affected.
+
+`_first_quarantined_at` is set on insert and never updated;
+`_ingested_at`/`_batch_id` track the *most recent* sighting.
+
+> **Rows quarantined before this change** carry UUID `_quarantine_id`s,
+> which can never match a content hash. They are left untouched, so the same
+> source row may appear once under an old UUID and once under its hash.
+> Nothing breaks, but those old rows will not deduplicate. Once you've
+> confirmed the current data has been re-quarantined, clear them with:
+>
+> ```sql
+> DELETE FROM bronze.orders_raw_quarantine WHERE length(_quarantine_id) <> 64
+> ```
 
 For `unique_columns`, the row **kept** is the one with the highest
 `dedupe_order_by` value. This quality gate runs before audit columns are

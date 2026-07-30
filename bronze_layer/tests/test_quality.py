@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import replace
 
 import pytest
 from bronze_ingest.config import IngestionConfig
@@ -318,3 +319,160 @@ def test_dedupe_order_by_still_wins_over_the_tie_break(spark):
     good, _ = split_good_bad(df, cfg)
 
     assert [tuple(r) for r in good.collect()] == [(1, "new", 2)]
+
+
+# ---- quarantine identity and idempotency (#148) ----
+#
+# Quarantine is written BEFORE the bronze write, so a run that dies between
+# the two and is retried quarantines the same rows again. `_quarantine_id`
+# used to be uuid(), which its docstring called "a stable UUID" - stable
+# within one query plan, but a fresh evaluation of the same source produces
+# entirely different values, so each attempt appended its own copy and
+# replay (#60) saw them as distinct rows to re-promote.
+
+
+def _bad_with_audit(spark, rows, cfg, batch_id):
+    """bad_df as pipeline.py produces it: split, then audit columns."""
+    from bronze_ingest.bronze_writer import add_audit_columns
+
+    df = spark.createDataFrame(rows, "id INT, name STRING")
+    _, bad = split_good_bad(df, cfg)
+    return add_audit_columns(bad, replace(cfg, batch_id=batch_id))
+
+
+def _quarantine_cfg(prefix, **kwargs):
+    return IngestionConfig(
+        source_path="x",
+        table=f"{prefix}_{uuid.uuid4().hex[:8]}",
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
+        **kwargs,
+    )
+
+
+def test_quarantine_id_is_stable_across_fresh_evaluation(spark):
+    """The property uuid() did not have: same source in, same id out."""
+    cfg = _quarantine_cfg("q_stable")
+    rows = [(1, None), (2, None)]
+
+    def ids():
+        df = spark.createDataFrame(rows, "id INT, name STRING")
+        _, bad = split_good_bad(df, cfg)
+        return sorted(r["_quarantine_id"] for r in bad.collect())
+
+    assert ids() == ids()
+
+
+def test_quarantine_id_differs_per_distinct_row(spark):
+    cfg = _quarantine_cfg("q_distinct")
+    df = spark.createDataFrame([(1, None), (2, None)], "id INT, name STRING")
+    _, bad = split_good_bad(df, cfg)
+    assert len({r["_quarantine_id"] for r in bad.collect()}) == 2
+
+
+def test_rewriting_the_same_batch_does_not_duplicate_rows(spark):
+    """The #148 regression: a retried run must not append a second copy."""
+    cfg = _quarantine_cfg("q_retry")
+    rows = [(1, None), (2, None)]
+
+    for _ in range(3):
+        bad = _bad_with_audit(spark, rows, cfg, batch_id="run-1")
+        write_quarantine(spark, bad, bad.count(), cfg)
+
+    table = spark.read.table(cfg.resolved_quarantine_table)
+    assert table.count() == 2
+
+
+def test_rewriting_the_same_batch_does_not_inflate_occurrence_count(spark):
+    """Idempotent in the counter too, not just in row count."""
+    cfg = _quarantine_cfg("q_retry_count")
+    rows = [(1, None)]
+
+    for _ in range(3):
+        bad = _bad_with_audit(spark, rows, cfg, batch_id="run-1")
+        write_quarantine(spark, bad, bad.count(), cfg)
+
+    row = spark.read.table(cfg.resolved_quarantine_table).collect()[0]
+    assert row["_occurrence_count"] == 1
+
+
+def test_a_later_batch_increments_occurrence_count(spark):
+    """A genuine re-occurrence in a new batch is still counted."""
+    cfg = _quarantine_cfg("q_recur")
+    rows = [(1, None)]
+
+    for batch in ("run-1", "run-2", "run-3"):
+        bad = _bad_with_audit(spark, rows, cfg, batch_id=batch)
+        write_quarantine(spark, bad, bad.count(), cfg)
+
+    table = spark.read.table(cfg.resolved_quarantine_table)
+    assert table.count() == 1
+    assert table.collect()[0]["_occurrence_count"] == 3
+
+
+def test_identical_bad_rows_collapse_and_keep_their_count(spark):
+    """Delta cannot MERGE many source rows onto one target row, so identical
+    bad rows must collapse - their multiplicity goes to _occurrence_count
+    rather than being silently dropped."""
+    cfg = _quarantine_cfg("q_collapse")
+    rows = [(1, None), (1, None), (1, None), (2, None)]
+
+    bad = _bad_with_audit(spark, rows, cfg, batch_id="run-1")
+    write_quarantine(spark, bad, bad.count(), cfg)
+
+    table = spark.read.table(cfg.resolved_quarantine_table)
+    assert table.count() == 2
+    counts = {r["id"]: r["_occurrence_count"] for r in table.collect()}
+    assert counts == {1: 3, 2: 1}
+    # bad_count counts rows, the table counts identities - _occurrence_count
+    # is what reconciles the two.
+    assert sum(counts.values()) == len(rows)
+
+
+def test_first_quarantined_at_survives_a_later_batch(spark):
+    cfg = _quarantine_cfg("q_first_seen")
+    rows = [(1, None)]
+
+    bad = _bad_with_audit(spark, rows, cfg, batch_id="run-1")
+    write_quarantine(spark, bad, bad.count(), cfg)
+    first_seen = spark.read.table(cfg.resolved_quarantine_table).collect()[0]["_first_quarantined_at"]
+
+    bad = _bad_with_audit(spark, rows, cfg, batch_id="run-2")
+    write_quarantine(spark, bad, bad.count(), cfg)
+    row = spark.read.table(cfg.resolved_quarantine_table).collect()[0]
+
+    assert row["_first_quarantined_at"] == first_seen
+    assert row[cfg.audit_batch_id_col] == "run-2"  # last sighting moves
+
+
+def test_write_quarantine_rejects_bad_df_without_quarantine_id(spark):
+    """Fails with a message naming the cause, not deep inside the MERGE."""
+    cfg = _quarantine_cfg("q_no_id")
+    df = spark.createDataFrame([(1, None)], "id INT, name STRING")
+
+    with pytest.raises(ValueError, match="_quarantine_id"):
+        write_quarantine(spark, df, 1, cfg)
+
+
+def test_quarantine_meta_columns_are_backfilled_on_older_tables(spark):
+    """A quarantine table created before #148 has no _occurrence_count, and
+    MERGE cannot reference a target column that does not exist."""
+    cfg = _quarantine_cfg("q_backfill")
+    table = cfg.resolved_quarantine_table
+
+    # A pre-#148 table: source columns, a reason, and a UUID-shaped id.
+    legacy = spark.createDataFrame(
+        [(9, None, "null:name", str(uuid.uuid4()))],
+        "id INT, name STRING, _quarantine_reason STRING, _quarantine_id STRING",
+    )
+    legacy.write.format("delta").mode("overwrite").saveAsTable(table)
+
+    bad = _bad_with_audit(spark, [(1, None)], cfg, batch_id="run-1")
+    write_quarantine(spark, bad, bad.count(), cfg)
+
+    result = spark.read.table(table)
+    assert "_occurrence_count" in result.columns
+    # The legacy UUID row cannot match a content hash, so it stays put.
+    assert result.count() == 2

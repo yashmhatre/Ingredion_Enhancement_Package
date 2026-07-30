@@ -24,11 +24,13 @@ from typing import Tuple, List, Optional
 from pyspark.sql.functions import (
     col,
     lit,
-    expr,
     when,
     concat,
     concat_ws,
     row_number,
+    first,
+    count,
+    current_timestamp,
 )
 from pyspark.sql.window import Window
 
@@ -123,11 +125,15 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
     it was given a content-hash tie-break. Anything added to `_dq_bad`
     later must clear the same bar.
 
-    bad_df additionally carries a per-row `_quarantine_reason` describing
-    which check(s) failed (e.g. "null:email", "duplicate:order_id,
-    customer_id", or both joined with "|") instead of a single hardcoded
-    reason - this is what makes quarantined rows and replay (#60) queryable
-    per failure type.
+    bad_df additionally carries:
+
+      - `_quarantine_reason`, per row, describing which check(s) failed
+        (e.g. "null:email", "duplicate:order_id,customer_id", or both joined
+        with "|") instead of a single hardcoded reason - this is what makes
+        quarantined rows and replay (#60) queryable per failure type.
+      - `_quarantine_id`, a SHA-256 of the row's source content, which is the
+        stable identity write_quarantine() MERGEs on and replay uses to
+        remove exactly the rows it re-promoted (#148).
     """
     if not config.required_columns and not config.unique_columns:
         return df, df.limit(0)
@@ -167,7 +173,29 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[object, object]:
     )
 
     good_df = tagged.filter(~col("_dq_bad")).drop("_dq_null", "_dq_dup", "_dq_bad", "_quarantine_reason")
-    bad_df = tagged.filter(col("_dq_bad")).drop("_dq_null", "_dq_dup", "_dq_bad")
+
+    # `_quarantine_id` is derived HERE, not in write_quarantine(), and that
+    # placement is the point (#148).
+    #
+    # By the time write_quarantine() sees this DataFrame, pipeline.py has
+    # already run it through add_audit_columns(), which stamps
+    # `_ingested_at` from current_timestamp(). Hashing the row at that point
+    # would fold a wall-clock value into the identity and produce a
+    # different id on every run - exactly the property we are trying to get
+    # rid of. Here there are no audit columns yet, so the hash is over
+    # source content alone and no exclusion list has to be maintained as
+    # audit columns come and go.
+    #
+    # `_quarantine_reason` is excluded too: identity is "this source row",
+    # not "this source row failed this particular way". If a config change
+    # alters why a row is bad, that should UPDATE the existing quarantine
+    # entry rather than create a second one for the same data.
+    id_columns = [c for c in df.columns if c != "_quarantine_id"]
+    bad_df = (
+        tagged.filter(col("_dq_bad"))
+        .drop("_dq_null", "_dq_dup", "_dq_bad")
+        .withColumn("_quarantine_id", row_content_hash(tagged, columns=id_columns))
+    )
     return good_df, bad_df
 
 
@@ -193,30 +221,197 @@ def enforce_quality(df, config: IngestionConfig):
     return good_df, bad_df, bad_count
 
 
+#: Bookkeeping columns write_quarantine maintains itself, on top of whatever
+#: bad_df carries. Named here because pre-existing quarantine tables predate
+#: them and have to be backfilled before the MERGE can reference them.
+_QUARANTINE_META_COLUMNS = {
+    "_occurrence_count": "BIGINT",
+    "_first_quarantined_at": "TIMESTAMP",
+}
+
+
+def _align_quarantine_schema(spark, table_name: str, source_schema) -> None:
+    """
+    Adds to the quarantine table any top-level column the MERGE is about to
+    reference but the table does not have yet.
+
+    `withSchemaEvolution()` is not enough on its own, and the reason is
+    specific: Delta resolves the merge condition and the UPDATE SET clause
+    against the target's CURRENT schema, *before* evolution adds anything. A
+    quarantine table created before #148 has no `_batch_id`, so the guarded
+    matched-condition fails to resolve with
+    DELTA_MERGE_UNRESOLVED_EXPRESSION - found by running exactly that case.
+    Evolution still earns its place for nested and non-top-level changes;
+    this handles the columns the statement text names.
+
+    An explicit ALTER rather than flipping
+    `spark.databricks.delta.schema.autoMerge.enabled`, which is a
+    session-wide switch and would silently change behaviour for every other
+    write sharing the session.
+    """
+    existing = {f.name for f in spark.read.table(table_name).schema.fields}
+
+    additions = {
+        f.name: f.dataType.simpleString()
+        for f in source_schema.fields
+        if f.name not in existing
+    }
+    additions.update(
+        {c: t for c, t in _QUARANTINE_META_COLUMNS.items() if c not in existing}
+    )
+    if not additions:
+        return
+
+    cols = ", ".join(f"`{name}` {sql_type}" for name, sql_type in additions.items())
+    logger.info("Aligning quarantine table %s - adding column(s): %s", table_name, cols)
+    spark.sql(f"ALTER TABLE {table_name} ADD COLUMNS ({cols})")
+
+
 def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
     """
-    Writes bad_df to the quarantine table. Skips entirely when bad_count
-    is 0 - enforce_quality() already computed this count, so there's no
-    need for a separate bad_df.rdd.isEmpty() probe (another full scan of
-    the source) to re-derive information the caller already has.
+    MERGEs bad_df into the quarantine table, keyed on `_quarantine_id`.
 
-    bad_df already carries a specific `_quarantine_reason` per row from
-    split_good_bad() - this only adds `_quarantine_id` (a stable UUID),
-    which is the anchor quarantine replay (#60) uses to identify exactly
-    which rows were successfully re-promoted to bronze, so they can be
-    removed from quarantine precisely rather than by a best-effort content
-    match.
+    Skips entirely when bad_count is 0 - enforce_quality() already computed
+    this count, so there's no need for a separate bad_df.rdd.isEmpty() probe
+    (another full scan of the source) to re-derive information the caller
+    already has.
+
+    Why MERGE and not append (#148)
+    -------------------------------
+    Quarantine is written BEFORE the bronze write, so a run that fails
+    between the two and is then retried quarantines the same rows twice.
+    Under the old code that produced genuine duplicates, because
+    `_quarantine_id` was `uuid()` - which its docstring called "a stable
+    UUID". It is stable within one query plan, but a re-run of the same
+    source produces entirely different ids. Verified against a local
+    session: two evaluations of one DataFrame gave identical ids, a fresh
+    construction of the same logical DataFrame gave different ones.
+
+    So the same bad row accumulated one quarantine row per attempt, each
+    with its own id, and replay (#60) treated them as distinct rows to
+    re-promote. `_quarantine_id` is now a SHA-256 of the row's source
+    content (see split_good_bad), which makes it a stable identity and makes
+    this write idempotent: re-running merges onto the same key instead of
+    inserting beside it.
+
+    What happens to duplicate bad rows
+    ----------------------------------
+    Byte-identical bad rows collapse to ONE quarantine row - they have to,
+    since Delta refuses a MERGE where several source rows match one target
+    row. Their multiplicity is kept in `_occurrence_count` rather than
+    discarded, so `bad_count` (which counts rows) and the quarantine table's
+    row count can legitimately differ, and the sum of `_occurrence_count`
+    reconciles them.
+
+    `_occurrence_count` only increments when the incoming `_batch_id`
+    differs from the one already recorded, so re-running the SAME batch
+    leaves the count alone. That guarantee is only as good as `_batch_id`:
+    with the deployed job it is `{{job.run_id}}` and stable across task
+    attempts (#63), but a config that leaves `batch_id` unset gets a
+    generated timestamp that differs per attempt, and the count will drift
+    upward on retries. Row identity stays correct either way - only the
+    count is affected.
+
+    Pre-existing rows
+    -----------------
+    Rows quarantined before this change carry UUID `_quarantine_id`s, which
+    will never match a content hash. They are left exactly as they are: the
+    same source row may therefore appear once under an old UUID and once
+    under its hash. Nothing breaks, but the old rows will not deduplicate.
+    To clean them out, delete rows whose id is not 64 hex characters after
+    confirming the current data has been re-quarantined:
+
+        DELETE FROM <table>_quarantine WHERE length(_quarantine_id) <> 64
     """
     if bad_df is None or bad_count == 0:
         return
 
+    from delta.tables import DeltaTable
+
     schema_ref = f"{config.catalog}.{config.schema_name}" if config.catalog else config.schema_name
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 
+    table_name = config.resolved_quarantine_table
+
+    if "_quarantine_id" not in bad_df.columns:
+        # Defensive: every in-package caller gets bad_df from
+        # split_good_bad(), which sets this. A caller assembling bad_df by
+        # hand would otherwise fail deep inside the MERGE condition.
+        raise ValueError(
+            "bad_df has no _quarantine_id column - it must come from "
+            "split_good_bad(), which derives it from the row's source content "
+            "before audit columns are added."
+        )
+
+    batch_col = config.audit_batch_id_col
+    # pipeline.py passes bad_df through add_audit_columns() before calling
+    # this, so the audit columns are normally present - but write_quarantine
+    # is a public function and is called directly (including by the tests)
+    # with a raw bad_df, so neither column can be assumed.
+    has_batch_col = batch_col in bad_df.columns
+    has_ingest_ts = config.audit_ingest_ts_col in bad_df.columns
+
+    # Collapse byte-identical bad rows, carrying their count. Delta rejects a
+    # MERGE where more than one source row matches the same target row, so
+    # this is required rather than an optimisation.
+    source = (
+        bad_df.groupBy("_quarantine_id")
+        .agg(
+            *[first(col(f"`{c}`")).alias(c) for c in bad_df.columns if c != "_quarantine_id"],
+            count(lit(1)).alias("_occurrence_count"),
+        )
+        # Set here rather than copied from the audit ingest timestamp so it
+        # does not depend on add_audit_columns() having run. Only ever
+        # written on insert - the matched branch below leaves it alone, which
+        # is what makes it "first".
+        .withColumn("_first_quarantined_at", current_timestamp())
+    )
+
+    # Atomic create-if-not-exists rather than a tableExists() check followed
+    # by an append - two concurrent first writes could otherwise both see
+    # "missing" and both create/append, which is the #46 race in a different
+    # module. Merging into a freshly-created empty table inserts everything.
+    creator = DeltaTable.createIfNotExists(spark).tableName(table_name).addColumns(source.schema)
+    creator.execute()
+    _align_quarantine_schema(spark, table_name, source.schema)
+
+    target = DeltaTable.forName(spark, table_name)
+
+    # Latest reason and sighting win, so a row's quarantine entry reflects why
+    # it is CURRENTLY bad rather than why it first was.
+    updates = {"_quarantine_reason": "source._quarantine_reason"}
+    if has_ingest_ts:
+        updates[config.audit_ingest_ts_col] = f"source.`{config.audit_ingest_ts_col}`"
+
+    if has_batch_col:
+        updates[batch_col] = f"source.`{batch_col}`"
+        updates["_occurrence_count"] = (
+            "coalesce(target._occurrence_count, 1) + source._occurrence_count"
+        )
+        # Guarded, not unconditional: without this a retry of the SAME batch
+        # would increment _occurrence_count again, re-introducing the
+        # double-counting this change exists to remove.
+        matched_condition = (
+            f"target.`{batch_col}` is null or target.`{batch_col}` <> source.`{batch_col}`"
+        )
+    else:
+        # No batch column means no way to tell a retry from a genuine
+        # re-occurrence, so the count is deliberately left untouched rather
+        # than guessed at. Under-counting is recoverable; silently inflating a
+        # count that operators use to size a data-quality problem is not.
+        matched_condition = None
+
     (
-        bad_df.withColumn("_quarantine_id", expr("uuid()"))
-        .write.format("delta")
-        .mode("append")
-        .option("mergeSchema", "true")
-        .saveAsTable(config.resolved_quarantine_table)
+        target.alias("target")
+        .merge(source.alias("source"), "target._quarantine_id = source._quarantine_id")
+        # Preserves what the previous append's `mergeSchema: true` gave us.
+        # Quarantine tables see schema drift by design - that is half of what
+        # bronze is for - and a plain MERGE would start failing the moment a
+        # source grew a column. Scoped to this statement rather than set via
+        # spark.databricks.delta.schema.autoMerge.enabled, which is a session
+        # -wide switch that would silently affect every other write too.
+        .withSchemaEvolution()
+        .whenMatchedUpdate(condition=matched_condition, set=updates)
+        .whenNotMatchedInsertAll()
+        .execute()
     )

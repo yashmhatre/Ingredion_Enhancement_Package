@@ -191,3 +191,24 @@ def test_reprocess_quarantined_files_resets_retry_state(spark, json_test_dir):
 
     state = di._read_retry_state(source_dir)
     assert dest_path not in state
+
+
+def test_replay_does_not_leak_quarantine_bookkeeping_into_bronze(spark):
+    """`_occurrence_count` and `_first_quarantined_at` describe a row's
+    history in QUARANTINE (#148), not the data. If replay doesn't drop them
+    they ride the promotion and become columns on the bronze table."""
+    table = f"replay_no_leak_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["name"], fail_on_quality_error=False)
+    df = spark.createDataFrame([(1, None), (2, "Bob")], "id INT, name STRING")
+    _quarantine(spark, df, cfg)
+
+    # Relax the rule so the previously-bad row now passes and is promoted.
+    from dataclasses import replace
+
+    result = reprocess_quarantine(spark, replace(cfg, required_columns=[]))
+
+    assert result["replayed_row_count"] == 1
+    bronze_cols = spark.read.table(_table(table)).columns
+    for leaked in ("_occurrence_count", "_first_quarantined_at", "_quarantine_id",
+                   "_quarantine_reason"):
+        assert leaked not in bronze_cols, f"{leaked} leaked into bronze table"

@@ -75,8 +75,20 @@ def reprocess_quarantine(
 
     # Drop quarantine-specific + stale audit columns so the current quality
     # gate re-derives everything fresh (_source_file is deliberately kept).
+    #
+    # `_occurrence_count` and `_first_quarantined_at` are quarantine
+    # bookkeeping (#148) and must go too. They describe the row's history in
+    # quarantine, not the data, and without dropping them here they ride
+    # through the promotion and land as columns on the BRONZE table -
+    # polluting it with metadata about a table it has no relationship to.
+    # `_quarantine_id` is kept for now because the delete below needs it; it
+    # is dropped just before the write.
     candidate_df = quarantined_df.drop(
-        "_quarantine_reason", config.audit_ingest_ts_col, config.audit_batch_id_col,
+        "_quarantine_reason",
+        config.audit_ingest_ts_col,
+        config.audit_batch_id_col,
+        "_occurrence_count",
+        "_first_quarantined_at",
     )
     good_df, bad_df = split_good_bad(candidate_df, config)
 
