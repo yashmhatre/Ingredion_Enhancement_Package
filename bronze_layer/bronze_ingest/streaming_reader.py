@@ -16,7 +16,6 @@ from .config import IngestionConfig
 from .json_reader import JSON_LINES_EXTENSIONS, effective_multiline, is_json_lines_path
 from .logging_utils import logger
 
-
 #: How many offending file names to name in the error. Enough to recognise
 #: the pattern, few enough that the message stays readable when an entire
 #: directory is JSON-lines.
@@ -124,14 +123,16 @@ def read_json_stream(spark, config: IngestionConfig):
     # Unity Catalog lineage
     df = (
         df.select("*", "_metadata")
-          .withColumn("_input_file_name", col("_metadata.file_path"))
-          .drop("_metadata")
+        .withColumn("_input_file_name", col("_metadata.file_path"))
+        .drop("_metadata")
     )
 
     return df
 
 
-def assert_no_silent_truncation(micro_batch_df, config: IngestionConfig, lineage_col: str = "_input_file_name"):
+def assert_no_silent_truncation(
+    micro_batch_df, config: IngestionConfig, lineage_col: str = "_input_file_name"
+):
     """
     Fails the micro-batch if it was read with `multiLine=true` and contains
     JSON-lines files, whose records have therefore already been discarded.
@@ -206,7 +207,8 @@ def assert_no_silent_truncation(micro_batch_df, config: IngestionConfig, lineage
     # filter: nothing on the healthy path, and on the failing path this
     # batch is being abandoned anyway.
     offenders = json_lines_files(
-        row[0] for row in (
+        row[0]
+        for row in (
             micro_batch_df.select(lineage_col)
             .filter(ext_match)
             .distinct()

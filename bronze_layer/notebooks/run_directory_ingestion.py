@@ -18,7 +18,7 @@
 # the same wheel into the session first:
 #   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
-from bronze_ingest import ingest_directory_to_bronze, get_logger
+from bronze_ingest import get_logger, ingest_directory_to_bronze
 
 logger = get_logger()
 
@@ -33,7 +33,9 @@ dbutils.widgets.dropdown("multiline", "true", ["true", "false"], "Multiline JSON
 dbutils.widgets.text("max_files", "", "Max files (blank = no limit)")
 dbutils.widgets.dropdown("stop_on_error", "false", ["true", "false"], "Stop on first error")
 dbutils.widgets.text("required_columns", "", "Required columns, comma-separated (optional)")
-dbutils.widgets.dropdown("fail_on_quality_error", "true", ["true", "false"], "Fail on quality error (false = quarantine)")
+dbutils.widgets.dropdown(
+    "fail_on_quality_error", "true", ["true", "false"], "Fail on quality error (false = quarantine)"
+)
 dbutils.widgets.text("per_file_config_json", "", "Per-file overrides as JSON (optional)")
 # audit/registry schemas: blank now means "use schema_name", so the audit
 # trail and schema fingerprints land beside the data they describe (#54).
@@ -42,16 +44,24 @@ dbutils.widgets.text("per_file_config_json", "", "Per-file overrides as JSON (op
 # the trails and giving each service principal read access to the others'.
 # databricks.yml still pins them explicitly per target: that is belt and
 # braces now rather than the only thing standing between the environments.
-dbutils.widgets.text("audit_schema_name", "", "Schema for the audit table (blank = same as schema_name)")
-dbutils.widgets.text("registry_schema_name", "", "Schema for the schema registry (blank = same as schema_name)")
+dbutils.widgets.text(
+    "audit_schema_name", "", "Schema for the audit table (blank = same as schema_name)"
+)
+dbutils.widgets.text(
+    "registry_schema_name", "", "Schema for the schema registry (blank = same as schema_name)"
+)
 # batch_id/run_id: pass {{job.run_id}} / {{job.id}}-{{job.run_id}} as the
 # base_parameters value in databricks.yml so every file's audit row and
 # idempotent batch write (#63) in this job run can be joined back to a
 # specific Databricks job run instead of fuzzy timestamp matching (#52).
 # Applied uniformly to every file in this run. Left blank, both fall back
 # to their usual per-file defaults (auto-generated timestamp / UUID).
-dbutils.widgets.text("batch_id", "", "Batch ID (e.g. {{job.run_id}} - blank = auto-generated timestamp)")
-dbutils.widgets.text("run_id", "", "Audit run ID (e.g. {{job.id}}-{{job.run_id}} - blank = auto-generated UUID)")
+dbutils.widgets.text(
+    "batch_id", "", "Batch ID (e.g. {{job.run_id}} - blank = auto-generated timestamp)"
+)
+dbutils.widgets.text(
+    "run_id", "", "Audit run ID (e.g. {{job.id}}-{{job.run_id}} - blank = auto-generated UUID)"
+)
 
 # COMMAND ----------
 
@@ -63,9 +73,14 @@ max_files_raw = dbutils.widgets.get("max_files").strip()
 max_files = int(max_files_raw) if max_files_raw else None
 
 required_columns_raw = dbutils.widgets.get("required_columns").strip()
-required_columns = [c.strip() for c in required_columns_raw.split(",") if c.strip()] if required_columns_raw else []
+required_columns = (
+    [c.strip() for c in required_columns_raw.split(",") if c.strip()]
+    if required_columns_raw
+    else []
+)
 
 import json as _json
+
 per_file_raw = dbutils.widgets.get("per_file_config_json").strip()
 per_file_config = _json.loads(per_file_raw) if per_file_raw else None
 
@@ -103,6 +118,7 @@ if not results:
     dbutils.notebook.exit("SUCCESS: nothing to ingest (source directory is empty)")
 
 import pandas as pd
+
 summary_df = spark.createDataFrame(pd.DataFrame(results))
 display(summary_df)
 
@@ -111,7 +127,9 @@ skipped = [r for r in results if r["status"] == "skipped"]
 succeeded = [r for r in results if r["status"] == "success"]
 logger.info(
     "Directory ingestion: %d succeeded, %d failed, %d skipped",
-    len(succeeded), len(failed), len(skipped),
+    len(succeeded),
+    len(failed),
+    len(skipped),
 )
 
 # Fail the job task only on real failures, so alerting/retries kick in -
@@ -121,8 +139,9 @@ logger.info(
 # data and nothing for a human to fix, so failing the task on it would fire
 # alerts for a non-event and bury genuine failures in the same run.
 if failed:
-    dbutils.notebook.exit(f"FAILED: {len(failed)}/{len(results)} unit(s) failed: {[f['file'] for f in failed]}")
+    dbutils.notebook.exit(
+        f"FAILED: {len(failed)}/{len(results)} unit(s) failed: {[f['file'] for f in failed]}"
+    )
 
 _skip_note = f", {len(skipped)} skipped" if skipped else ""
 dbutils.notebook.exit(f"SUCCESS: {len(succeeded)} unit(s) ingested{_skip_note}")
-

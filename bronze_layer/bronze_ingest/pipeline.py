@@ -5,17 +5,17 @@ This is the single entry point most users need. It wires together:
   json_reader.read_json -> add audit columns -> bronze_writer.write_bronze
 """
 
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
+from .audit import audited_run, tag_failure_stage
+from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
+from .catalog_metadata import apply_catalog_metadata
 from .config import IngestionConfig
 from .json_reader import read_json
-from .streaming_reader import read_json_stream, get_trigger_kwargs, assert_no_silent_truncation
-from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
-from .quality import enforce_quality, write_quarantine
 from .logging_utils import logger
-from .audit import audited_run, tag_failure_stage
+from .quality import enforce_quality, write_quarantine
 from .schema_registry import record_schema
-from .catalog_metadata import apply_catalog_metadata
+from .streaming_reader import assert_no_silent_truncation, get_trigger_kwargs, read_json_stream
 
 
 class BronzeIngestion:
@@ -97,7 +97,9 @@ class BronzeIngestion:
                 raise
             final_df = add_audit_columns(good_df, self.config)
 
-            write_quarantine(self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config)
+            write_quarantine(
+                self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config
+            )
 
             try:
                 table_name = writer(final_df)
@@ -114,7 +116,9 @@ class BronzeIngestion:
             apply_catalog_metadata(self.spark, self.config)
             logger.info(
                 "Wrote %d row(s) to %s (%d quarantined)",
-                row_count, table_name or self.config.full_table_name, bad_count,
+                row_count,
+                table_name or self.config.full_table_name,
+                bad_count,
             )
 
             if not build_summary:
@@ -124,7 +128,9 @@ class BronzeIngestion:
                 "table": table_name,
                 "row_count": row_count,
                 "quarantined_row_count": bad_count,
-                "quarantine_table": self.config.resolved_quarantine_table if bad_count > 0 else None,
+                "quarantine_table": self.config.resolved_quarantine_table
+                if bad_count > 0
+                else None,
                 "columns": final_df.columns,
                 "write_mode": self.config.write_mode,
             }
@@ -150,7 +156,9 @@ class BronzeIngestion:
         required_columns validation fails and fail_on_quality_error=True.
         """
         if self.config.ingestion_mode != "batch":
-            raise ValueError("run() is for ingestion_mode='batch'. Use run_streaming() for streaming.")
+            raise ValueError(
+                "run() is for ingestion_mode='batch'. Use run_streaming() for streaming."
+            )
 
         # self.read, not self.read() - see the read_fn note on _execute.
         return self._execute(
@@ -174,11 +182,15 @@ class BronzeIngestion:
         and intend to manage the query lifecycle yourself.
         """
         if self.config.ingestion_mode != "streaming":
-            raise ValueError("run_streaming() is for ingestion_mode='streaming'. Use run() for batch.")
+            raise ValueError(
+                "run_streaming() is for ingestion_mode='streaming'. Use run() for batch."
+            )
 
         logger.info(
             "Starting streaming ingestion from %s -> %s (checkpoint=%s)",
-            self.config.source_path, self.config.full_table_name, self.config.checkpoint_location,
+            self.config.source_path,
+            self.config.full_table_name,
+            self.config.checkpoint_location,
         )
 
         stream_df = read_json_stream(self.spark, self.config)
@@ -205,8 +217,7 @@ class BronzeIngestion:
             )
 
         query = (
-            stream_df.writeStream
-            .foreachBatch(_process_batch)
+            stream_df.writeStream.foreachBatch(_process_batch)
             .option("checkpointLocation", self.config.checkpoint_location)
             .trigger(**get_trigger_kwargs(self.config))
             .start()
@@ -218,7 +229,9 @@ class BronzeIngestion:
         return query
 
 
-def ingest_json_to_bronze(spark, config: Optional[Dict[str, Any]] = None, config_path: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+def ingest_json_to_bronze(
+    spark, config: Optional[Dict[str, Any]] = None, config_path: Optional[str] = None, **kwargs
+) -> Dict[str, Any]:
     """
     One-shot convenience function for the simplest plug-and-play usage:
 

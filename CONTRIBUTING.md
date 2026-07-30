@@ -58,6 +58,63 @@ If you're setting up the Azure/Databricks environment from scratch
 [azure_setup.md](../azure_setup.md) at the repo root — a validated,
 step-by-step runbook.
 
+### Quality gates
+
+CI runs four static gates in a `quality` job alongside the test suite. Each
+one fails the build on a real finding, and each runs locally in seconds —
+none of them needs Java, Spark or a Databricks connection.
+
+```bash
+pip install ruff mypy bandit pip-audit
+
+ruff format bronze_ingest tests notebooks        # apply formatting
+ruff format --check bronze_ingest tests notebooks # what CI checks
+ruff check bronze_ingest tests notebooks          # lint
+ruff check --fix bronze_ingest tests notebooks    # lint, auto-fixing what is safe
+mypy bronze_ingest notebooks                      # types
+bandit -r bronze_ingest                           # static security scan
+pip-audit --skip-editable                         # dependency CVEs
+```
+
+All configuration lives in [`bronze_layer/pyproject.toml`](bronze_layer/pyproject.toml)
+— there are no separate `.ruff.toml`/`mypy.ini`/`setup.cfg` files, and
+`pytest.ini` was folded in too, so `pytest` picks its settings up from the
+same place.
+
+**Run `ruff format` before you commit.** CI checks formatting rather than
+applying it, so an unformatted file fails the build instead of being
+quietly fixed.
+
+**Suppressions carry a reason.** If a gate flags something that is genuinely
+correct, annotate the specific line with the specific code and say why —
+`# noqa: BLE001 - a missing retry-state file is the normal first-run case`,
+or `# nosec B608 - identifiers are validated at config load (#154)`. Do not
+widen the config, lower a severity threshold, or disable a rule globally to
+make a single finding go away. A blanket suppression silently covers the
+next occurrence too, which is the one nobody looked at.
+
+Two known traps, both hit while setting these up:
+
+- `bandit` anchors a multi-line-string finding on the line where the string
+  **opens**. Appending `# nosec` there puts the comment *inside* the string
+  — for SQL, that means shipping a comment to the engine. Assign the string
+  to a variable and put the marker on the closing `"""`.
+- `ruff format` wraps a long trailing comment by parenthesising the value
+  next to it, turning `field: Optional[str] = None  # long comment` into
+  `field: Optional[str] = (None  # long comment)`. Put long comments *above*
+  the line instead.
+
+### Coverage
+
+Coverage is reported on every CI run and posted to the PR comment. It is
+deliberately **not** enforced — there is no `--cov-fail-under`, because a
+threshold picked before the real number is known is either trivially met or
+immediately red. Locally:
+
+```bash
+pytest --cov=bronze_ingest --cov-report=term-missing
+```
+
 ## Finding Something to Work On
 
 1. Go to the [Issues](../../issues) tab

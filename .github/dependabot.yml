@@ -1,0 +1,37 @@
+# Dependency updates (#158).
+#
+# Grouped and monthly rather than individual and weekly. This repo has a
+# small dependency surface and a 5-minute test job, so a PR per dependency
+# per week would cost more review attention than it buys - and a review
+# queue nobody reads is worse than no automation, because it looks handled.
+
+version: 2
+updates:
+  # `actions/checkout@v4` and friends drift, and a pinned-by-major action is
+  # not pinned to anything reproducible.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  # pyspark and delta-spark are DELIBERATELY loose in setup.py: the
+  # Databricks runtime provides both, and pinning a version here that
+  # disagrees with the runtime's is how a job breaks on compute nobody
+  # changed. Dependabot is scoped to security updates only for that reason -
+  # it should tell us about a CVE, not try to move a floor that exists to
+  # stay compatible with whatever DBR ships.
+  - package-ecosystem: "pip"
+    directory: "/bronze_layer"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    groups:
+      python-packages:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"

@@ -11,32 +11,39 @@ within a table. This module describes the run itself.
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Optional
 
 from pyspark.sql import Row
 from pyspark.sql.types import (
-    StructType, StructField, StringType, LongType, BooleanType, TimestampType,
+    BooleanType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
 )
 
 from .config import IngestionConfig
 from .logging_utils import logger
 
-
 # Fixed schema - see Phase 1 task for the design rationale (strict,
 # no catch-all column, no reshaping/transformation details).
-AUDIT_SCHEMA = StructType([
-    StructField("run_id", StringType(), nullable=False),
-    StructField("table", StringType(), nullable=False),
-    StructField("status", StringType(), nullable=False),
-    StructField("row_count", LongType(), nullable=True),
-    StructField("quarantined_row_count", LongType(), nullable=True),
-    StructField("failure_stage", StringType(), nullable=True),
-    StructField("schema_fingerprint", StringType(), nullable=True),
-    StructField("schema_changed", BooleanType(), nullable=True),
-    StructField("started_at", TimestampType(), nullable=False),
-    StructField("finished_at", TimestampType(), nullable=True),
-    StructField("error_message", StringType(), nullable=True),
-    StructField("source_path", StringType(), nullable=True),
-])
+AUDIT_SCHEMA = StructType(
+    [
+        StructField("run_id", StringType(), nullable=False),
+        StructField("table", StringType(), nullable=False),
+        StructField("status", StringType(), nullable=False),
+        StructField("row_count", LongType(), nullable=True),
+        StructField("quarantined_row_count", LongType(), nullable=True),
+        StructField("failure_stage", StringType(), nullable=True),
+        StructField("schema_fingerprint", StringType(), nullable=True),
+        StructField("schema_changed", BooleanType(), nullable=True),
+        StructField("started_at", TimestampType(), nullable=False),
+        StructField("finished_at", TimestampType(), nullable=True),
+        StructField("error_message", StringType(), nullable=True),
+        StructField("source_path", StringType(), nullable=True),
+    ]
+)
 
 AUDIT_SCHEMA_DDL = (
     "run_id STRING, table STRING, status STRING, row_count LONG, "
@@ -55,7 +62,9 @@ def tag_failure_stage(exc: Exception, stage: str) -> None:
     a nested handler won't overwrite a stage an inner handler already set.
     """
     if not hasattr(exc, "failure_stage"):
-        exc.failure_stage = stage
+        # Dynamic attribute on an arbitrary exception - deliberate, so that
+        # audited_run can read the stage back off whatever propagated.
+        exc.failure_stage = stage  # type: ignore[attr-defined]
 
 
 def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
@@ -82,16 +91,22 @@ def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
         df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(
             config.resolved_audit_table
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - the audit trail must never fail the ingestion it records
         logger.warning(
             "Failed to write audit record for run against %s: %s",
-            config.full_table_name, exc,
+            config.full_table_name,
+            exc,
         )
 
 
 def record_replay_run(
-    spark, config: IngestionConfig, *, status: str,
-    row_count, quarantined_row_count, source_path: str = None,
+    spark,
+    config: IngestionConfig,
+    *,
+    status: str,
+    row_count,
+    quarantined_row_count,
+    source_path: Optional[str] = None,
 ) -> None:
     """
     Writes a single run-level audit row for a quarantine-replay operation
@@ -105,24 +120,28 @@ def record_replay_run(
         return
 
     now = datetime.now(timezone.utc)
-    _write_audit_row(spark, config, {
-        "run_id": str(uuid.uuid4()),
-        "table": config.full_table_name,
-        "status": status,
-        "row_count": row_count,
-        "quarantined_row_count": quarantined_row_count,
-        "failure_stage": None,
-        "schema_fingerprint": None,
-        "schema_changed": None,
-        "started_at": now,
-        "finished_at": now,
-        "error_message": None,
-        "source_path": source_path or config.source_path,
-    })
+    _write_audit_row(
+        spark,
+        config,
+        {
+            "run_id": str(uuid.uuid4()),
+            "table": config.full_table_name,
+            "status": status,
+            "row_count": row_count,
+            "quarantined_row_count": quarantined_row_count,
+            "failure_stage": None,
+            "schema_fingerprint": None,
+            "schema_changed": None,
+            "started_at": now,
+            "finished_at": now,
+            "error_message": None,
+            "source_path": source_path or config.source_path,
+        },
+    )
 
 
 @contextmanager
-def audited_run(spark, config: IngestionConfig, source_path: str = None):
+def audited_run(spark, config: IngestionConfig, source_path: Optional[str] = None):
     """
     Context manager wrapping a single ingestion run (or one streaming
     micro-batch). Writes exactly one audit row on exit, success or
@@ -150,44 +169,54 @@ def audited_run(spark, config: IngestionConfig, source_path: str = None):
     run_id = config.run_id or str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
     result = {
-        "row_count": None, "quarantined_row_count": None,
-        "schema_fingerprint": None, "schema_changed": None,
+        "row_count": None,
+        "quarantined_row_count": None,
+        "schema_fingerprint": None,
+        "schema_changed": None,
     }
 
     try:
         yield result
         finished_at = datetime.now(timezone.utc)
-        _write_audit_row(spark, config, {
-            "run_id": run_id,
-            "table": config.full_table_name,
-            "status": "success",
-            "row_count": result.get("row_count"),
-            "quarantined_row_count": result.get("quarantined_row_count"),
-            "failure_stage": None,
-            "schema_fingerprint": result.get("schema_fingerprint"),
-            "schema_changed": result.get("schema_changed"),
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "error_message": None,
-            "source_path": source_path or config.source_path,
-        })
+        _write_audit_row(
+            spark,
+            config,
+            {
+                "run_id": run_id,
+                "table": config.full_table_name,
+                "status": "success",
+                "row_count": result.get("row_count"),
+                "quarantined_row_count": result.get("quarantined_row_count"),
+                "failure_stage": None,
+                "schema_fingerprint": result.get("schema_fingerprint"),
+                "schema_changed": result.get("schema_changed"),
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "error_message": None,
+                "source_path": source_path or config.source_path,
+            },
+        )
     except Exception as exc:
         finished_at = datetime.now(timezone.utc)
         bad_count = getattr(exc, "bad_count", None)
         if bad_count is not None and result.get("quarantined_row_count") is None:
             result["quarantined_row_count"] = bad_count
-        _write_audit_row(spark, config, {
-            "run_id": run_id,
-            "table": config.full_table_name,
-            "status": "failed",
-            "row_count": result.get("row_count"),
-            "quarantined_row_count": result.get("quarantined_row_count"),
-            "failure_stage": getattr(exc, "failure_stage", None),
-            "schema_fingerprint": result.get("schema_fingerprint"),
-            "schema_changed": result.get("schema_changed"),
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "error_message": str(exc),
-            "source_path": source_path or config.source_path,
-        })
+        _write_audit_row(
+            spark,
+            config,
+            {
+                "run_id": run_id,
+                "table": config.full_table_name,
+                "status": "failed",
+                "row_count": result.get("row_count"),
+                "quarantined_row_count": result.get("quarantined_row_count"),
+                "failure_stage": getattr(exc, "failure_stage", None),
+                "schema_fingerprint": result.get("schema_fingerprint"),
+                "schema_changed": result.get("schema_changed"),
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "error_message": str(exc),
+                "source_path": source_path or config.source_path,
+            },
+        )
         raise

@@ -37,8 +37,10 @@ def test_run_failure_records_bad_count_and_quality_stage_in_audit(spark, tmp_pat
     """
     _write_json(tmp_path / "data.json", [{"id": 1, "name": "a"}, {"id": 2, "name": None}])
     cfg = _cfg(
-        tmp_path, f"pipeline_fail_{uuid.uuid4().hex[:8]}",
-        required_columns=["name"], fail_on_quality_error=True,
+        tmp_path,
+        f"pipeline_fail_{uuid.uuid4().hex[:8]}",
+        required_columns=["name"],
+        fail_on_quality_error=True,
     )
     job = BronzeIngestion(spark, cfg)
 
@@ -49,7 +51,9 @@ def test_run_failure_records_bad_count_and_quality_stage_in_audit(spark, tmp_pat
     assert row["status"] == "failed"
     assert row["quarantined_row_count"] == 1
     assert row["failure_stage"] == "quality"
-    assert not spark.catalog.tableExists(cfg.full_table_name), "bronze table should never have been written"
+    assert not spark.catalog.tableExists(cfg.full_table_name), (
+        "bronze table should never have been written"
+    )
 
 
 def test_run_success_records_schema_fingerprint_in_audit(spark, tmp_path):
@@ -155,10 +159,18 @@ def test_run_and_run_on_dataframe_return_identical_summary_shapes(spark, tmp_pat
     raw = spark.read.option("multiLine", False).json(cfg_df.source_path)
     summary_df = BronzeIngestion(spark, cfg_df).run_on_dataframe(raw)
 
-    assert set(summary_run) == set(summary_df) == {
-        "table", "row_count", "quarantined_row_count",
-        "quarantine_table", "columns", "write_mode",
-    }
+    assert (
+        set(summary_run)
+        == set(summary_df)
+        == {
+            "table",
+            "row_count",
+            "quarantined_row_count",
+            "quarantine_table",
+            "columns",
+            "write_mode",
+        }
+    )
     assert summary_run["row_count"] == summary_df["row_count"] == 2
     assert summary_run["quarantined_row_count"] == summary_df["quarantined_row_count"] == 0
     assert summary_run["quarantine_table"] is None and summary_df["quarantine_table"] is None
@@ -168,8 +180,10 @@ def test_run_and_run_on_dataframe_return_identical_summary_shapes(spark, tmp_pat
 def test_quarantine_table_is_reported_only_when_rows_were_quarantined(spark, tmp_path):
     _write_json(tmp_path / "data.json", [{"id": 1, "name": "a"}, {"id": 2, "name": None}])
     cfg = _cfg(
-        tmp_path, f"pipeline_quarantine_{uuid.uuid4().hex[:8]}",
-        required_columns=["name"], fail_on_quality_error=False,
+        tmp_path,
+        f"pipeline_quarantine_{uuid.uuid4().hex[:8]}",
+        required_columns=["name"],
+        fail_on_quality_error=False,
     )
 
     summary = BronzeIngestion(spark, cfg).run()

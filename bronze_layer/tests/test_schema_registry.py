@@ -1,9 +1,7 @@
 import uuid
 
-import pytest
-
 from bronze_ingest.config import IngestionConfig
-from bronze_ingest.schema_registry import record_schema, _fingerprint, REGISTRY_SCHEMA
+from bronze_ingest.schema_registry import REGISTRY_SCHEMA, _fingerprint, record_schema
 
 
 def _cfg(tmp_path, table, **overrides):
@@ -101,8 +99,12 @@ def test_registry_failure_never_raises(spark, tmp_path, monkeypatch):
 
 def test_registry_schema_matches_documented_fields():
     assert {f.name for f in REGISTRY_SCHEMA.fields} == {
-        "table_name", "source_path", "schema_fingerprint",
-        "schema_json", "first_seen_at", "last_updated_at",
+        "table_name",
+        "source_path",
+        "schema_fingerprint",
+        "schema_json",
+        "first_seen_at",
+        "last_updated_at",
     }
 
 

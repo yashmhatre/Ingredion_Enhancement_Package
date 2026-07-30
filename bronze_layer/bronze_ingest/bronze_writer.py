@@ -6,13 +6,13 @@ schema evolution.
 
 from datetime import datetime, timezone
 
-from pyspark.sql.functions import lit, current_timestamp, col, row_number
+from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
 
 from .config import IngestionConfig
-from .retry import with_retry
 from .logging_utils import logger
-from .sql_utils import row_content_hash, quote_literal
+from .retry import with_retry
+from .sql_utils import quote_literal, row_content_hash
 
 
 def add_audit_columns(df, config: IngestionConfig):
@@ -34,7 +34,8 @@ def add_audit_columns(df, config: IngestionConfig):
         logger.warning(
             "No _input_file_name column found - %s will be set to config.source_path "
             "(%r) instead of per-file lineage for every row.",
-            config.audit_source_file_col, config.source_path,
+            config.audit_source_file_col,
+            config.source_path,
         )
         df = df.withColumn(config.audit_source_file_col, lit(config.source_path))
 
@@ -102,7 +103,7 @@ def _dedupe_for_merge(df, config: IngestionConfig):
             "or leave add_audit_columns=True so the default (audit_ingest_ts_col) exists."
         )
 
-    w = Window.partitionBy(*config.merge_keys).orderBy(
+    w = Window.partitionBy(*(config.merge_keys or [])).orderBy(
         col(f"`{order_col}`").desc(), row_content_hash(df).asc()
     )
     return (
@@ -143,7 +144,7 @@ def _describe_current_layout(spark, full_name):
             .collect()[0]
         )
         return row["clusteringColumns"], (row["properties"] or {})
-    except Exception:
+    except Exception:  # noqa: BLE001 - DESCRIBE DETAIL is unavailable on some engines; absent state is the answer
         return None, {}
 
 
@@ -189,22 +190,24 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
         if current_cluster_cols is not None:
             logger.warning(
                 "Cluster-by columns changed for %s: %s -> %s",
-                full_name, current_cluster_cols, config.cluster_by,
+                full_name,
+                current_cluster_cols,
+                config.cluster_by,
             )
 
     if config.cluster_by_auto:
         try:
             spark.sql(f"ALTER TABLE {full_name} CLUSTER BY AUTO")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - CLUSTER BY AUTO is DBR-only; unsupported elsewhere is expected, not fatal
             logger.warning(
                 "cluster_by_auto=True but this engine doesn't support CLUSTER BY AUTO "
                 "(expected outside Databricks Runtime, which manages predictive "
-                "optimization for AUTO-clustered tables): %s", exc,
+                "optimization for AUTO-clustered tables): %s",
+                exc,
             )
 
     changed_props = {
-        k: v for k, v in (config.table_properties or {}).items()
-        if current_props.get(k) != v
+        k: v for k, v in (config.table_properties or {}).items() if current_props.get(k) != v
     }
     if changed_props:
         # Both sides escaped (#154). `table_properties` is a free-form
@@ -215,8 +218,7 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
         # dot-separated part, since they are dotted by convention
         # (delta.enableChangeDataFeed).
         props_clause = ", ".join(
-            f"'{quote_literal(k)}' = '{quote_literal(v)}'"
-            for k, v in changed_props.items()
+            f"'{quote_literal(k)}' = '{quote_literal(v)}'" for k, v in changed_props.items()
         )
         spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
@@ -273,7 +275,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         writer = writer.option("mergeSchema", "true")
     if config.partition_by:
         writer = writer.partitionBy(*config.partition_by)
-    if txn_options:  # idempotent-write options (txnAppId/txnVersion) - streaming foreachBatch or batch retry-safety (#63)
+    # idempotent-write options (txnAppId/txnVersion) - streaming foreachBatch
+    # or batch retry-safety (#63)
+    if txn_options:
         for k, v in txn_options.items():
             writer = writer.option(k, v)
 
@@ -318,7 +322,7 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         creator.execute()
 
         target = DeltaTable.forName(spark, full_name)
-        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in config.merge_keys)
+        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in (config.merge_keys or []))
         (
             target.alias("target")
             .merge(df.alias("source"), condition)
@@ -358,7 +362,8 @@ def write_bronze(spark, df, config: IngestionConfig):
                 "idempotent_batch_writes=True but batch_id=%r isn't an integer or a "
                 "recognized timestamp format - can't derive a stable txnVersion, so this "
                 "write is not idempotent-protected. Pass an integer batch_id (e.g. a "
-                "Databricks job run ID) for retry-safe batch writes.", config.batch_id,
+                "Databricks job run ID) for retry-safe batch writes.",
+                config.batch_id,
             )
         else:
             logger.debug(

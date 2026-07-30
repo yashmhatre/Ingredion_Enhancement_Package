@@ -11,9 +11,8 @@ function just centralizes the read options driven by config.
 from typing import Optional
 
 from .config import IngestionConfig
-from .retry import with_retry
 from .logging_utils import logger
-
+from .retry import with_retry
 
 #: Extensions that mean "one JSON value per line" by definition of the
 #: format. `.json` is deliberately absent: a .json file may legitimately be
@@ -145,7 +144,8 @@ def read_json(spark, config: IngestionConfig):
         # carry a secret reference, printing values would put it in the run
         # log. Keys are enough to answer "what was applied to this read?".
         logger.info(
-            "Applying reader_options: %s", sorted(config.reader_options),
+            "Applying reader_options: %s",
+            sorted(config.reader_options),
         )
         for key, value in config.reader_options.items():
             reader = reader.option(key, value)
@@ -160,9 +160,8 @@ def read_json(spark, config: IngestionConfig):
         # Track provenance regardless of flatten mode - cheap and always useful in bronze.
         # Uses _metadata.file_path (works on Unity Catalog shared clusters,
         # unlike input_file_name()).
-        return (
-            reader.load(config.source_path)
-                .select("*", col("_metadata.file_path").alias("_input_file_name"))
+        return reader.load(config.source_path).select(
+            "*", col("_metadata.file_path").alias("_input_file_name")
         )
 
     return _do_read()

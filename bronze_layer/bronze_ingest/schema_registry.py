@@ -24,21 +24,25 @@ from typing import Optional, Tuple
 from pyspark.sql import Row
 from pyspark.sql.functions import col
 from pyspark.sql.types import (
-    StructType, StructField, StringType, TimestampType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
 )
 
 from .config import IngestionConfig
 from .logging_utils import logger
 
-
-REGISTRY_SCHEMA = StructType([
-    StructField("table_name", StringType(), nullable=False),
-    StructField("source_path", StringType(), nullable=True),
-    StructField("schema_fingerprint", StringType(), nullable=False),
-    StructField("schema_json", StringType(), nullable=False),
-    StructField("first_seen_at", TimestampType(), nullable=False),
-    StructField("last_updated_at", TimestampType(), nullable=False),
-])
+REGISTRY_SCHEMA = StructType(
+    [
+        StructField("table_name", StringType(), nullable=False),
+        StructField("source_path", StringType(), nullable=True),
+        StructField("schema_fingerprint", StringType(), nullable=False),
+        StructField("schema_json", StringType(), nullable=False),
+        StructField("first_seen_at", TimestampType(), nullable=False),
+        StructField("last_updated_at", TimestampType(), nullable=False),
+    ]
+)
 
 
 def _schema_pairs(df):
@@ -83,7 +87,7 @@ def _read_current_row(spark, config: IngestionConfig):
             .collect()
         )
         return rows[0] if rows else None
-    except Exception:
+    except Exception:  # noqa: BLE001 - no readable registry row means 'first time seen'
         return None
 
 
@@ -113,7 +117,15 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
             return
 
         df.createOrReplaceTempView("_registry_updates")
-        spark.sql(f"""
+        # nosec B608 - `target` is not user input at this point. It is
+        # composed of catalog/schema/table identifiers that __post_init__
+        # ran through validate_identifier() at config load (#154), so it
+        # cannot carry quotes, semicolons or whitespace. The row VALUES are
+        # never interpolated - they arrive through a temp view built from a
+        # typed DataFrame. Spark SQL has no bind parameters for a table
+        # name, so interpolation here is unavoidable; validating at the
+        # boundary is the mitigation.
+        merge_sql = f"""
             MERGE INTO {target} AS t
             USING _registry_updates AS s
             ON t.table_name = s.table_name
@@ -123,15 +135,19 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
                 t.schema_json = s.schema_json,
                 t.last_updated_at = s.last_updated_at
             WHEN NOT MATCHED THEN INSERT *
-        """)
-    except Exception as exc:
+        """  # nosec B608
+        spark.sql(merge_sql)
+    except Exception as exc:  # noqa: BLE001 - the registry must never fail the ingestion it describes
         logger.warning(
             "Failed to write schema registry row for %s: %s",
-            config.full_table_name, exc,
+            config.full_table_name,
+            exc,
         )
 
 
-def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -> Tuple[Optional[str], bool]:
+def record_schema(
+    spark, config: IngestionConfig, df, source_path: Optional[str] = None
+) -> Tuple[Optional[str], bool]:
     """
     Records the current schema for config's target table, but only if it
     differs from what's already registered.
@@ -159,14 +175,18 @@ def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -
             return fingerprint, False  # unchanged - nothing to write
 
         now = datetime.now(timezone.utc)
-        _write_row(spark, config, {
-            "table_name": config.full_table_name,
-            "source_path": source_path or config.source_path,
-            "schema_fingerprint": fingerprint,
-            "schema_json": _schema_json(df),
-            "first_seen_at": current["first_seen_at"] if current is not None else now,
-            "last_updated_at": now,
-        })
+        _write_row(
+            spark,
+            config,
+            {
+                "table_name": config.full_table_name,
+                "source_path": source_path or config.source_path,
+                "schema_fingerprint": fingerprint,
+                "schema_json": _schema_json(df),
+                "first_seen_at": current["first_seen_at"] if current is not None else now,
+                "last_updated_at": now,
+            },
+        )
 
         if current is None:
             logger.info("Registered schema for %s (%s)", config.full_table_name, fingerprint)
@@ -174,9 +194,11 @@ def record_schema(spark, config: IngestionConfig, df, source_path: str = None) -
 
         logger.warning(
             "Schema drift detected for %s: %s -> %s",
-            config.full_table_name, current["schema_fingerprint"], fingerprint,
+            config.full_table_name,
+            current["schema_fingerprint"],
+            fingerprint,
         )
         return fingerprint, True
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - as above - drift detection is advisory, never a gate
         logger.warning("Schema registry check failed for %s: %s", config.full_table_name, exc)
         return None, False

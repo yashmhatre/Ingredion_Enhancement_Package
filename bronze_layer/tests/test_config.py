@@ -1,4 +1,5 @@
 import pytest
+
 from bronze_ingest.config import IngestionConfig
 
 
@@ -14,8 +15,11 @@ def test_merge_requires_merge_keys():
         IngestionConfig(source_path="s3://x", table="t", write_mode="merge")
     # should not raise - merge_keys is also listed in required_columns
     IngestionConfig(
-        source_path="s3://x", table="t", write_mode="merge",
-        merge_keys=["id"], required_columns=["id"],
+        source_path="s3://x",
+        table="t",
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
     )
 
 
@@ -26,13 +30,19 @@ def test_merge_requires_merge_keys_in_required_columns():
         IngestionConfig(source_path="s3://x", table="t", write_mode="merge", merge_keys=["id"])
     with pytest.raises(ValueError):
         IngestionConfig(
-            source_path="s3://x", table="t", write_mode="merge",
-            merge_keys=["id", "region"], required_columns=["id"],
+            source_path="s3://x",
+            table="t",
+            write_mode="merge",
+            merge_keys=["id", "region"],
+            required_columns=["id"],
         )
     # should not raise - all merge_keys covered
     IngestionConfig(
-        source_path="s3://x", table="t", write_mode="merge",
-        merge_keys=["id", "region"], required_columns=["id", "region", "other"],
+        source_path="s3://x",
+        table="t",
+        write_mode="merge",
+        merge_keys=["id", "region"],
+        required_columns=["id", "region", "other"],
     )
 
 
@@ -49,13 +59,17 @@ def test_streaming_requires_checkpoint_and_schema_location():
 
 
 def test_full_table_name_and_quarantine_name():
-    cfg = IngestionConfig(source_path="s3://x", table="orders", schema_name="bronze", catalog="main")
+    cfg = IngestionConfig(
+        source_path="s3://x", table="orders", schema_name="bronze", catalog="main"
+    )
     assert cfg.full_table_name == "main.bronze.orders"
     assert cfg.resolved_quarantine_table == "main.bronze.orders_quarantine"
 
 
 def test_from_dict_ignores_unknown_keys():
-    cfg = IngestionConfig.from_dict({"source_path": "s3://x", "table": "t", "not_a_real_field": 123})
+    cfg = IngestionConfig.from_dict(
+        {"source_path": "s3://x", "table": "t", "not_a_real_field": 123}
+    )
     assert cfg.table == "t"
 
 
@@ -63,7 +77,9 @@ def test_cluster_by_and_partition_by_mutually_exclusive():
     with pytest.raises(ValueError):
         IngestionConfig(source_path="s3://x", table="t", partition_by=["date"], cluster_by=["id"])
     with pytest.raises(ValueError):
-        IngestionConfig(source_path="s3://x", table="t", partition_by=["date"], cluster_by_auto=True)
+        IngestionConfig(
+            source_path="s3://x", table="t", partition_by=["date"], cluster_by_auto=True
+        )
     # should not raise - only one of the two layout strategies set
     IngestionConfig(source_path="s3://x", table="t", partition_by=["date"])
     IngestionConfig(source_path="s3://x", table="t", cluster_by=["id"])
@@ -104,36 +120,57 @@ def _cfg(**overrides):
     return IngestionConfig(**base)
 
 
-@pytest.mark.parametrize("bad", [
-    "orders-2024",          # the realistic case: a hyphen
-    "it's",                 # an apostrophe - breaks the literal
-    "x' OR '1'='1",         # the injection shape #154 describes
-    "2024_orders",          # leading digit
-    "orders raw",           # space
-    "orders;DROP TABLE x",  # statement separator
-    "`orders`",             # backtick
-    "",                     # empty
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "orders-2024",  # the realistic case: a hyphen
+        "it's",  # an apostrophe - breaks the literal
+        "x' OR '1'='1",  # the injection shape #154 describes
+        "2024_orders",  # leading digit
+        "orders raw",  # space
+        "orders;DROP TABLE x",  # statement separator
+        "`orders`",  # backtick
+        "",  # empty
+    ],
+)
 def test_invalid_table_identifier_raises_at_config_load(bad):
     with pytest.raises(ValueError, match="table"):
         _cfg(table=bad)
 
 
-@pytest.mark.parametrize("field_name", [
-    "schema_name", "catalog", "audit_catalog", "registry_catalog",
-    "audit_schema_name", "audit_table", "registry_schema_name",
-    "registry_table", "audit_ingest_ts_col", "audit_source_file_col",
-    "audit_batch_id_col", "rescued_data_column", "corrupt_record_column",
-    "dedupe_order_by",
-])
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "schema_name",
+        "catalog",
+        "audit_catalog",
+        "registry_catalog",
+        "audit_schema_name",
+        "audit_table",
+        "registry_schema_name",
+        "registry_table",
+        "audit_ingest_ts_col",
+        "audit_source_file_col",
+        "audit_batch_id_col",
+        "rescued_data_column",
+        "corrupt_record_column",
+        "dedupe_order_by",
+    ],
+)
 def test_every_identifier_field_is_validated(field_name):
     with pytest.raises(ValueError, match=field_name):
         _cfg(**{field_name: "bad-name"})
 
 
-@pytest.mark.parametrize("field_name", [
-    "required_columns", "unique_columns", "partition_by", "cluster_by",
-])
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "required_columns",
+        "unique_columns",
+        "partition_by",
+        "cluster_by",
+    ],
+)
 def test_identifier_lists_are_validated_with_the_offending_index(field_name):
     with pytest.raises(ValueError, match=rf"{field_name}\[1\]"):
         _cfg(**{field_name: ["ok", "not ok"]})
@@ -179,13 +216,17 @@ def test_nested_column_comment_keys_are_allowed():
 
 def test_valid_identifiers_are_accepted():
     cfg = _cfg(
-        catalog="main", schema_name="bronze_dev", table="orders_raw",
-        required_columns=["order_id", "customer_id"], dedupe_order_by="updated_at",
+        catalog="main",
+        schema_name="bronze_dev",
+        table="orders_raw",
+        required_columns=["order_id", "customer_id"],
+        dedupe_order_by="updated_at",
     )
     assert cfg.full_table_name == "main.bronze_dev.orders_raw"
 
 
 # ---- reader_options allowlist (#154) ----
+
 
 def test_allowlisted_reader_options_are_accepted():
     cfg = _cfg(reader_options={"multiLine": "true", "dateFormat": "yyyy-MM-dd"})
@@ -215,6 +256,7 @@ def test_unsafe_reader_options_can_be_opted_into():
 
 
 # ---- numeric ranges (#54) ----
+
 
 @pytest.mark.parametrize("attempts", [0, -1])
 def test_retry_attempts_below_one_raises(attempts):
@@ -251,6 +293,7 @@ def test_max_files_per_trigger_none_means_no_limit():
 
 # ---- audit/registry schema default (#54) ----
 
+
 def test_audit_and_registry_default_to_the_target_schema():
     """The trap this closes: these used to default to the literal "bronze",
     so every environment sharing a catalog wrote its run history to one
@@ -271,13 +314,16 @@ def test_explicit_audit_schema_still_wins():
 
 # ---- cross-field combinations (#54) ----
 
+
 def test_streaming_with_overwrite_raises():
     """Every micro-batch would replace the whole table, so only the last one
     survives. There is no case where this is intended."""
     with pytest.raises(ValueError, match="micro-batch"):
         _cfg(
-            ingestion_mode="streaming", write_mode="overwrite",
-            checkpoint_location="/c", schema_location="/s",
+            ingestion_mode="streaming",
+            write_mode="overwrite",
+            checkpoint_location="/c",
+            schema_location="/s",
         )
 
 
@@ -286,15 +332,21 @@ def test_merge_dedupe_without_audit_columns_or_order_by_raises():
     which only exists because add_audit_columns creates it."""
     with pytest.raises(ValueError, match="dedupe_order_by"):
         _cfg(
-            write_mode="merge", merge_keys=["id"], required_columns=["id"],
-            dedupe_before_merge=True, add_audit_columns=False,
+            write_mode="merge",
+            merge_keys=["id"],
+            required_columns=["id"],
+            dedupe_before_merge=True,
+            add_audit_columns=False,
         )
 
 
 def test_merge_dedupe_without_audit_columns_is_fine_with_explicit_order_by():
     cfg = _cfg(
-        write_mode="merge", merge_keys=["id"], required_columns=["id"],
-        dedupe_before_merge=True, add_audit_columns=False,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        dedupe_before_merge=True,
+        add_audit_columns=False,
         dedupe_order_by="updated_at",
     )
     assert cfg.dedupe_order_by == "updated_at"
@@ -304,6 +356,7 @@ def test_dedupe_before_merge_on_a_non_merge_write_warns(caplog):
     """Warns rather than raises: the setting is merely ignored, and raising
     would break working configs carrying a harmless leftover."""
     import logging
+
     with caplog.at_level(logging.WARNING, logger="bronze_ingest"):
         _cfg(write_mode="append", dedupe_before_merge=True)
     assert "dedupe_before_merge" in caplog.text
@@ -311,6 +364,7 @@ def test_dedupe_before_merge_on_a_non_merge_write_warns(caplog):
 
 def test_registry_without_run_audit_warns(caplog):
     import logging
+
     with caplog.at_level(logging.WARNING, logger="bronze_ingest"):
         _cfg(enable_schema_registry=True, enable_run_audit=False)
     assert "drift" in caplog.text
@@ -338,14 +392,16 @@ def test_dedupe_before_merge_default_does_not_warn_on_append(caplog):
     must stay silent. Warning on the default would fire for every append
     pipeline, which is how a codebase teaches people to ignore its warnings."""
     import logging
+
     with caplog.at_level(logging.WARNING, logger="bronze_ingest"):
         _cfg(write_mode="append")
     assert "dedupe_before_merge" not in caplog.text
 
 
 def test_dedupe_before_merge_explicitly_false_is_respected():
-    cfg = _cfg(write_mode="merge", merge_keys=["id"], required_columns=["id"],
-               dedupe_before_merge=False)
+    cfg = _cfg(
+        write_mode="merge", merge_keys=["id"], required_columns=["id"], dedupe_before_merge=False
+    )
     assert cfg.resolved_dedupe_before_merge is False
 
 
@@ -372,6 +428,7 @@ def test_resolve_overrides_beat_the_dict():
 
 def test_resolve_overrides_beat_the_file(tmp_path):
     import json
+
     path = tmp_path / "c.json"
     path.write_text(json.dumps({"source_path": "x", "table": "from_file", "schema_name": "s"}))
 
@@ -384,6 +441,7 @@ def test_resolve_rejects_both_config_and_config_path(tmp_path):
     """The old code silently used config_path and discarded config entirely,
     handing the caller a config they did not ask for with no signal."""
     import json
+
     path = tmp_path / "c.json"
     path.write_text(json.dumps({"source_path": "x", "table": "t"}))
 
@@ -402,7 +460,5 @@ def test_from_dict_stays_lenient_about_unknown_keys():
     """Deliberately NOT strict, unlike resolve's kwargs: config files are
     versioned artifacts that may carry keys a given package version does not
     know yet. The strictness belongs where a human just typed the key."""
-    cfg = IngestionConfig.from_dict(
-        {"source_path": "x", "table": "t", "some_future_field": 1}
-    )
+    cfg = IngestionConfig.from_dict({"source_path": "x", "table": "t", "some_future_field": 1})
     assert cfg.table == "t"

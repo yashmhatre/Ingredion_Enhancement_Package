@@ -24,12 +24,11 @@ Never raises: catalog documentation failing must never fail an ingestion
 run, matching audit.py and schema_registry.py.
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from .config import IngestionConfig
 from .logging_utils import logger
-from .sql_utils import quote_literal, quote_ident
-
+from .sql_utils import quote_ident, quote_literal
 
 #: Kept as a module-level alias so existing references and tests keep
 #: working; the implementation now lives in sql_utils so every module escapes
@@ -45,7 +44,12 @@ def _current_table_comment(spark, full_name: str) -> Optional[str]:
         for row in spark.sql(f"DESCRIBE TABLE EXTENDED {full_name}").collect():
             if row[0] == "Comment":
                 return row[1]
-    except Exception:
+    # nosec B110 - the try/except/pass is the intended control flow, not a
+    # swallowed error. DESCRIBE TABLE EXTENDED is unavailable on some
+    # engines and fails on a table that does not exist yet; both mean "no
+    # comment is currently set", which is what the caller needs to diff
+    # against. Falling through to `return None` states that.
+    except Exception:  # noqa: BLE001 - no readable comment means no comment set  # nosec B110
         pass
     return None
 
@@ -61,7 +65,7 @@ def _current_column_comments(spark, full_name: str) -> Dict[str, str]:
     """
     try:
         return {c.name: c.description for c in spark.catalog.listColumns(full_name)}
-    except Exception:
+    except Exception:  # noqa: BLE001 - listColumns is unavailable outside UC; an empty map means 'nothing to diff'
         return {}
 
 
@@ -83,7 +87,11 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
     Returns a summary dict {"table_comment_applied", "columns_applied",
     "columns_skipped"} for logging/testing. Never raises.
     """
-    result = {"table_comment_applied": False, "columns_applied": [], "columns_skipped": []}
+    result: Dict[str, Any] = {
+        "table_comment_applied": False,
+        "columns_applied": [],
+        "columns_skipped": [],
+    }
 
     if not config.table_comment and not config.column_comments:
         return result
@@ -93,7 +101,8 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
     try:
         if not spark.catalog.tableExists(full_name):
             logger.warning(
-                "Skipping catalog metadata for %s: table does not exist.", full_name,
+                "Skipping catalog metadata for %s: table does not exist.",
+                full_name,
             )
             return result
 
@@ -130,13 +139,17 @@ def apply_catalog_metadata(spark, config: IngestionConfig) -> Dict[str, object]:
                     "Skipped column comments for %s: column(s) %s not present on the table "
                     "(nested paths like 'a.b' are not supported - bronze preserves nested "
                     "structures rather than flattening them). Available columns: %s",
-                    full_name, result["columns_skipped"], sorted(current),
+                    full_name,
+                    result["columns_skipped"],
+                    sorted(current),
                 )
             if result["columns_applied"]:
                 logger.info(
-                    "Applied column comments to %s: %s", full_name, result["columns_applied"],
+                    "Applied column comments to %s: %s",
+                    full_name,
+                    result["columns_applied"],
                 )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - documentation must never fail a successful write
         logger.warning("Failed to apply catalog metadata for %s: %s", full_name, exc)
 
     return result
