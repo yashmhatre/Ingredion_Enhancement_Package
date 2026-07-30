@@ -8,7 +8,13 @@ This is the single entry point most users need. It wires together:
 from typing import Any, Dict, Optional
 
 from .audit import audited_run, tag_failure_stage
-from .bronze_writer import add_audit_columns, write_bronze, write_bronze_micro_batch
+from .bronze_writer import (
+    add_audit_columns,
+    read_write_metrics,
+    resolve_batch_id,
+    write_bronze,
+    write_bronze_micro_batch,
+)
 from .catalog_metadata import apply_catalog_metadata
 from .config import IngestionConfig
 from .json_reader import read_json
@@ -50,7 +56,16 @@ class BronzeIngestion:
 
     # ---- the one orchestration body ----
 
-    def _execute(self, read_fn, writer, start_message, *, build_summary=True):
+    def _execute(
+        self,
+        read_fn,
+        writer,
+        start_message,
+        *,
+        build_summary=True,
+        stream_batch_id=None,
+        record_metadata=True,
+    ):
         """
         The single ingestion sequence, shared by all three entry points:
         read -> quality gate -> audit columns -> quarantine -> write ->
@@ -80,8 +95,23 @@ class BronzeIngestion:
             empty batch), hence the fallback when logging.
 
         build_summary: streaming's foreachBatch handler must return None.
+
+        stream_batch_id: Structured Streaming's micro-batch id, recorded on
+            the audit row so streaming rows are individually addressable
+            (#156). None on the batch paths.
+
+        record_metadata: whether to record the schema fingerprint and apply
+            catalog comments. False for streaming micro-batches, where both
+            are per-STREAM concerns that were being re-executed per batch -
+            2,880 times a day on a 30-second trigger (#156). run_streaming
+            does them once at stream start instead.
         """
-        with audited_run(self.spark, self.config, source_path=self.config.source_path) as audit:
+        with audited_run(
+            self.spark,
+            self.config,
+            source_path=self.config.source_path,
+            stream_batch_id=stream_batch_id,
+        ) as audit:
             logger.info(start_message, self.config.full_table_name)
 
             try:
@@ -95,28 +125,47 @@ class BronzeIngestion:
             except Exception as exc:
                 tag_failure_stage(exc, "quality")
                 raise
-            final_df = add_audit_columns(good_df, self.config)
+
+            # Resolved ONCE and passed to both calls (#148). Deriving it
+            # inside add_audit_columns gave the good rows and the bad rows
+            # different _batch_id values whenever config.batch_id was unset,
+            # which silently broke reprocess_quarantine(batch_id=...).
+            batch_id = resolve_batch_id(self.config)
+            final_df = add_audit_columns(good_df, self.config, batch_id=batch_id)
 
             write_quarantine(
-                self.spark, add_audit_columns(bad_df, self.config), bad_count, self.config
+                self.spark,
+                add_audit_columns(bad_df, self.config, batch_id=batch_id),
+                bad_count,
+                self.config,
             )
 
             try:
                 table_name = writer(final_df)
-                row_count = final_df.count()
             except Exception as exc:
                 tag_failure_stage(exc, "write")
                 raise
 
-            audit["row_count"] = row_count
+            # From Delta's transaction log, not a recount of final_df (#149).
+            # The old `final_df.count()` re-read the source and re-ran the
+            # quality gate to produce a number Delta already had, and under
+            # merge it was the wrong number anyway.
+            metrics = read_write_metrics(
+                self.spark, table_name or self.config.full_table_name, self.config.write_mode
+            )
+            audit.update(metrics)
             audit["quarantined_row_count"] = bad_count
-            fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
-            audit["schema_fingerprint"] = fingerprint
-            audit["schema_changed"] = schema_changed
-            apply_catalog_metadata(self.spark, self.config)
+            row_count = metrics["row_count"]
+
+            if record_metadata:
+                fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
+                audit["schema_fingerprint"] = fingerprint
+                audit["schema_changed"] = schema_changed
+                apply_catalog_metadata(self.spark, self.config)
+
             logger.info(
-                "Wrote %d row(s) to %s (%d quarantined)",
-                row_count,
+                "Wrote %s row(s) to %s (%d quarantined)",
+                "?" if row_count is None else row_count,
                 table_name or self.config.full_table_name,
                 bad_count,
             )
@@ -195,6 +244,29 @@ class BronzeIngestion:
 
         stream_df = read_json_stream(self.spark, self.config)
 
+        # Per-STREAM, not per-micro-batch (#156).
+        #
+        # Both of these ran inside the foreachBatch handler, so under
+        # `trigger_mode: processingTime` with "30 seconds" they executed 2,880
+        # times a day. record_schema is documented as cheap per call - "one
+        # small read and zero writes" - which is true, and 2,880 reads a day
+        # of a table whose schema changes approximately never is still waste.
+        # apply_catalog_metadata runs DESCRIBE TABLE EXTENDED plus
+        # listColumns whenever comments are configured.
+        #
+        # Once per stream is sufficient because Auto Loader RESTARTS the
+        # stream on a schema change under schemaEvolutionMode=addNewColumns -
+        # so a within-stream drift check has no work the restart does not
+        # already signal. If a case is ever found where a micro-batch schema
+        # can differ from the stream schema without a restart, this is the
+        # decision to revisit.
+        #
+        # Deliberately not fatal: a metadata failure must not stop a stream
+        # that is otherwise writing correctly, matching the never-raise
+        # contract these modules already have.
+        record_schema(self.spark, self.config, stream_df)
+        apply_catalog_metadata(self.spark, self.config)
+
         def _process_batch(micro_batch_df, batch_id):
             # #174's truncation guard runs as part of "reading" this
             # micro-batch, rather than as a separate step before the shared
@@ -209,11 +281,14 @@ class BronzeIngestion:
                 return micro_batch_df
 
             # build_summary=False: foreachBatch's handler must return None.
+            # record_metadata=False and stream_batch_id: see #156, above.
             self._execute(
                 _accept_micro_batch,
                 lambda df: write_bronze_micro_batch(self.spark, df, batch_id, self.config),
                 f"Processing micro-batch {batch_id} -> %s",
                 build_summary=False,
+                stream_batch_id=batch_id,
+                record_metadata=False,
             )
 
         query = (

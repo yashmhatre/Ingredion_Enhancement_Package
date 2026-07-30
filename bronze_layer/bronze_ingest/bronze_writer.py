@@ -5,6 +5,7 @@ schema evolution.
 """
 
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
@@ -15,11 +16,44 @@ from .retry import with_retry
 from .sql_utils import quote_literal, row_content_hash
 
 
-def add_audit_columns(df, config: IngestionConfig):
+def resolve_batch_id(config: IngestionConfig) -> str:
+    """
+    The `_batch_id` value for one run.
+
+    Call this ONCE per run and pass the result down (#148). It used to be
+    derived inside `add_audit_columns`, which is called twice per run - once
+    for the good rows and once for the bad - so with `config.batch_id` unset
+    each call produced its own microsecond timestamp and the bronze rows and
+    the quarantine rows from a single run carried DIFFERENT `_batch_id`s.
+
+    The visible consequence was in a recovery tool, several steps away:
+    `reprocess_quarantine(batch_id=...)` exists to replay the rows from a
+    given run, so an operator would read a `_batch_id` off the bronze table,
+    pass it in, and get zero matches with no error - the filter was valid and
+    simply matched nothing. "There was nothing to replay" is indistinguishable
+    from success, which is what made it worth fixing rather than documenting.
+
+    The deployed job sets `batch_id` to `{{job.run_id}}`, so production was
+    never affected. This was the library default failing on its own - the same
+    shape as the `audit_schema_name` trap closed in #54, where a correctness
+    property held only because one YAML file remembered to set a field.
+    """
+    return config.batch_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def add_audit_columns(df, config: IngestionConfig, batch_id: Optional[str] = None):
+    """
+    Stamps `_ingested_at`, `_batch_id` and `_source_file` onto df.
+
+    `batch_id` should be supplied by the caller, resolved once per run via
+    `resolve_batch_id`. It defaults to resolving its own only so that direct
+    callers outside the pipeline keep working; every in-package call site
+    passes one.
+    """
     if not config.add_audit_columns:
         return df
 
-    batch_id = config.batch_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    batch_id = batch_id if batch_id is not None else resolve_batch_id(config)
 
     df = df.withColumn(config.audit_ingest_ts_col, current_timestamp())
     df = df.withColumn(config.audit_batch_id_col, lit(batch_id))
@@ -334,6 +368,106 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         raise ValueError(f"Unknown write_mode: {config.write_mode}")
 
     return full_name
+
+
+#: What an audit row records about a write. Every value is None when the
+#: metrics could not be read, so a caller never has to distinguish "absent"
+#: from "zero".
+EMPTY_WRITE_METRICS: Dict[str, Any] = {
+    "row_count": None,
+    "source_row_count": None,
+    "rows_inserted": None,
+    "rows_updated": None,
+    "rows_deleted": None,
+}
+
+
+def read_write_metrics(spark, full_name: str, write_mode: str) -> Dict[str, Any]:
+    """
+    Row counts for the write that just committed, taken from Delta's own
+    transaction log rather than by recounting the DataFrame (#149).
+
+    Why not `final_df.count()`, which is what this replaces
+    -----------------------------------------------------
+    That count was an action on an uncached lazy plan, executed AFTER the
+    write had already consumed it, and `.cache()` is unavailable on
+    serverless. So it re-read the source and re-ran the entire quality gate
+    to produce a number Delta already knew exactly. On the batch path the
+    source was being scanned roughly four times per run; this removes one of
+    them for free, since reading the transaction log is a metadata operation.
+
+    It was also the WRONG number under `merge`. `final_df` is the
+    post-quality-gate source batch, so it counted rows that
+    `_dedupe_for_merge` collapsed before the MERGE ever saw them, and it
+    could not distinguish an insert from an update. A merge run that updated
+    500 existing rows and inserted nothing reported `row_count: 500`, which
+    reads as 500 new rows. Three open issues (#61, #62, #109) consume this
+    column as if it were comparable across runs and write modes.
+
+    What each mode reports
+    ----------------------
+    `append` / `overwrite` : `numOutputRows` - rows written. `source_row_count`
+        is the same number, because nothing is dropped between the gate and
+        the write.
+    `merge` : `numTargetRowsInserted` + `numTargetRowsUpdated` as `row_count`
+        (rows actually changed in the target), the three components
+        separately, and `numSourceRows` as `source_row_count`. The difference
+        between source and target counts is the dedupe/no-op ratio, which is
+        a genuinely useful signal and was previously unobservable.
+
+    Never raises. A metrics read failing must not fail an ingestion that has
+    already committed - the same rule audit.py and schema_registry.py follow.
+
+    One honest caveat: this reads the LATEST commit, so a concurrent writer
+    committing between our write and this read would have its metrics
+    attributed to our run. The deployed job sets `max_concurrent_runs: 1`
+    (#153/#164), which closes it for the case that actually occurs here.
+    """
+    try:
+        from delta.tables import DeltaTable
+
+        history = DeltaTable.forName(spark, full_name).history(1).select("operationMetrics")
+        rows = history.collect()
+        if not rows:
+            return dict(EMPTY_WRITE_METRICS)
+        metrics = rows[0][0] or {}
+
+        def _num(key):
+            value = metrics.get(key)
+            return int(value) if value is not None else None
+
+        if write_mode == "merge":
+            inserted = _num("numTargetRowsInserted")
+            updated = _num("numTargetRowsUpdated")
+            written = (
+                None if inserted is None and updated is None else (inserted or 0) + (updated or 0)
+            )
+            return {
+                "row_count": written,
+                "source_row_count": _num("numSourceRows"),
+                "rows_inserted": inserted,
+                "rows_updated": updated,
+                "rows_deleted": _num("numTargetRowsDeleted"),
+            }
+
+        written = _num("numOutputRows")
+        return {
+            "row_count": written,
+            "source_row_count": written,
+            "rows_inserted": None,
+            "rows_updated": None,
+            # An overwrite removes whatever was there. Delta reports it when
+            # it knows it; append never deletes.
+            "rows_deleted": _num("numDeletedRows") if write_mode == "overwrite" else None,
+        }
+    except Exception as exc:  # noqa: BLE001 - metrics must never fail a committed write
+        logger.warning(
+            "Could not read write metrics for %s: %s. The audit row will record "
+            "NULL counts for this run.",
+            full_name,
+            exc,
+        )
+        return dict(EMPTY_WRITE_METRICS)
 
 
 def write_bronze(spark, df, config: IngestionConfig):
