@@ -18,12 +18,13 @@ from pyspark.sql.functions import col, current_timestamp, lit
 from .audit import record_replay_run
 from .bronze_writer import write_bronze
 from .config import IngestionConfig
-from .directory_ingestion import (
-    _move_file_direct,
-    _read_retry_state,
-    _write_retry_state,
-    list_json_files,
-)
+
+# From `fs`, not `directory_ingestion` (#151). This module previously
+# imported three UNDERSCORE-PREFIXED names across a module boundary, which
+# meant any refactor of directory ingestion broke replay silently and the
+# privacy marker was actively misleading. Quarantine replay depends on file
+# movement and retry state; it has never depended on directory ingestion.
+from .fs import RetryState, list_json_files, move_file_direct
 from .logging_utils import logger
 from .quality import split_good_bad
 
@@ -313,15 +314,15 @@ def reprocess_quarantined_files(
         )
         return {"moved": [], "count": 0}
 
-    retry_state = _read_retry_state(source_dir)
+    retry_state = RetryState.load(source_dir)
     moved = []
     for file_path in files:
         filename = file_path.rsplit("/", 1)[-1]
         dest_path = f"{source_dir.rstrip('/')}/{filename}"
         try:
-            _move_file_direct(file_path, dest_path)
-            retry_state.pop(dest_path, None)
-            retry_state.pop(file_path, None)
+            move_file_direct(file_path, dest_path)
+            retry_state.clear(dest_path)
+            retry_state.clear(file_path)
             moved.append({"file": file_path, "destination": dest_path, "status": "moved"})
             logger.info(
                 "Restored quarantined file %s -> %s for reprocessing.", file_path, dest_path
@@ -330,5 +331,5 @@ def reprocess_quarantined_files(
             logger.error("Failed to restore quarantined file %s: %s", file_path, exc)
             moved.append({"file": file_path, "status": "failed", "error": str(exc)})
 
-    _write_retry_state(source_dir, retry_state)
+    retry_state.flush()
     return {"moved": moved, "count": sum(1 for m in moved if m["status"] == "moved")}

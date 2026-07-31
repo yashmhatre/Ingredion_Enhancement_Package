@@ -522,6 +522,29 @@ task, separate from the normal ingestion schedule.
 
 ## Package layout
 
+### Import direction
+
+`directory_ingestion.py` was 729 lines holding four unrelated
+responsibilities, and `replay.py` reached across the boundary for three
+*underscore-prefixed* names to get at them — so any refactor of that module
+broke replay silently, with the privacy marker actively misleading. Split in
+#151. The direction is now strictly one-way:
+
+```
+directory_ingestion ─┐
+                     ├─> fs/* ──> databricks_fs
+replay ──────────────┘     └────> fs/paths
+
+errors ──> (nothing)
+naming ──> (nothing)
+```
+
+Nothing under `fs/` imports `pipeline`, `config`, or each other except
+through `paths`, so none of it can participate in an import cycle. Symbols
+that moved are re-exported from `directory_ingestion`, so no existing import
+path breaks.
+
+
 ```
 bronze_layer/
   bronze_ingest/
@@ -531,7 +554,14 @@ bronze_layer/
     streaming_reader.py    # Auto Loader (cloudFiles) incremental read
     quality.py            # required-column + uniqueness validation, quarantine split
     bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
-    directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
+    directory_ingestion.py # ORCHESTRATION only: folder-as-table, per-unit failure isolation
+    naming.py              # filename -> table name (depends on nothing)
+    fs/                    # filesystem concerns, independent of ingestion
+      paths.py             #   file:// URI <-> local path
+      discovery.py         #   list_json_files / list_subfolders
+      archival.py          #   move_file / archive_ingested_file / archive_files_parallel
+      retry_state.py       #   RetryState - per-file failure counts, one load + one flush per run
+    errors.py              # shared exception types (no package imports - cannot cycle)
     audit.py               # run-level audit trail (audited_run context manager)
     schema_registry.py      # schema fingerprint + drift detection (one row per table)
     replay.py              # quarantine replay - reprocess_quarantine() / reprocess_quarantined_files()
