@@ -17,6 +17,7 @@ documents disagree, the owner below wins over the other.
 | Deployment targets, variables, run-as identities | `databricks.yml` (header comments) | The file *is* the configuration, so its comments cannot drift from what deploys. |
 | Job-level operational settings (concurrency, timeouts, retries) | `bronze_layer/resources/bronze_ingest_jobs.yml` | Same reasoning. |
 | Design rationale, delivery sequencing, remaining hardening phases | `bronze_layer/docs/architecture.md` | Phased and architectural. The reader-facing counterpart is `bronze_layer/README.md` § "Not yet implemented"; if they disagree, the open GitHub issues are the tiebreak. |
+| **What order the remaining work happens in, and why** | `docs/roadmap.md` | Phase plan over the open issues, with the gating relationships between them. The issues own *what* is left; this owns *when* and *why*. Re-audited against the code when it is updated — treat the phase numbering as current only as of the date in its header. |
 | First-time Azure / Databricks setup | `azure_setup.md` | Written from an actual walkthrough, including the real error text encountered. |
 | Contribution workflow, branch model | `CONTRIBUTING.md` | |
 | Performance numbers (archival cost, files-per-folder guidance) | `bronze_layer/docs/testing_directory_ingestion.md` | **Sole owner of the benchmark.** `architecture.md` and the `_archive_files_parallel` docstring both quote it and link back here; neither should carry an independent number. |
