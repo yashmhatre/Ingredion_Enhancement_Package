@@ -66,6 +66,80 @@ __all__ = [
 ]
 
 
+def _handle_unit_failure(
+    *,
+    source_dir: str,
+    file_path: str,
+    exc: Exception,
+    attempts: int,
+    max_ingestion_retries: int,
+    retry_state: RetryState,
+    relative_subpath: str = "",
+    extra_fields: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    The failure -> retry-count -> quarantine policy, in one place (#183).
+
+    This existed twice - once in the folder-as-table path and once in the
+    per-file path - and the two had already drifted: they produced different
+    result-dict shapes, and only one of them logged. Two implementations of
+    one policy is how those paths diverge, and the divergence had happened
+    before anyone noticed.
+
+    The policy: a unit that has failed `max_ingestion_retries` times is moved
+    to `quarantine_files/` and its retry count forgotten, so a permanently
+    broken file stops being retried forever. Below the limit it is left in
+    place for the next run, with its count carried forward.
+
+    Returns the result dict for this unit. `extra_fields` is how the two
+    callers keep the shapes they already had - the per-file path carries
+    `table`, the folder path's inner entries do not, because the table is
+    recorded once on the parent folder result. Preserving that was
+    deliberate: the notebook summary reads these, and changing the shape is a
+    separate decision from removing the duplication.
+
+    `retry_state` is mutated but not flushed - the caller flushes once per
+    run (#151).
+    """
+    result: Dict[str, Any] = {
+        "file": file_path,
+        "status": "failed",
+        "error": str(exc),
+        "attempts": attempts,
+        **(extra_fields or {}),
+    }
+
+    if attempts < max_ingestion_retries:
+        # increment() has already recorded the attempt; the state file is
+        # written once at the end of the run.
+        logger.warning(
+            "%s failed ingestion (attempt %d/%d) - left in place for retry",
+            file_path,
+            attempts,
+            max_ingestion_retries,
+        )
+        return result
+
+    retry_state.clear(file_path)
+    try:
+        dest = move_file(
+            source_dir, file_path, "quarantine_files", relative_subpath=relative_subpath
+        )
+        logger.warning(
+            "%s failed ingestion %d time(s) - quarantined to %s", file_path, attempts, dest
+        )
+        result.update({"move_status": "quarantined", "move_detail": dest})
+    except Exception as move_exc:  # noqa: BLE001 - per-unit isolation: one unit's failure must not stop the others
+        logger.error(
+            "%s failed ingestion %d time(s) and could not be quarantined: %s",
+            file_path,
+            attempts,
+            move_exc,
+        )
+        result.update({"move_status": "failed_left_in_place", "move_detail": str(move_exc)})
+    return result
+
+
 def _ingest_folder_as_table(
     spark, source_dir, folder_path, table, shared_config, stop_on_error, max_ingestion_retries
 ):
@@ -127,45 +201,17 @@ def _ingest_folder_as_table(
             if stop_on_error:
                 raise
 
-            attempts = retry_state.increment(file_path)
-            if attempts >= max_ingestion_retries:
-                retry_state.clear(file_path)
-                try:
-                    dest = move_file(
-                        source_dir, file_path, "quarantine_files", relative_subpath=folder_name
-                    )
-                    file_results.append(
-                        {
-                            "file": file_path,
-                            "status": "failed",
-                            "error": str(exc),
-                            "attempts": attempts,
-                            "move_status": "quarantined",
-                            "move_detail": dest,
-                        }
-                    )
-                except Exception as move_exc:  # noqa: BLE001 - one file's move failure must not abandon the rest of the folder
-                    file_results.append(
-                        {
-                            "file": file_path,
-                            "status": "failed",
-                            "error": str(exc),
-                            "attempts": attempts,
-                            "move_status": "failed_left_in_place",
-                            "move_detail": str(move_exc),
-                        }
-                    )
-            else:
-                # increment() above already recorded the attempt; the state
-                # file is written once at the end of the run (#151).
-                file_results.append(
-                    {
-                        "file": file_path,
-                        "status": "failed",
-                        "error": str(exc),
-                        "attempts": attempts,
-                    }
+            file_results.append(
+                _handle_unit_failure(
+                    source_dir=source_dir,
+                    file_path=file_path,
+                    exc=exc,
+                    attempts=retry_state.increment(file_path),
+                    max_ingestion_retries=max_ingestion_retries,
+                    retry_state=retry_state,
+                    relative_subpath=folder_name,
                 )
+            )
 
     retry_state.flush()
 
@@ -412,66 +458,17 @@ def ingest_directory_to_bronze(
                 if stop_on_error:
                     raise
 
-                attempts = retry_state.increment(file_path)
-
-                if attempts >= max_ingestion_retries:
-                    retry_state.clear(file_path)
-                    try:
-                        dest = move_file(source_dir, file_path, "quarantine_files")
-                        logger.warning(
-                            "%s failed ingestion %d time(s) - quarantined to %s",
-                            file_path,
-                            attempts,
-                            dest,
-                        )
-                        results.append(
-                            {
-                                "file": file_path,
-                                "table": table,
-                                "status": "failed",
-                                "error": str(exc),
-                                "attempts": attempts,
-                                "move_status": "quarantined",
-                                "move_detail": dest,
-                            }
-                        )
-                    except Exception as move_exc:  # noqa: BLE001 - per-unit isolation: one unit's failure must not stop the others
-                        logger.error(
-                            "%s failed ingestion %d time(s) and could not be quarantined: %s",
-                            file_path,
-                            attempts,
-                            move_exc,
-                        )
-                        results.append(
-                            {
-                                "file": file_path,
-                                "table": table,
-                                "status": "failed",
-                                "error": str(exc),
-                                "attempts": attempts,
-                                "move_status": "failed_left_in_place",
-                                "move_detail": str(move_exc),
-                            }
-                        )
-                else:
-                    # increment() already recorded it; flushed once at the
-                    # end of the run rather than here (#151).
-                    logger.warning(
-                        "%s failed ingestion (attempt %d/%d) - left in raw/ for retry",
-                        file_path,
-                        attempts,
-                        max_ingestion_retries,
+                results.append(
+                    _handle_unit_failure(
+                        source_dir=source_dir,
+                        file_path=file_path,
+                        exc=exc,
+                        attempts=retry_state.increment(file_path),
+                        max_ingestion_retries=max_ingestion_retries,
+                        retry_state=retry_state,
+                        extra_fields={"table": table},
                     )
-                    results.append(
-                        {
-                            "file": file_path,
-                            "table": table,
-                            "status": "failed",
-                            "error": str(exc),
-                            "attempts": attempts,
-                        }
-                    )
-
+                )
         elif item["type"] == "folder":
             folder_path = item["source"]
             folder_result = _ingest_folder_as_table(

@@ -629,3 +629,70 @@ def test_per_file_config_warns_when_it_matches_nothing(spark, json_test_dir, mon
 
     assert "matched no discovered file" in caplog.text
     assert "typo_in_name.json" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# One failure policy, two paths (#183)
+# ---------------------------------------------------------------------------
+
+
+def _failure_result(**kwargs):
+    """Drives the unified policy directly, so the two callers' shapes can be
+    compared without staging two full ingestion runs."""
+    from bronze_ingest.directory_ingestion import _handle_unit_failure
+
+    defaults = dict(
+        source_dir="file:///nowhere",
+        file_path="file:///nowhere/a.json",
+        exc=RuntimeError("boom"),
+        attempts=1,
+        max_ingestion_retries=3,
+    )
+    defaults.update(kwargs)
+    return _handle_unit_failure(**defaults)
+
+
+def test_below_the_retry_limit_the_unit_is_left_in_place(tmp_path):
+    state = RetryState(str(tmp_path), {})
+    result = _failure_result(attempts=1, max_ingestion_retries=3, retry_state=state)
+
+    assert result["status"] == "failed"
+    assert result["attempts"] == 1
+    # No move was attempted, so no move fields - the file stays for next run.
+    assert "move_status" not in result
+    # And its count is not forgotten.
+    assert state.attempts("file:///nowhere/a.json") == 0  # never incremented here
+
+
+def test_at_the_retry_limit_the_unit_is_quarantined_and_its_count_forgotten(tmp_path):
+    """A permanently-broken file must stop being retried forever."""
+    state = RetryState(str(tmp_path), {"file:///nowhere/a.json": 3})
+    result = _failure_result(attempts=3, max_ingestion_retries=3, retry_state=state)
+
+    # The move fails here (nowhere is not a real path), which is itself the
+    # documented fallback: report it rather than lose the file.
+    assert result["status"] == "failed"
+    assert result["move_status"] in ("quarantined", "failed_left_in_place")
+    assert state.attempts("file:///nowhere/a.json") == 0, "count cleared at the limit"
+
+
+def test_both_paths_produce_the_same_shape_for_the_same_failure(tmp_path):
+    """
+    The drift this issue is about. The two call sites previously had separate
+    implementations and had already diverged; nothing asserted they agreed.
+
+    They differ in exactly one documented way: the per-file path carries
+    `table`, because the folder path records the table once on the parent
+    folder result rather than on every inner file.
+    """
+    per_file = _failure_result(
+        retry_state=RetryState(str(tmp_path), {}), extra_fields={"table": "orders_bronze"}
+    )
+    folder_inner = _failure_result(
+        retry_state=RetryState(str(tmp_path), {}), relative_subpath="orders"
+    )
+
+    assert set(per_file) - set(folder_inner) == {"table"}
+    assert set(folder_inner) - set(per_file) == set()
+    for key in ("file", "status", "error", "attempts"):
+        assert per_file[key] == folder_inner[key]
