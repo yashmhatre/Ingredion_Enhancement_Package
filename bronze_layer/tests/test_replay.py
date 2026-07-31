@@ -2,9 +2,9 @@ import json
 import os
 import uuid
 
-import bronze_ingest.directory_ingestion as di
 from bronze_ingest.bronze_writer import add_audit_columns
 from bronze_ingest.config import IngestionConfig
+from bronze_ingest.fs import RetryState
 from bronze_ingest.quality import enforce_quality, write_quarantine
 from bronze_ingest.replay import reprocess_quarantine, reprocess_quarantined_files
 
@@ -191,11 +191,14 @@ def test_reprocess_quarantined_files_resets_retry_state(spark, json_test_dir):
     _write(qdir, "bad.json", json.dumps({"id": 1}))
 
     dest_path = f"{source_dir.rstrip('/')}/bad.json"
-    di._write_retry_state(source_dir, {dest_path: 2})
+    seeded = RetryState.load(source_dir)
+    seeded.increment(dest_path)
+    seeded.increment(dest_path)
+    seeded.flush()
 
     reprocess_quarantined_files(spark, source_dir)
 
-    state = di._read_retry_state(source_dir)
+    state = RetryState.load(source_dir).as_dict()
     assert dest_path not in state
 
 
