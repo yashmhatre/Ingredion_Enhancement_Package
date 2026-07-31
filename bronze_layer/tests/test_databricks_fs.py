@@ -11,7 +11,7 @@ exercised deliberately.
 import pytest
 
 import bronze_ingest.databricks_fs as dfs
-import bronze_ingest.directory_ingestion as di
+from bronze_ingest.fs import discovery
 
 # ---- fakes ----
 
@@ -190,7 +190,7 @@ def test_subfolders_found_when_sdk_paths_have_no_trailing_slash(monkeypatch):
         ),
     )
 
-    dirs = di._try_dbutils_ls_dirs("/Volumes/x")
+    dirs = discovery._try_dbutils_ls_dirs("/Volumes/x")
 
     assert dirs == ["/Volumes/x/customers", "/Volumes/x/orders"]
 
@@ -210,12 +210,12 @@ def test_file_listing_excludes_directories(monkeypatch):
         ),
     )
 
-    files = di._try_dbutils_ls("/Volumes/x")
+    files = discovery._try_dbutils_ls("/Volumes/x")
 
     assert files == ["/Volumes/x/orders.json"]
 
 
 def test_listing_returns_none_off_databricks_so_local_path_is_used(monkeypatch):
     _no_backends(monkeypatch)
-    assert di._try_dbutils_ls("/anything") is None
-    assert di._try_dbutils_ls_dirs("/anything") is None
+    assert discovery._try_dbutils_ls("/anything") is None
+    assert discovery._try_dbutils_ls_dirs("/anything") is None
