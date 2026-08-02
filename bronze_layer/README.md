@@ -16,6 +16,14 @@ See [docs/architecture.md](docs/architecture.md) for the target-state
 architecture, including planned multi-format ingestion and the
 async AI-assisted metadata layer.
 
+## Testing
+
+[docs/test_manual_bronze.md](docs/test_manual_bronze.md) is the manual test
+plan — what a tester should exercise before a release, with expected results
+for each case. It opens with a readiness assessment: **batch JSON is
+validated end to end; streaming (Auto Loader) is not**, because Auto Loader
+cannot run outside Databricks and therefore has no automated coverage.
+
 ## Install (on a Databricks cluster)
 
 Upload the `bronze_layer` folder as a workspace file, or build a wheel
