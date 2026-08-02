@@ -126,10 +126,11 @@ python -m venv venv
 source venv/bin/activate      # Mac/Linux
 venv\Scripts\activate         # Windows
 
-# 3. Install dependencies (includes pyspark, delta-spark, pytest and build
-#    via the dev extra). `build` is what `databricks bundle deploy` uses to
-#    package the wheel locally before uploading it - without it a deploy
-#    fails with "No module named build" before reaching the workspace.
+# 3. Install dependencies (pyspark, delta-spark, pytest, and build via the
+#    dev extra). None of this is needed to DEPLOY - the bundle builds its
+#    wheel with `python -m pip wheel`, so a deploy needs only the Databricks
+#    CLI and works the same from a laptop or from Databricks compute. This
+#    is for running the tests locally.
 pip install -e ".[dev]"
 
 # 4. Run tests to confirm your setup works
