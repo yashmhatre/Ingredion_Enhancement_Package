@@ -1005,18 +1005,32 @@ by accident.
 
 ### Deploy prerequisites
 
-Deploying builds the wheel locally before uploading it, so the Python
-environment you deploy *from* needs the build tooling — not just the
-Databricks CLI:
+**Nothing beyond the Databricks CLI.** Deploying builds the wheel before
+uploading it, and `databricks.yml` builds it with `python -m pip wheel`,
+which needs only pip — present in every environment that can run the CLI.
+A deploy works the same from a laptop, a Databricks notebook, or the web
+terminal.
 
-```bash
-pip install build          # or: pip install -e "bronze_layer[dev]"
-```
+This was not always true, and the history is worth keeping. The build
+command used to be `python -m build --wheel`, which requires the `build`
+package. That is a reasonable assumption on a laptop that followed the
+setup guide and wrong everywhere else — a deploy from Databricks compute
+runs in the cluster's ephemeral Python environment
+(`/local_disk0/.ephemeral_nfs/envs/pythonEnv-…`), where `build` is absent
+and would not survive a restart even once installed. It failed with
+`No module named build` before reaching the workspace, twice, months apart.
+Documenting the prerequisite did not stop the second occurrence; removing it
+did.
 
-Without it, `bundle deploy` fails at the artifact step with
-`No module named build` before it reaches the workspace. The `dev` extra in
-`bronze_layer/setup.py` includes it, along with pytest and the local
-Spark/Delta stack.
+For local development, `pip install -e ".[dev]"` still installs `build`
+along with pytest and the Spark/Delta stack — `python -m build` remains the
+conventional way to package by hand. It is just no longer required to
+deploy.
+
+> **Do not install the `[dev]` extra on Databricks compute.** It pulls
+> `pyspark` and `delta-spark`, which the runtime already provides, and a
+> second copy risks the version conflict `setup.py` warns about for
+> `databricks-sdk`. Nothing needs installing there now.
 
 **Deploying `staging` or `prod` also needs the `Service Principal: User` role
 on the target service principal**, granted in the Databricks account console

@@ -252,8 +252,14 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
-          python -m pip install --upgrade pip setuptools build
-          python -m build --wheel
+          # Deliberately the SAME command databricks.yml's `artifacts.build`
+          # runs, so CI verifies the wheel the deploy actually produces. When
+          # these drifted, CI built with `build` while a deploy from Databricks
+          # compute had no `build` to run - green CI, failed deploy.
+          # `build` is not installed here for the same reason: if this step
+          # needs it, the deploy would too.
+          python -m pip install --upgrade pip setuptools
+          python -m pip wheel . --no-deps --no-build-isolation -w dist
 
       - name: Verify wheel contents and version
         if: steps.changes.outputs.run == 'true'

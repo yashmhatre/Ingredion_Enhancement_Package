@@ -58,7 +58,33 @@ artifacts:
   bronze_ingest_wheel:
     type: whl
     path: ./bronze_layer
-    build: python -m build --wheel
+    # `pip wheel`, not `python -m build`, and not the CLI's own default.
+    #
+    # This ran `python -m build --wheel`, which requires the `build` package
+    # in whatever environment runs the deploy. That is fine on a laptop that
+    # followed the setup guide and wrong everywhere else: a deploy from a
+    # Databricks notebook or web terminal runs in the cluster's ephemeral
+    # Python environment, where `build` is absent and does not persist across
+    # restarts. It failed with "No module named build" before ever reaching
+    # the workspace - twice, months apart, which is the tell that documenting
+    # the prerequisite was not the fix.
+    #
+    # pip is present in every environment that can run the CLI at all, so
+    # there is nothing left to install. Verified the output is identical to
+    # `python -m build --wheel`: same filename, same 27 archive entries.
+    #
+    # Dropping the override entirely was the other option - the CLI falls
+    # back to `setup.py bdist_wheel`. Rejected: that is the deprecated
+    # invocation, and it bypasses the build backend declared in
+    # pyproject.toml, which #158 added precisely because relying on the
+    # implicit setuptools fallback is not a guarantee.
+    #
+    # --no-deps: build this package only, not its dependencies.
+    # --no-build-isolation: use the setuptools already present instead of
+    #   downloading a fresh one into a temp environment. Keeps the deploy
+    #   working offline and fast; the ambient setuptools on any Databricks
+    #   runtime is far newer than the >=61 pyproject.toml asks for.
+    build: python -m pip wheel . --no-deps --no-build-isolation -w dist
 
 variables:
   catalog:
