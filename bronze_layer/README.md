@@ -1018,6 +1018,25 @@ Without it, `bundle deploy` fails at the artifact step with
 `bronze_layer/setup.py` includes it, along with pytest and the local
 Spark/Delta stack.
 
+> **Deploying from Databricks compute rather than a laptop?** The advice
+> above is for a local environment, and the `[dev]` extra is the *wrong*
+> choice on a cluster: it installs `pyspark` and `delta-spark`, which the
+> runtime already provides, and a second copy risks the version conflict
+> `setup.py` warns about for `databricks-sdk`. Install only the build
+> tooling:
+>
+> ```python
+> %pip install build
+> dbutils.library.restartPython()
+> ```
+>
+> From the web terminal, plain `pip install build`. Either way it lands in
+> the cluster's ephemeral environment
+> (`/local_disk0/.ephemeral_nfs/envs/pythonEnv-…`), so it does **not**
+> survive a cluster restart and has to be reinstalled each session. If that
+> becomes tiresome, put `build` in a cluster-scoped library or an init
+> script rather than reaching for the `[dev]` extra.
+
 **Deploying `staging` or `prod` also needs the `Service Principal: User` role
 on the target service principal**, granted in the Databricks account console
 under User management → Service principals → Permissions. This is an

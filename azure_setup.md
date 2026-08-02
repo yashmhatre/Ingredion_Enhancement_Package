@@ -344,6 +344,19 @@ pip install -e ".[dev]"      # includes build, pytest, pyspark, delta-spark
 # or minimally:  pip install build
 ```
 
+**If you deploy from Databricks compute instead of a laptop**, use the
+minimal form only:
+
+```python
+%pip install build
+dbutils.library.restartPython()
+```
+
+`.[dev]` is wrong there — it installs `pyspark` and `delta-spark` alongside
+the ones the runtime already provides. Note the cluster's Python environment
+is ephemeral (`/local_disk0/.ephemeral_nfs/envs/pythonEnv-…`), so this is
+needed again after every cluster restart.
+
 Validated: without it, `bundle deploy` fails at the artifact step before ever
 reaching the workspace:
 
