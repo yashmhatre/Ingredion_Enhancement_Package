@@ -345,9 +345,23 @@ Two, both recorded rather than resolved:
 derived from the code — it must exceed the slowest CDF consumer's lag, and
 no consumer exists yet. Needs confirming before #58 ships. Tracked in #159.
 
-**Buy-vs-build (#163).** Whether Databricks Labs DQX replaces the silver
-rule engine #109 proposes. The contract's §5 decision — that Silver
-reimplements rather than sharing `quality.py` — is contingent on the answer.
+**Buy-vs-build — resolved.** `docs/buy_vs_build_2026-08.md` (#163) records a
+verdict for each framework feature in the backlog, reached by running
+DQX against a fixture rather than reading its README.
+
+The finding that decided it: **DQX cannot be constructed without an
+authenticated Databricks workspace.** `workspace_client` is a required
+positional argument on both `DQEngine` and `DQEngineCore`, and it is
+dereferenced during construction — a stub client raises on `.clusters`
+before any DataFrame is touched. Adopting it would make the silver quality
+path untestable by the 322-test local suite, which is the same constraint
+that stopped #64 shipping Unity Catalog tags, and it applies with more force
+to a quality gate.
+
+So #109 is **build**, and the contract's §5 decision stands rather than
+being contingent. Lakeflow Declarative Pipelines is **not adopted** — the
+differentiators that justified building (folder-as-table, per-file archival,
+retry-limit across runs, quarantine replay) all still hold.
 
 All previously-open design questions (format dispatch mechanism, metadata
 store boundaries, async trigger mechanism, `flatten_mode` across formats,
