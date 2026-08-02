@@ -44,10 +44,11 @@ bundle:
 
 include:
   - bronze_layer/resources/*.yml
-  # silver_layer has no deployable resources yet (it's a stub plus the
-  # archived flattener). Uncomment once silver_layer/resources/ contains
-  # at least one .yml - an include pattern matching zero files is an error.
-  # - silver_layer/resources/*.yml
+  # Defines no jobs yet - the silver pipeline does not exist. The file is
+  # here so this include is valid at all: an include pattern matching zero
+  # files is a bundle error, which is why this line was commented out and
+  # the layer was not deployable even in principle (#162).
+  - silver_layer/resources/*.yml
 
 # The package is built into a wheel and uploaded on every deploy, then
 # installed onto job compute via each task's `libraries:`. This replaces
