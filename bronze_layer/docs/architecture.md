@@ -80,6 +80,37 @@ surprise as the fixture-folder incident documented in
 source directory was auto-ingested unnoticed. Explicit configuration is
 preferred over implicit discovery.
 
+**Why `multiline` IS inferred per file, when `source_format` is not.** The
+two look like the same decision and are not, so the apparent inconsistency
+is deliberate (#146).
+
+`source_format` decides **which files are ingested**. Inferring it can
+surprise someone with data they never asked for, and the failure is
+recoverable but noisy — a table exists that should not.
+
+`multiline` decides **how a file already selected for ingestion is
+parsed**. Inferring it cannot pull in unexpected data; the only thing it
+can change is whether a `.jsonl` file yields all its records or just the
+first. Getting it wrong destroys data *silently*: `multiLine=true` on
+JSON-lines returns one row, with no error and nothing in
+`_corrupt_record`.
+
+So the asymmetry follows from the consequences, not from a general
+preference. Inference is rejected where the downside is unexpected data
+and accepted where the downside is silent data loss. `.json` stays
+config-driven in both directions, because it is genuinely ambiguous — it
+may be one pretty-printed document or JSON-lines — and only `.jsonl` /
+`.ndjson` state their format unambiguously.
+
+The rule is applied per file on the batch path, where discovery
+enumerates files and reads them one at a time. Auto Loader cannot work
+that way: it is given a directory and a fixed `multiLine` at stream start,
+and files arriving later cannot be classified in advance. The streaming
+path therefore pairs the same extension rule (for single-file sources)
+with a per-micro-batch guard that fails the batch rather than committing a
+truncated read — see `streaming_reader.assert_no_silent_truncation`, and
+the README's "Streaming and JSON-lines" table.
+
 ### What multi-format does not change
 
 Everything downstream of the reader is already format-agnostic — it
@@ -209,10 +240,16 @@ Nested structures now land in bronze exactly as read.
    the deployment-level half. The library-level half is still open: two
    callers invoking `ingest_directory_to_bronze` against one `source_dir`
    from anywhere else are still unguarded.
-6. **Config validation and allowlist governance** — *partly done* via
-   #154 (config-field validation) and #166 (unknown-field rejection in
-   `ingest_directory_to_bronze`). The allowlist-governance half —
-   restricting which catalogs/schemas/paths a config may name — is open.
+6. **Config validation and allowlist governance** — *barely started*.
+   #166 rejects unknown keys passed to `ingest_directory_to_bronze`, which
+   is the shallowest part of it. The substance is open and tracked in
+   **#154** (identifier validation, SQL escaping, `reader_options`
+   allowlist) and **#54** (numeric ranges, identifier safety). Neither is
+   implemented.
+
+   *(An earlier revision of this list said phase 6 was "partly done via
+   #154". That was wrong — #154 is the issue describing the remaining
+   work, not work delivered.)*
 7. **Secrets via Databricks secret scopes** (#115) — not started; blocked
    on the workspace provisioning in #112.
 

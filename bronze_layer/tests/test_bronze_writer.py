@@ -3,11 +3,14 @@ import uuid
 
 import pytest
 
-from bronze_ingest.config import IngestionConfig
 from bronze_ingest.bronze_writer import (
-    write_bronze, add_audit_columns, NullMergeKeyError, DuplicateMergeKeyError,
+    DuplicateMergeKeyError,
+    NullMergeKeyError,
     _resolve_idempotent_txn_version,
+    add_audit_columns,
+    write_bronze,
 )
+from bronze_ingest.config import IngestionConfig
 
 
 def _cfg(table, **overrides):
@@ -29,7 +32,9 @@ def test_merge_refuses_null_merge_keys(spark):
     # retry_attempts=1: this is a deterministic config error, not a
     # transient failure - no point burning the default 10s/20s backoff
     # retrying something that will fail identically every time.
-    cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"], retry_attempts=1)
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"], retry_attempts=1
+    )
 
     df = spark.createDataFrame([(1, "a"), (None, "b")], ["id", "name"])
 
@@ -44,7 +49,10 @@ def test_merge_first_load_creates_table_and_merges(spark):
     # dedupe_before_merge is orthogonal to this test - disable it so this
     # test doesn't depend on audit columns being present (see #48 tests).
     cfg = _cfg(
-        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
         dedupe_before_merge=False,
     )
 
@@ -65,8 +73,13 @@ def test_concurrent_first_loads_do_not_duplicate_rows(spark):
     """
     table = f"bw_race_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
-        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
-        retry_attempts=5, retry_delay_seconds=0.1, dedupe_before_merge=False,
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        retry_attempts=5,
+        retry_delay_seconds=0.1,
+        dedupe_before_merge=False,
     )
 
     barrier = threading.Barrier(2)
@@ -76,7 +89,7 @@ def test_concurrent_first_loads_do_not_duplicate_rows(spark):
         try:
             barrier.wait(timeout=10)
             write_bronze(spark, spark.createDataFrame(rows, ["id", "name"]), cfg)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - collects whatever a concurrent writer thread raised, for later assertion
             errors.append(exc)
 
     t1 = threading.Thread(target=_run, args=([(1, "a"), (2, "b")],))
@@ -93,7 +106,10 @@ def test_concurrent_first_loads_do_not_duplicate_rows(spark):
 def test_merge_updates_matched_and_inserts_new_rows(spark):
     table = f"bw_merge_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
-        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
         dedupe_before_merge=False,
     )
 
@@ -111,7 +127,10 @@ def test_merge_dedupes_duplicate_keys_before_merge(spark):
     picking the highest dedupe_order_by value."""
     table = f"bw_dedupe_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
-        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
         dedupe_order_by="version",
     )
 
@@ -128,8 +147,12 @@ def test_merge_dedupes_duplicate_keys_before_merge(spark):
 def test_merge_raises_clear_error_on_duplicates_when_dedupe_disabled(spark):
     table = f"bw_dupe_fail_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
-        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
-        dedupe_before_merge=False, retry_attempts=1,
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        dedupe_before_merge=False,
+        retry_attempts=1,
     )
 
     df = spark.createDataFrame([(1, "a"), (1, "a-again"), (2, "b")], ["id", "name"])
@@ -145,7 +168,9 @@ def test_merge_dedupe_missing_order_column_raises_clear_error(spark):
     # dedupe_before_merge defaults True, and dedupe_order_by defaults to
     # audit_ingest_ts_col ("_ingested_at"), which isn't present here since
     # add_audit_columns() was never called on this raw DataFrame.
-    cfg = _cfg(table, write_mode="merge", merge_keys=["id"], required_columns=["id"], retry_attempts=1)
+    cfg = _cfg(
+        table, write_mode="merge", merge_keys=["id"], required_columns=["id"], retry_attempts=1
+    )
     df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
 
     with pytest.raises(ValueError, match="_ingested_at"):
@@ -189,7 +214,11 @@ def test_add_audit_columns_falls_back_to_source_path_without_lineage(spark, capl
 
 def _layout(spark, table):
     """(clusteringColumns, properties) for an already-written table - see #57."""
-    row = spark.sql(f"DESCRIBE DETAIL {_table(table)}").select("clusteringColumns", "properties").collect()[0]
+    row = (
+        spark.sql(f"DESCRIBE DETAIL {_table(table)}")
+        .select("clusteringColumns", "properties")
+        .collect()[0]
+    )
     return row["clusteringColumns"], (row["properties"] or {})
 
 
@@ -228,8 +257,12 @@ def test_overwrite_preserves_clustering_across_runs(spark):
 def test_merge_creates_liquid_clustered_table(spark):
     table = f"bw_cluster_merge_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
-        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
-        cluster_by=["id"], dedupe_before_merge=False,
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        cluster_by=["id"],
+        dedupe_before_merge=False,
     )
 
     write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
@@ -244,7 +277,8 @@ def test_merge_creates_liquid_clustered_table(spark):
 def test_table_properties_applied_at_creation(spark):
     table = f"bw_props_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
-        table, write_mode="append",
+        table,
+        write_mode="append",
         table_properties={"delta.enableChangeDataFeed": "true"},
     )
 
@@ -260,8 +294,12 @@ def test_table_properties_altered_when_config_changes(spark):
     write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
 
     cfg2 = _cfg(
-        table, write_mode="append",
-        table_properties={"delta.enableChangeDataFeed": "true", "delta.logRetentionDuration": "interval 60 days"},
+        table,
+        write_mode="append",
+        table_properties={
+            "delta.enableChangeDataFeed": "true",
+            "delta.logRetentionDuration": "interval 60 days",
+        },
     )
     write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg2)
 
@@ -302,6 +340,7 @@ def test_cluster_by_auto_degrades_gracefully_when_unsupported(spark, caplog):
 
 
 # ---- idempotent batch writes (#63) ----
+
 
 def test_resolve_idempotent_txn_version_cases():
     cfg_int_str = _cfg("t", batch_id="12345")
@@ -391,8 +430,12 @@ def test_idempotent_batch_writes_not_applied_to_merge(spark, monkeypatch):
 
     table = f"bw_idempotent_merge_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(
-        table, write_mode="merge", merge_keys=["id"], required_columns=["id"],
-        batch_id="4001", dedupe_before_merge=False,
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        batch_id="4001",
+        dedupe_before_merge=False,
     )
 
     captured = {}
@@ -407,3 +450,45 @@ def test_idempotent_batch_writes_not_applied_to_merge(spark, monkeypatch):
     write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
 
     assert captured["txn_options"] is None
+
+
+def test_read_write_metrics_never_raises_on_an_unreadable_table(caplog):
+    """
+    #149: metrics come from Delta's transaction log, and reading them must
+    never fail a write that has ALREADY COMMITTED. A run that wrote its data
+    successfully and then lost its row counts is an annoyance; the same run
+    reported as failed is a false alarm someone gets paged for.
+
+    No Spark session needed - passing None makes the Delta call fail, which
+    is exactly the path under test.
+    """
+    from bronze_ingest.bronze_writer import EMPTY_WRITE_METRICS, read_write_metrics
+
+    metrics = read_write_metrics(None, "no.such.table", "append")
+
+    assert metrics == EMPTY_WRITE_METRICS
+    assert all(v is None for v in metrics.values())
+    assert "Could not read write metrics" in caplog.text
+
+
+def test_resolve_batch_id_is_stable_for_one_config_and_explicit_value():
+    """#148: an explicit batch_id must survive verbatim - the deployed job
+    passes {{job.run_id}} and #63's idempotency is keyed on it."""
+    from bronze_ingest.bronze_writer import resolve_batch_id
+
+    cfg = _cfg("t", batch_id="12345")
+    assert resolve_batch_id(cfg) == "12345"
+    assert resolve_batch_id(cfg) == "12345"
+
+
+def test_resolve_batch_id_generates_a_distinct_value_when_unset():
+    """
+    The generated form is a timestamp, so two SEPARATE runs get different
+    ids - which is correct. The bug #148 fixed was calling this twice within
+    ONE run, which is why the pipeline resolves it once and passes it down.
+    """
+    from bronze_ingest.bronze_writer import resolve_batch_id
+
+    cfg = _cfg("t")
+    first = resolve_batch_id(cfg)
+    assert first and first.endswith("Z")

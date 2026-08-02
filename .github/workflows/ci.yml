@@ -9,10 +9,10 @@ name: CI
 # Deliberately NOT using GitHub's native `paths:` filter to skip doc-only
 # changes. A path-filtered workflow does not run at all, so a required
 # status check never reports and the PR blocks forever - the same deadlock
-# the branch list above avoids. Instead both jobs always run and always
-# report; each detects whether files it actually depends on changed, and
+# the branch list above avoids. Instead every job always runs and always
+# reports; each detects whether files it actually depends on changed, and
 # skips only its expensive steps. A docs-only PR finishes in seconds with
-# both checks green.
+# all three checks green.
 on:
   pull_request:
     branches: [main, staging, dev]
@@ -38,9 +38,20 @@ jobs:
       - name: Detect whether tested code changed
         id: changes
         env:
-          # Paths the pytest suite actually depends on. Docs, bundle config,
-          # notebooks and sample YAML are excluded - no test reads them.
-          WATCHED: '^bronze_layer/(bronze_ingest|tests)/|^bronze_layer/(setup\.py|pytest\.ini)$|^\.github/workflows/ci\.yml$'
+          # Paths the pytest suite actually depends on.
+          #
+          # `notebooks/` and `resources/` are watched as of #157, and the
+          # comment that used to sit here - "notebooks and sample YAML are
+          # excluded, no test reads them" - was accurate and was the problem.
+          # notebooks/ holds the deployed job entrypoints, both known live
+          # production defects (#144, #145) were there, and neither could ever
+          # have been caught while CI did not look at the path. tests/
+          # test_notebooks.py now reads both directories, including a contract
+          # test that parses resources/*.yml against the widget declarations.
+          #
+          # pytest.ini was folded into pyproject.toml (#158), which now also
+          # carries the pytest config, so it is watched in its place.
+          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks|resources)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^\.github/workflows/ci\.yml$'
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -85,16 +96,51 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools
           pip install -e ".[dev]"
-          pip install pytest-json-report playwright
+          pip install pytest-json-report pytest-cov playwright
           playwright install --with-deps chromium
 
+      # Coverage is REPORTED, not enforced (#158). No --cov-fail-under: a
+      # threshold picked before the real number is known is either trivially
+      # met or immediately red, and neither is informative. Add one once the
+      # number has been watched for a few runs.
       - name: Run tests
+        id: pytest
         if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
-        run: pytest -v --json-report --json-report-file=report.json
+        run: |
+          pytest -v --json-report --json-report-file=report.json \
+            --cov=bronze_ingest --cov-report=term-missing --cov-report=json:coverage.json
         continue-on-error: true
+
+      - name: Summarise coverage
+        id: coverage
+        if: steps.changes.outputs.run == 'true'
+        working-directory: bronze_layer
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib
+          p = pathlib.Path("coverage.json")
+          if not p.exists():
+              print("pct=n/a")
+              print("line=_Coverage unavailable - the suite did not finish._")
+              raise SystemExit
+          d = json.loads(p.read_text())
+          pct = d["totals"]["percent_covered"]
+          rows = sorted(
+              (
+                  (f.replace("\\", "/").split("/")[-1],
+                   s["summary"]["percent_covered"],
+                   s["summary"]["num_statements"])
+                  for f, s in d["files"].items()
+              ),
+              key=lambda r: r[1],
+          )[:5]
+          print(f"pct={pct:.1f}")
+          body = " / ".join(f"`{n}` {p:.0f}%" for n, p, _ in rows)
+          print(f"line=**Coverage {pct:.1f}%** - least covered: {body}")
+          PY
 
       - name: Render report card
         id: render
@@ -130,6 +176,8 @@ jobs:
             |-------:|-------:|--------:|------:|---------:|
             | ${{ steps.render.outputs.passed }} | ${{ steps.render.outputs.failed }} | ${{ steps.render.outputs.skipped }} | ${{ steps.render.outputs.total }} | ${{ steps.render.outputs.duration }}s |
 
+            ${{ steps.coverage.outputs.line }}
+
             📊 [**View full visual report**](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) — per-file breakdown and failure details on the run summary, plus a downloadable report card image.
 
       # Replaces the results table rather than leaving a stale one from an
@@ -141,7 +189,7 @@ jobs:
         with:
           header: test-results
           message: |
-            ⏭️ **Test suite skipped** — no changes under `bronze_layer/bronze_ingest/`, `bronze_layer/tests/`, `setup.py`, `pytest.ini`, or the CI workflow.
+            ⏭️ **Test suite skipped** — no changes under `bronze_layer/bronze_ingest/`, `bronze_layer/tests/`, `bronze_layer/notebooks/`, `bronze_layer/resources/`, `setup.py`, `pyproject.toml`, or the CI workflow.
 
             The suite last ran against the most recent commit that touched those paths. Push a change to any of them to re-run it.
 
@@ -166,9 +214,11 @@ jobs:
       - name: Detect whether packaged code changed
         id: changes
         env:
-          # Narrower than the test job: tests/ and pytest.ini do not affect
-          # the wheel, and are excluded from it by design.
-          WATCHED: '^bronze_layer/bronze_ingest/|^bronze_layer/setup\.py$|^\.github/workflows/ci\.yml$'
+          # Narrower than the test job: tests/ do not affect the wheel, and
+          # are excluded from it by design. pyproject.toml IS watched here -
+          # unlike pytest.ini before it, it declares the build backend, so a
+          # change to it can break the wheel (#158).
+          WATCHED: '^bronze_layer/bronze_ingest/|^bronze_layer/(setup\.py|pyproject\.toml)$|^\.github/workflows/ci\.yml$'
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -202,8 +252,14 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         working-directory: bronze_layer
         run: |
-          python -m pip install --upgrade pip build
-          python -m build --wheel
+          # Deliberately the SAME command databricks.yml's `artifacts.build`
+          # runs, so CI verifies the wheel the deploy actually produces. When
+          # these drifted, CI built with `build` while a deploy from Databricks
+          # compute had no `build` to run - green CI, failed deploy.
+          # `build` is not installed here for the same reason: if this step
+          # needs it, the deploy would too.
+          python -m pip install --upgrade pip setuptools
+          python -m pip wheel . --no-deps --no-build-isolation -w dist
 
       - name: Verify wheel contents and version
         if: steps.changes.outputs.run == 'true'
@@ -256,3 +312,140 @@ jobs:
           )
           print('wheel imports cleanly:', bronze_ingest.__version__)
           "
+
+  # Static gates that catch a problem before a test would (#158). Deliberately
+  # a separate job: it needs no Java, no Spark and no Databricks, so it
+  # finishes in seconds and reports independently of the 5-minute test job.
+  #
+  # Same change-detection shape as the other two, for the same reason - a
+  # path-filtered workflow never reports, and a required status check that
+  # never reports blocks the PR forever.
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect whether linted code changed
+        id: changes
+        env:
+          # Notebooks ARE watched here, unlike the test job. They are the
+          # deployed entrypoints, and #157 records that both known live
+          # defects were in that layer precisely because nothing looked at it.
+          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^\.github/workflows/ci\.yml$'
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          elif [ -n "${{ github.event.before }}" ] && \
+               [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && \
+               git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            CHANGED=$(git diff --name-only "${{ github.event.before }}" HEAD)
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "No usable diff base - running all quality gates."
+            exit 0
+          fi
+
+          echo "Changed files:"; echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE "$WATCHED"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Linted code changed - running the quality gates."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No linted code changed - skipping the quality gates."
+          fi
+
+      - name: Set up Python
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install quality tooling
+        if: steps.changes.outputs.run == 'true'
+        working-directory: bronze_layer
+        run: |
+          # setuptools is upgraded explicitly, not incidentally. The runner
+          # image ships 79.0.1, which carries PYSEC-2026-3447, and pip-audit
+          # below fails the build on it - correctly. It is a real build
+          # dependency (pyproject's build-system requires it), so the fix is
+          # to upgrade rather than to add an --ignore-vuln exception.
+          python -m pip install --upgrade pip setuptools
+          pip install ruff==0.16.0 mypy==2.3.0 bandit==1.9.4 pip-audit==2.10.1
+          # mypy needs the package's own imports resolvable to check call
+          # signatures; without this every bronze_ingest import is Any and
+          # call-arg silently stops working.
+          pip install -e ".[dev]"
+
+      # Each gate runs even if an earlier one failed, so one PR gets the full
+      # picture instead of one finding per push.
+      - name: ruff format
+        if: steps.changes.outputs.run == 'true'
+        working-directory: bronze_layer
+        run: ruff format --check --diff bronze_ingest tests notebooks
+
+      - name: ruff lint
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        working-directory: bronze_layer
+        run: ruff check --output-format=github bronze_ingest tests notebooks
+
+      - name: mypy
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        working-directory: bronze_layer
+        run: mypy bronze_ingest notebooks
+
+      - name: bandit
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        working-directory: bronze_layer
+        run: bandit -r bronze_ingest
+
+      # A CVE in a dependency legitimately blocks until someone triages it.
+      # If a finding turns out not to apply, add `--ignore-vuln <ID>` here
+      # with a comment saying why - do not delete the step.
+      - name: pip-audit
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        working-directory: bronze_layer
+        run: pip-audit --progress-spinner off --skip-editable
+
+      # Catches malformed YAML, unresolved ${var.*} references and notebook
+      # paths that do not exist - the failure class of #118 and #122, both of
+      # which reached `dev` and were found only by an authenticated deploy
+      # (#157). Cheap to run here, expensive to find there.
+      #
+      # `validate` is a local operation: it resolves the bundle and checks its
+      # shape. It does not need a workspace, so the required variables are
+      # supplied with placeholder values rather than credentials - the point
+      # is that every reference RESOLVES, not that the values are real.
+      #
+      # Non-blocking on purpose, for now. Newer CLI versions have at times
+      # required authentication even for `validate`, and a gate that fails for
+      # a reason unrelated to the change is a gate people learn to ignore. If
+      # it proves stable across a few runs, drop continue-on-error and make it
+      # a real gate - that is the intended end state, not this.
+      - name: Install Databricks CLI
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        uses: databricks/setup-cli@main
+
+      - name: databricks bundle validate
+        id: bundle_validate
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        continue-on-error: true
+        run: |
+          databricks bundle validate -t dev \
+            --var="notification_email=ci@example.invalid" \
+            --var="run_as_service_principal=00000000-0000-0000-0000-000000000000"
+
+      - name: Note bundle validate outcome
+        if: '!cancelled() && steps.changes.outputs.run == ''true'''
+        run: |
+          if [ "${{ steps.bundle_validate.outcome }}" = "success" ]; then
+            echo "::notice::bundle validate passed"
+          else
+            echo "::warning::bundle validate did not pass. It is non-blocking today \
+          (see the comment in ci.yml). If this is a real bundle error, fix it; if it \
+          is an auth requirement, record that on #157 and drop the step."
+          fi

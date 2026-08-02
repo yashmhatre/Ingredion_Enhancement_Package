@@ -340,12 +340,16 @@ Databricks CLI alone is not enough.
 
 ```bash
 cd bronze_layer
-pip install -e ".[dev]"      # includes build, pytest, pyspark, delta-spark
-# or minimally:  pip install build
+pip install -e ".[dev]"      # pytest, pyspark, delta-spark for running tests
 ```
 
-Validated: without it, `bundle deploy` fails at the artifact step before ever
-reaching the workspace:
+**Deploying needs nothing beyond the CLI.** `databricks.yml` builds the
+wheel with `python -m pip wheel`, so a deploy works the same from a laptop,
+a notebook, or the Databricks web terminal.
+
+That is a change from how this originally read. The build command was
+`python -m build --wheel`, which needs the `build` package, and this step
+used to tell you to install it. Validated failure when you did not:
 
 ```
 Building bronze_ingest_wheel...
@@ -353,6 +357,11 @@ Error: build failed bronze_ingest_wheel, error: exit status 1, output:
 > python -m build --wheel
 python.exe: No module named build
 ```
+
+It happened twice, months apart — the second time from Databricks compute,
+where the Python environment is ephemeral and the fix would not have
+survived a cluster restart anyway. The build command now uses pip, which is
+always present, so the prerequisite is gone rather than documented.
 
 ---
 

@@ -5,20 +5,56 @@ schema evolution.
 """
 
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
-from pyspark.sql.functions import lit, current_timestamp, col, row_number
+from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
 
 from .config import IngestionConfig
-from .retry import with_retry
+from .errors import DuplicateMergeKeyError, NullMergeKeyError
 from .logging_utils import logger
+from .retry import with_retry
+from .sql_utils import quote_literal, row_content_hash
 
 
-def add_audit_columns(df, config: IngestionConfig):
+def resolve_batch_id(config: IngestionConfig) -> str:
+    """
+    The `_batch_id` value for one run.
+
+    Call this ONCE per run and pass the result down (#148). It used to be
+    derived inside `add_audit_columns`, which is called twice per run - once
+    for the good rows and once for the bad - so with `config.batch_id` unset
+    each call produced its own microsecond timestamp and the bronze rows and
+    the quarantine rows from a single run carried DIFFERENT `_batch_id`s.
+
+    The visible consequence was in a recovery tool, several steps away:
+    `reprocess_quarantine(batch_id=...)` exists to replay the rows from a
+    given run, so an operator would read a `_batch_id` off the bronze table,
+    pass it in, and get zero matches with no error - the filter was valid and
+    simply matched nothing. "There was nothing to replay" is indistinguishable
+    from success, which is what made it worth fixing rather than documenting.
+
+    The deployed job sets `batch_id` to `{{job.run_id}}`, so production was
+    never affected. This was the library default failing on its own - the same
+    shape as the `audit_schema_name` trap closed in #54, where a correctness
+    property held only because one YAML file remembered to set a field.
+    """
+    return config.batch_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def add_audit_columns(df, config: IngestionConfig, batch_id: Optional[str] = None):
+    """
+    Stamps `_ingested_at`, `_batch_id` and `_source_file` onto df.
+
+    `batch_id` should be supplied by the caller, resolved once per run via
+    `resolve_batch_id`. It defaults to resolving its own only so that direct
+    callers outside the pipeline keep working; every in-package call site
+    passes one.
+    """
     if not config.add_audit_columns:
         return df
 
-    batch_id = config.batch_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    batch_id = batch_id if batch_id is not None else resolve_batch_id(config)
 
     df = df.withColumn(config.audit_ingest_ts_col, current_timestamp())
     df = df.withColumn(config.audit_batch_id_col, lit(batch_id))
@@ -33,15 +69,12 @@ def add_audit_columns(df, config: IngestionConfig):
         logger.warning(
             "No _input_file_name column found - %s will be set to config.source_path "
             "(%r) instead of per-file lineage for every row.",
-            config.audit_source_file_col, config.source_path,
+            config.audit_source_file_col,
+            config.source_path,
         )
         df = df.withColumn(config.audit_source_file_col, lit(config.source_path))
 
     return df
-
-
-class NullMergeKeyError(Exception):
-    pass
 
 
 def _assert_no_null_merge_keys(df, merge_keys):
@@ -67,10 +100,6 @@ def _assert_no_null_merge_keys(df, merge_keys):
         )
 
 
-class DuplicateMergeKeyError(Exception):
-    pass
-
-
 def _dedupe_for_merge(df, config: IngestionConfig):
     """
     Delta MERGE raises "Cannot perform Merge as multiple source rows
@@ -79,6 +108,19 @@ def _dedupe_for_merge(df, config: IngestionConfig):
     intra-batch duplicates, so deterministically keep one row per key -
     the one with the highest dedupe_order_by value (defaults to the
     ingestion timestamp, so the most-recently-ingested row wins).
+
+    "Deterministically" needs the content-hash tie-break to be true (#147).
+    The default order column is the ingestion timestamp, which
+    add_audit_columns() sets from `current_timestamp()` - identical for
+    every row in the batch, so on the default path EVERY row is a tie and
+    the ordering was decided entirely by partition layout. Delta's MERGE can
+    re-evaluate the source plan, so which duplicate won was not stable.
+
+    The tie-break makes the choice a function of row content. It does not
+    make the *hash* stable when a column is itself nondeterministic
+    (`current_timestamp()` re-evaluates across separate actions) - that is
+    upstream of here and is what #63's idempotency addresses. What it does
+    remove is the dependence on how Spark happened to partition the data.
     """
     order_col = config.dedupe_order_by or config.audit_ingest_ts_col
     if order_col not in df.columns:
@@ -88,7 +130,9 @@ def _dedupe_for_merge(df, config: IngestionConfig):
             "or leave add_audit_columns=True so the default (audit_ingest_ts_col) exists."
         )
 
-    w = Window.partitionBy(*config.merge_keys).orderBy(col(f"`{order_col}`").desc())
+    w = Window.partitionBy(*(config.merge_keys or [])).orderBy(
+        col(f"`{order_col}`").desc(), row_content_hash(df).asc()
+    )
     return (
         df.withColumn("_dedupe_rn", row_number().over(w))
         .filter(col("_dedupe_rn") == 1)
@@ -127,7 +171,7 @@ def _describe_current_layout(spark, full_name):
             .collect()[0]
         )
         return row["clusteringColumns"], (row["properties"] or {})
-    except Exception:
+    except Exception:  # noqa: BLE001 - DESCRIBE DETAIL is unavailable on some engines; absent state is the answer
         return None, {}
 
 
@@ -173,25 +217,36 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
         if current_cluster_cols is not None:
             logger.warning(
                 "Cluster-by columns changed for %s: %s -> %s",
-                full_name, current_cluster_cols, config.cluster_by,
+                full_name,
+                current_cluster_cols,
+                config.cluster_by,
             )
 
     if config.cluster_by_auto:
         try:
             spark.sql(f"ALTER TABLE {full_name} CLUSTER BY AUTO")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - CLUSTER BY AUTO is DBR-only; unsupported elsewhere is expected, not fatal
             logger.warning(
                 "cluster_by_auto=True but this engine doesn't support CLUSTER BY AUTO "
                 "(expected outside Databricks Runtime, which manages predictive "
-                "optimization for AUTO-clustered tables): %s", exc,
+                "optimization for AUTO-clustered tables): %s",
+                exc,
             )
 
     changed_props = {
-        k: v for k, v in (config.table_properties or {}).items()
-        if current_props.get(k) != v
+        k: v for k, v in (config.table_properties or {}).items() if current_props.get(k) != v
     }
     if changed_props:
-        props_clause = ", ".join(f"'{k}' = '{v}'" for k, v in changed_props.items())
+        # Both sides escaped (#154). `table_properties` is a free-form
+        # Dict[str, str] straight from YAML, and both key and value landed in
+        # single-quoted SQL literals raw: a value containing an apostrophe
+        # broke the statement, and a crafted one appended arbitrary DDL to it.
+        # The keys are additionally validated at config load, per
+        # dot-separated part, since they are dotted by convention
+        # (delta.enableChangeDataFeed).
+        props_clause = ", ".join(
+            f"'{quote_literal(k)}' = '{quote_literal(v)}'" for k, v in changed_props.items()
+        )
         spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
 
@@ -247,7 +302,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         writer = writer.option("mergeSchema", "true")
     if config.partition_by:
         writer = writer.partitionBy(*config.partition_by)
-    if txn_options:  # idempotent-write options (txnAppId/txnVersion) - streaming foreachBatch or batch retry-safety (#63)
+    # idempotent-write options (txnAppId/txnVersion) - streaming foreachBatch
+    # or batch retry-safety (#63)
+    if txn_options:
         for k, v in txn_options.items():
             writer = writer.option(k, v)
 
@@ -270,7 +327,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
 
         _assert_no_null_merge_keys(df, config.merge_keys)
 
-        if config.dedupe_before_merge:
+        # resolved_, not the raw field: it defaults to None so config load can
+        # tell an explicit choice from silence, and None is falsy (#54).
+        if config.resolved_dedupe_before_merge:
             df = _dedupe_for_merge(df, config)
         else:
             _assert_no_duplicate_merge_keys(df, config.merge_keys)
@@ -290,7 +349,7 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         creator.execute()
 
         target = DeltaTable.forName(spark, full_name)
-        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in config.merge_keys)
+        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in (config.merge_keys or []))
         (
             target.alias("target")
             .merge(df.alias("source"), condition)
@@ -302,6 +361,106 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         raise ValueError(f"Unknown write_mode: {config.write_mode}")
 
     return full_name
+
+
+#: What an audit row records about a write. Every value is None when the
+#: metrics could not be read, so a caller never has to distinguish "absent"
+#: from "zero".
+EMPTY_WRITE_METRICS: Dict[str, Any] = {
+    "row_count": None,
+    "source_row_count": None,
+    "rows_inserted": None,
+    "rows_updated": None,
+    "rows_deleted": None,
+}
+
+
+def read_write_metrics(spark, full_name: str, write_mode: str) -> Dict[str, Any]:
+    """
+    Row counts for the write that just committed, taken from Delta's own
+    transaction log rather than by recounting the DataFrame (#149).
+
+    Why not `final_df.count()`, which is what this replaces
+    -----------------------------------------------------
+    That count was an action on an uncached lazy plan, executed AFTER the
+    write had already consumed it, and `.cache()` is unavailable on
+    serverless. So it re-read the source and re-ran the entire quality gate
+    to produce a number Delta already knew exactly. On the batch path the
+    source was being scanned roughly four times per run; this removes one of
+    them for free, since reading the transaction log is a metadata operation.
+
+    It was also the WRONG number under `merge`. `final_df` is the
+    post-quality-gate source batch, so it counted rows that
+    `_dedupe_for_merge` collapsed before the MERGE ever saw them, and it
+    could not distinguish an insert from an update. A merge run that updated
+    500 existing rows and inserted nothing reported `row_count: 500`, which
+    reads as 500 new rows. Three open issues (#61, #62, #109) consume this
+    column as if it were comparable across runs and write modes.
+
+    What each mode reports
+    ----------------------
+    `append` / `overwrite` : `numOutputRows` - rows written. `source_row_count`
+        is the same number, because nothing is dropped between the gate and
+        the write.
+    `merge` : `numTargetRowsInserted` + `numTargetRowsUpdated` as `row_count`
+        (rows actually changed in the target), the three components
+        separately, and `numSourceRows` as `source_row_count`. The difference
+        between source and target counts is the dedupe/no-op ratio, which is
+        a genuinely useful signal and was previously unobservable.
+
+    Never raises. A metrics read failing must not fail an ingestion that has
+    already committed - the same rule audit.py and schema_registry.py follow.
+
+    One honest caveat: this reads the LATEST commit, so a concurrent writer
+    committing between our write and this read would have its metrics
+    attributed to our run. The deployed job sets `max_concurrent_runs: 1`
+    (#153/#164), which closes it for the case that actually occurs here.
+    """
+    try:
+        from delta.tables import DeltaTable
+
+        history = DeltaTable.forName(spark, full_name).history(1).select("operationMetrics")
+        rows = history.collect()
+        if not rows:
+            return dict(EMPTY_WRITE_METRICS)
+        metrics = rows[0][0] or {}
+
+        def _num(key):
+            value = metrics.get(key)
+            return int(value) if value is not None else None
+
+        if write_mode == "merge":
+            inserted = _num("numTargetRowsInserted")
+            updated = _num("numTargetRowsUpdated")
+            written = (
+                None if inserted is None and updated is None else (inserted or 0) + (updated or 0)
+            )
+            return {
+                "row_count": written,
+                "source_row_count": _num("numSourceRows"),
+                "rows_inserted": inserted,
+                "rows_updated": updated,
+                "rows_deleted": _num("numTargetRowsDeleted"),
+            }
+
+        written = _num("numOutputRows")
+        return {
+            "row_count": written,
+            "source_row_count": written,
+            "rows_inserted": None,
+            "rows_updated": None,
+            # An overwrite removes whatever was there. Delta reports it when
+            # it knows it; append never deletes.
+            "rows_deleted": _num("numDeletedRows") if write_mode == "overwrite" else None,
+        }
+    except Exception as exc:  # noqa: BLE001 - metrics must never fail a committed write
+        logger.warning(
+            "Could not read write metrics for %s: %s. The audit row will record "
+            "NULL counts for this run.",
+            full_name,
+            exc,
+        )
+        return dict(EMPTY_WRITE_METRICS)
 
 
 def write_bronze(spark, df, config: IngestionConfig):
@@ -330,7 +489,8 @@ def write_bronze(spark, df, config: IngestionConfig):
                 "idempotent_batch_writes=True but batch_id=%r isn't an integer or a "
                 "recognized timestamp format - can't derive a stable txnVersion, so this "
                 "write is not idempotent-protected. Pass an integer batch_id (e.g. a "
-                "Databricks job run ID) for retry-safe batch writes.", config.batch_id,
+                "Databricks job run ID) for retry-safe batch writes.",
+                config.batch_id,
             )
         else:
             logger.debug(
@@ -340,7 +500,11 @@ def write_bronze(spark, df, config: IngestionConfig):
                 "this guarantee."
             )
 
-    @with_retry(attempts=config.retry_attempts, delay_seconds=config.retry_delay_seconds)
+    @with_retry(
+        attempts=config.retry_attempts,
+        delay_seconds=config.retry_delay_seconds,
+        max_total_seconds=config.retry_max_total_seconds,
+    )
     def _do_write():
         return _write_core(spark, df, config, txn_options=txn_options)
 
@@ -372,7 +536,11 @@ def write_bronze_micro_batch(spark, micro_batch_df, batch_id: int, config: Inges
     txn_app_id = config.checkpoint_location or config.full_table_name
     txn_options = {"txnAppId": txn_app_id, "txnVersion": str(batch_id)}
 
-    @with_retry(attempts=config.retry_attempts, delay_seconds=config.retry_delay_seconds)
+    @with_retry(
+        attempts=config.retry_attempts,
+        delay_seconds=config.retry_delay_seconds,
+        max_total_seconds=config.retry_max_total_seconds,
+    )
     def _do_write():
         return _write_core(spark, micro_batch_df, config, txn_options=txn_options)
 

@@ -33,6 +33,89 @@ changes.
 
 ## Local Development Setup
 
+### Prerequisites (get these right first)
+
+Five things must be in place before `pytest` will run the Spark-backed
+tests. Each one was found the hard way, in this order, and each produces a
+failure that looks like something else (#74). The pure-Python tests — config
+validation, notebooks, retry — need none of it and run anywhere.
+
+**1. Java 17.** Spark supports 8/11/17 only. A newer JDK fails at
+`SparkSession` creation with `ClassNotFoundException: jdk.internal.ref.Cleaner`.
+Install Temurin 17 (what CI uses) and set `JAVA_HOME`.
+
+**2. Python 3.11**, in a venv of its own (e.g. `.venv311`) rather than by
+replacing an existing interpreter.
+
+Worth correcting the record, because #74 got this wrong and the wrong
+diagnosis cost real time: the issue attributes `TypeError: 'JavaPackage'
+object is not callable` to Python 3.14. On PySpark 4.1.x that error no
+longer occurs — the session builds fine. What *was* still failing looked
+like a version problem and was not; see prerequisite 4.
+
+3.11 remains the recommendation because it is what CI runs and what this
+setup was verified against end to end. Whether 3.14 also works once
+prerequisite 4 is set has not been tested.
+
+**3. `winutils.exe` + `hadoop.dll` (Windows only).** Without `HADOOP_HOME`,
+Spark fails during session creation at `Shell.checkHadoopHomeInner` —
+so it blocks every Spark test, including ones that never touch a file.
+
+Match the Hadoop version PySpark bundles, not the newest mirror you find:
+
+```powershell
+python -c "import pyspark, glob, os; print(glob.glob(os.path.join(os.path.dirname(pyspark.__file__),'jars','hadoop-client-api-*.jar')))"
+```
+
+PySpark 4.1.x bundles Hadoop **3.4.x**. The widely-linked `cdarlint/winutils`
+mirror stops at 3.3.6; `kontext-tech/winutils` carries `hadoop-3.4.0-win10-x64`,
+which works. Both are third-party binaries — Apache publishes no Windows
+builds — so this is a judgement call, not a vendor download.
+
+```powershell
+# put winutils.exe and hadoop.dll in <dir>\bin, then:
+setx HADOOP_HOME C:\Users\<you>\hadoop
+```
+
+**4. `PYSPARK_PYTHON` (Windows).** The single most important one, and the
+one that looks exactly like a Python-version problem. Without it, Spark
+launches its Python workers with whatever `python` it finds rather than the
+venv's, and every test needing a worker dies with `SparkException: Python
+worker exited unexpectedly (crashed)`. That is the *same* symptom a wrong
+Python version produces, which is why #74 originally attributed it to 3.14 —
+setting this fixed 94 of 105 failures on 3.11, and the version alone fixed
+none of them.
+
+```powershell
+setx PYSPARK_PYTHON <repo>\.venv311\Scripts\python.exe
+setx PYSPARK_DRIVER_PYTHON <repo>\.venv311\Scripts\python.exe
+```
+
+**5. `SPARK_LOCAL_IP` (Windows, Spark 4.x).** Not in the original issue, and
+the reason step 3 alone is not enough. With `winutils` in place the Hadoop
+error is replaced by:
+
+```
+Py4JError: An error occurred while calling None.org.apache.spark.api.java.JavaSparkContext
+Caused by: NullPointerException: ... "idWithoutTopologyInfo" is null
+```
+
+That is driver host resolution, not Hadoop:
+
+```powershell
+setx SPARK_LOCAL_IP 127.0.0.1
+setx SPARK_LOCAL_HOSTNAME localhost
+```
+
+Both are **environment** settings on purpose. Pinning the driver host in
+`conftest.py` would be a Windows-specific workaround that CI does not need
+and that could break Linux.
+
+> **Local Spark on Windows is usable but not fully reliable** even with all
+> five in place — session startup intermittently fails with the same
+> `JavaSparkContext` error. Re-running usually works. The pure-Python suites
+> are unaffected, and CI remains the source of truth for Spark-backed tests.
+
 ```bash
 # 1. Clone the repo
 git clone https://github.com/yashmhatre/Ingredion_Enhancement_Package.git
@@ -43,10 +126,11 @@ python -m venv venv
 source venv/bin/activate      # Mac/Linux
 venv\Scripts\activate         # Windows
 
-# 3. Install dependencies (includes pyspark, delta-spark, pytest and build
-#    via the dev extra). `build` is what `databricks bundle deploy` uses to
-#    package the wheel locally before uploading it - without it a deploy
-#    fails with "No module named build" before reaching the workspace.
+# 3. Install dependencies (pyspark, delta-spark, pytest, and build via the
+#    dev extra). None of this is needed to DEPLOY - the bundle builds its
+#    wheel with `python -m pip wheel`, so a deploy needs only the Databricks
+#    CLI and works the same from a laptop or from Databricks compute. This
+#    is for running the tests locally.
 pip install -e ".[dev]"
 
 # 4. Run tests to confirm your setup works
@@ -57,6 +141,98 @@ If you're setting up the Azure/Databricks environment from scratch
 (storage account, Unity Catalog, external volumes), see
 [azure_setup.md](../azure_setup.md) at the repo root — a validated,
 step-by-step runbook.
+
+### Quality gates
+
+CI runs four static gates in a `quality` job alongside the test suite. Each
+one fails the build on a real finding, and each runs locally in seconds —
+none of them needs Java, Spark or a Databricks connection.
+
+```bash
+pip install ruff mypy bandit pip-audit
+
+ruff format bronze_ingest tests notebooks        # apply formatting
+ruff format --check bronze_ingest tests notebooks # what CI checks
+ruff check bronze_ingest tests notebooks          # lint
+ruff check --fix bronze_ingest tests notebooks    # lint, auto-fixing what is safe
+mypy bronze_ingest notebooks                      # types
+bandit -r bronze_ingest                           # static security scan
+pip-audit --skip-editable                         # dependency CVEs
+```
+
+All configuration lives in [`bronze_layer/pyproject.toml`](bronze_layer/pyproject.toml)
+— there are no separate `.ruff.toml`/`mypy.ini`/`setup.cfg` files, and
+`pytest.ini` was folded in too, so `pytest` picks its settings up from the
+same place.
+
+**Run `ruff format` before you commit.** CI checks formatting rather than
+applying it, so an unformatted file fails the build instead of being
+quietly fixed.
+
+**Suppressions carry a reason.** If a gate flags something that is genuinely
+correct, annotate the specific line with the specific code and say why —
+`# noqa: BLE001 - a missing retry-state file is the normal first-run case`,
+or `# nosec B608 - identifiers are validated at config load (#154)`. Do not
+widen the config, lower a severity threshold, or disable a rule globally to
+make a single finding go away. A blanket suppression silently covers the
+next occurrence too, which is the one nobody looked at.
+
+Two known traps, both hit while setting these up:
+
+- `bandit` anchors a multi-line-string finding on the line where the string
+  **opens**. Appending `# nosec` there puts the comment *inside* the string
+  — for SQL, that means shipping a comment to the engine. Assign the string
+  to a variable and put the marker on the closing `"""`.
+- `ruff format` wraps a long trailing comment by parenthesising the value
+  next to it, turning `field: Optional[str] = None  # long comment` into
+  `field: Optional[str] = (None  # long comment)`. Put long comments *above*
+  the line instead.
+
+### Notebooks need tests too
+
+`bronze_layer/notebooks/` holds the **deployed job entrypoints** — the code
+the Databricks job actually runs. A change there requires a test, exactly as
+a change to the package does.
+
+This is not a style rule. Both known live production defects (#144, #145)
+were in that layer, and neither could have been caught by any number of
+library tests, because nothing executed those files. `tests/test_notebooks.py`
+now does, using the `run_notebook` fixture in `conftest.py`, which supplies
+fakes for the three names the Databricks kernel injects (`dbutils`, `spark`,
+`display`). It needs no Spark, no Java and no workspace, and the whole file
+runs in under a second:
+
+```bash
+pytest tests/test_notebooks.py
+```
+
+Two contract tests there are worth knowing about before you rename anything:
+
+- **Widget ↔ bundle**, both directions. Every `base_parameters` key in
+  `resources/*.yml` must have a matching `dbutils.widgets.*` declaration, and
+  every blank-default widget must be supplied by the bundle. A mismatch means
+  the configured value is silently ignored and a default nobody chose takes
+  effect — which is precisely how a production quality rule came to be inert.
+- **Import surface.** Every name a notebook imports from `bronze_ingest` must
+  be in `__all__`, since notebooks run against the installed wheel and an
+  import error surfaces only after compute has started.
+
+**Do not add a dependency to a notebook without declaring it.** `pandas` was
+imported by two notebooks and declared in no extra of `setup.py`; it worked
+only because the Databricks runtime happens to ship it. Both now build their
+DataFrames with an explicit schema instead, and a test asserts no notebook
+imports it.
+
+### Coverage
+
+Coverage is reported on every CI run and posted to the PR comment. It is
+deliberately **not** enforced — there is no `--cov-fail-under`, because a
+threshold picked before the real number is known is either trivially met or
+immediately red. Locally:
+
+```bash
+pytest --cov=bronze_ingest --cov-report=term-missing
+```
 
 ## Finding Something to Work On
 
