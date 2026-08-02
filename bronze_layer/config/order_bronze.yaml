@@ -4,6 +4,13 @@ source_path: "/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/"
 multiline: true
 # schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
 reader_options: {}
+# reader_options passes keys straight to the Spark reader, so keys are
+# checked against ALLOWED_READER_OPTIONS at config load (#154). Parsing and
+# formatting options are allowed; `path` is not, because it would redirect
+# the read while every log line and audit row still reported source_path.
+# Auto Loader's `cloudFiles.*` namespace is allowed wholesale.
+#   reader_options: {dateFormat: "yyyy-MM-dd", allowComments: "true"}
+# allow_unsafe_reader_options: true   # deliberate opt-out; logs what it allows
 
 catalog: "ingredion_en"
 schema_name: "ingredion_dev"
@@ -42,8 +49,17 @@ fail_on_quality_error: true      # false = quarantine bad rows instead of failin
 # quarantine_table: "main.bronze.orders_raw_quarantine"
 
 # --- Reliability ---
-retry_attempts: 3
-retry_delay_seconds: 10.0
+retry_attempts: 3                # must be >= 1; 1 means "try once, do not retry"
+retry_delay_seconds: 10.0        # must be >= 0
+
+# --- Run-level audit trail + schema registry ---
+# Both default to schema_name above, so the audit trail and schema
+# fingerprints land beside the data they describe. Set them explicitly only
+# if you deliberately want them elsewhere - note that pointing several
+# environments at one schema mixes their run histories and grants each
+# service principal read access to the others' (#54).
+# audit_schema_name: "ingredion_dev"
+# registry_schema_name: "ingredion_dev"
 
 # --- Incremental (Auto Loader) ingestion - only used when ingestion_mode: streaming ---
 # ingestion_mode: "streaming"

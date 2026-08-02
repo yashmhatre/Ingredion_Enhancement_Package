@@ -24,7 +24,7 @@ and install it as a cluster/notebook-scoped library:
 ```bash
 cd bronze_layer
 python setup.py bdist_wheel
-# upload dist/bronze_ingest-0.4.0-py3-none-any.whl to DBFS/Volumes,
+# upload dist/bronze_ingest-0.5.0-py3-none-any.whl to DBFS/Volumes,
 # then in a notebook: %pip install /dbfs/path/to/that.whl
 ```
 
@@ -63,6 +63,44 @@ auto-detect based on extension.
 Any other user just needs their own config file (or their own kwargs) - the
 package code itself never changes.
 
+### Config validation
+
+Every rule below is checked in `IngestionConfig.__post_init__`, so a bad
+config fails **before a cluster starts** rather than partway into a run.
+Compute is the overwhelming majority of what a pipeline costs, and a config
+error found 40 minutes in has already been paid for.
+
+| Rule | Why |
+| --- | --- |
+| **Identifiers** — `catalog`, `schema_name`, `table`, the audit/registry names, the audit column names, and every entry of `required_columns`, `unique_columns`, `merge_keys`, `partition_by`, `cluster_by` must match `[A-Za-z_][A-Za-z0-9_]*` | All of them are interpolated into SQL this package builds. The realistic failure is not an attacker — it's `table: "orders-2024"` producing an opaque parse error mid-run |
+| `quarantine_table`, `table_properties` keys, `column_comments` keys — validated **per dot-separated part** | These are legitimately dotted (`main.bronze.x`, `delta.enableChangeDataFeed`, `customer.name`). Per-part checking accepts those and still rejects `bad-key` |
+| `reader_options` keys must be on `ALLOWED_READER_OPTIONS`, or `cloudFiles.*` | `reader_options` goes verbatim to the Spark reader, and configs load from a Volume. `path` is a reader option — an unfiltered passthrough lets a config redirect the read while every log line still reports `source_path`. Set `allow_unsafe_reader_options: true` to override; it logs what it let through |
+| `retry_attempts >= 1` | Below 1, `with_retry`'s loop body never executes and it raises `last_exc` — still `None`. You get "exceptions must derive from BaseException" and no trace of the real failure. **1 means "try once, don't retry"** |
+| `retry_delay_seconds >= 0` | A negative value reaches `time.sleep()` and raises mid-run, on a cluster |
+| `max_files_per_trigger >= 1` when set | Leave it `None` for no limit |
+| `ingestion_mode: streaming` + `write_mode: overwrite` → **raises** | Every micro-batch would replace the whole table, so only the last one survives. There is no case where this is intended |
+| `write_mode: merge` + `dedupe_before_merge` + `add_audit_columns: false` and no `dedupe_order_by` → **raises** | The default order column is `audit_ingest_ts_col`, which exists only because `add_audit_columns` creates it. Otherwise it fails at MERGE time, after the read is paid for |
+| `dedupe_before_merge` on a non-merge write → **warns** | Silently ignored today, so a user who thinks they configured deduplication hasn't. Warns rather than raises: the setting is merely inert, and raising would break working configs carrying a leftover |
+| `enable_schema_registry` without `enable_run_audit` → **warns** | Legal, but drift visibility works by writing the fingerprint onto the audit row, so drift becomes invisible |
+
+Plus the pre-existing rules: enum membership for `write_mode` /
+`ingestion_mode` / `schema_evolution_mode` / `trigger_mode`; `merge_keys`
+required for merge and required to be a subset of `required_columns`;
+`checkpoint_location` + `schema_location` for streaming;
+`trigger_processing_time` for `processingTime`; non-empty `unique_columns` and
+`cluster_by`; the `cluster_by` / `cluster_by_auto` / `partition_by` mutual
+exclusions.
+
+> **`audit_schema_name` and `registry_schema_name` default to `None`, meaning
+> "use `schema_name`".** They previously defaulted to the literal `"bronze"`,
+> which under the one-catalog/three-schema model meant every environment that
+> didn't override them wrote its audit trail to the same
+> `<catalog>.bronze._ingestion_audit` — mixing dev, staging and production run
+> histories and giving each service principal read access to the others'. It
+> failed silently, because the audit writer issues `CREATE SCHEMA IF NOT
+> EXISTS` first and so created the shared schema and carried on. If you were
+> relying on the old default, set the value explicitly.
+
 ## Directory ingestion (multi-file sources)
 
 ```python
@@ -81,6 +119,18 @@ Discovers every `.json`/`.jsonl` file directly inside `source_dir` and
 loads each one into its own bronze table. One bad file is logged and
 reported in the results list, but does not stop the remaining files from
 loading (`stop_on_error=False`, the default).
+
+**`.jsonl` and `.ndjson` files ignore `multiline` and are always read one
+record per line**, logging a warning if `multiline: true` was configured.
+`multiline` is a single setting shared across every file a directory run
+discovers, but the correct value is a property of each individual file —
+and `multiLine=true` on a JSON-lines file makes Spark return only its
+*first* record, with no error and nothing in `_corrupt_record` (#146). A
+`.json` file is genuinely ambiguous (it may be one pretty-printed document
+or JSON-lines), so it keeps whatever `multiline` says. To force multi-line
+parsing on a `.jsonl` file anyway — it is misnamed, but that is not the
+package's call — set `reader_options: {multiLine: "true"}`, which is
+applied last and wins.
 
 `write_mode: overwrite` is rejected by default for both per-file and
 folder-as-table directory ingestion (raises `ValueError` before touching
@@ -145,6 +195,42 @@ A failed run's audit row still carries `quarantined_row_count` (recovered
 from the raised `DataQualityError`'s `bad_count`) and `failure_stage`
 (`read` | `quality` | `write`), so an operator can see *how many* rows
 failed and *at which stage* without parsing `error_message` text.
+
+#### What each count column means
+
+Take these from the table below rather than guessing — before #149 a single
+`row_count` meant something different for every write mode, which is how an
+ops surface loses trust in its first month.
+
+| Column | Meaning |
+|---|---|
+| `row_count` | Rows written to the **target table** by this run. Comparable across write modes. |
+| `source_row_count` | Rows offered to the writer after the quality gate. Equal to `row_count` for `append`/`overwrite`. |
+| `rows_inserted` / `rows_updated` / `rows_deleted` | `merge` only, `NULL` otherwise (`rows_deleted` also populated for `overwrite` where Delta reports it). |
+| `write_mode` | So a dashboard can interpret the above without joining back to a config it does not have. |
+| `stream_batch_id` | Structured Streaming's micro-batch id. `NULL` for batch runs. |
+| `quarantined_row_count` | Rows routed to the quarantine table by the quality gate. |
+
+Every number comes from **Delta's transaction log** (`operationMetrics` on
+the commit the run just made), not from recounting the DataFrame. That is
+free — it is a metadata read — and it is authoritative. The previous
+`final_df.count()` re-read the source and re-ran the entire quality gate to
+produce a number Delta already had, because `.cache()` is unavailable on
+serverless.
+
+Two things worth knowing before writing a query against this:
+
+- **`source_row_count - row_count` under `merge` is the dedupe/no-op ratio.**
+  A source that starts re-sending full daily dumps shows up here, and
+  nowhere else.
+- **Rows written before this change carry `NULL` in the new columns.** The
+  audit table is written with `mergeSchema`, so the migration is automatic,
+  but older rows cannot be reinterpreted — a `NULL` `write_mode` is how you
+  recognise one.
+
+The column formerly called `table` is now `table_name`, matching
+`_schema_registry`. `table` is a SQL reserved word and needed backticking in
+every query written against it.
 
 ### Schema registry
 
@@ -364,8 +450,9 @@ reprocess_quarantined_files(spark, source_dir="/Volumes/main/default/raw_json/")
 ```
 
 **Row replay** (`reprocess_quarantine`) reads `{table}_quarantine`, drops
-`_quarantine_reason` and the stale `_ingested_at`/`_batch_id` (the rule
-that quarantined a row may have changed since), and re-runs the rows
+the quarantine-only columns — `_quarantine_reason`, `_occurrence_count`,
+`_first_quarantined_at` and the stale `_ingested_at`/`_batch_id` (the rule
+that quarantined a row may have changed since) — and re-runs the rows
 through `required_columns`/`unique_columns` as currently configured. Rows that now pass
 are written to the bronze table with a fresh `_batch_id` of the form
 `replay-<timestamp>` (so replayed rows are identifiable in the bronze
@@ -377,9 +464,45 @@ Idempotent on the success path: re-running finds nothing left matching
 the filter once a replay has succeeded, so it re-promotes nothing.
 Cross-table transactions aren't available in Delta, so the bronze write
 happens before the quarantine delete; if the delete itself then fails
-after a successful write, the affected `_quarantine_id`(s) are logged
-clearly so they can be reconciled manually rather than silently risking
-a duplicate promotion on the next replay.
+after a successful write, the log names the `_batch_id` to reconcile on
+rather than silently risking a duplicate promotion on the next replay.
+
+### Replay is bounded, on purpose
+
+Replay is not a steady-state trickle. It is what an operator runs **after
+fixing an upstream source**, against a quarantine table that has been
+accumulating since the problem started — so *"we fixed the feed, replay
+everything"* is simultaneously the natural usage and the unbounded case.
+
+`reprocess_quarantine` therefore refuses to promote more than
+**500,000 rows** in one call by default, with a message pointing at the
+`batch_id` and `since` filters. Raise it deliberately, or pass
+`max_rows=None` to lift it:
+
+```python
+reprocess_quarantine(spark, config, max_rows=2_000_000)   # deliberate
+reprocess_quarantine(spark, config, max_rows=None)        # no ceiling
+```
+
+The deployed replay notebook exposes the same control as a `max_rows`
+widget (blank = default, `none` = no limit).
+
+**Scale characteristics.** The delete is a distributed MERGE against the
+promoted ids — no row data is brought to the driver, and no SQL `IN` list
+is generated. That matters because the previous implementation did both:
+~200 bytes of driver heap per id, and ~39 bytes of SQL text per id in a
+single predicate. At a million rows that was ~200MB of driver memory (on
+serverless, whose driver size the operator does not control) and a ~39MB
+SQL string, which Spark's parser fails on well before that — at a
+version-dependent threshold somewhere in the tens of thousands.
+
+That failure mode was worse than a slow one. The bronze write commits
+*first*, so a parser failure in the delete left rows in **both** tables,
+ready to be promoted again by the next replay — deterministically, since
+the retry built the same oversized statement. **If you see the
+"failed to remove them from quarantine" error, do not simply re-run
+replay**: reconcile using the `replay-<timestamp>` `_batch_id` named in
+the log first.
 
 Every replay run writes one row to the same run-level audit table as
 normal ingestion, with a distinguishable `status` of `success_replay` -
@@ -399,6 +522,29 @@ task, separate from the normal ingestion schedule.
 
 ## Package layout
 
+### Import direction
+
+`directory_ingestion.py` was 729 lines holding four unrelated
+responsibilities, and `replay.py` reached across the boundary for three
+*underscore-prefixed* names to get at them — so any refactor of that module
+broke replay silently, with the privacy marker actively misleading. Split in
+#151. The direction is now strictly one-way:
+
+```
+directory_ingestion ─┐
+                     ├─> fs/* ──> databricks_fs
+replay ──────────────┘     └────> fs/paths
+
+errors ──> (nothing)
+naming ──> (nothing)
+```
+
+Nothing under `fs/` imports `pipeline`, `config`, or each other except
+through `paths`, so none of it can participate in an import cycle. Symbols
+that moved are re-exported from `directory_ingestion`, so no existing import
+path breaks.
+
+
 ```
 bronze_layer/
   bronze_ingest/
@@ -408,7 +554,14 @@ bronze_layer/
     streaming_reader.py    # Auto Loader (cloudFiles) incremental read
     quality.py            # required-column + uniqueness validation, quarantine split
     bronze_writer.py       # audit columns, append/overwrite/merge, idempotent streaming writes
-    directory_ingestion.py # multi-file discovery, folder-as-table, archival, retry-limit quarantine
+    directory_ingestion.py # ORCHESTRATION only: folder-as-table, per-unit failure isolation
+    naming.py              # filename -> table name (depends on nothing)
+    fs/                    # filesystem concerns, independent of ingestion
+      paths.py             #   file:// URI <-> local path
+      discovery.py         #   list_json_files / list_subfolders
+      archival.py          #   move_file / archive_ingested_file / archive_files_parallel
+      retry_state.py       #   RetryState - per-file failure counts, one load + one flush per run
+    errors.py              # shared exception types (no package imports - cannot cycle)
     audit.py               # run-level audit trail (audited_run context manager)
     schema_registry.py      # schema fingerprint + drift detection (one row per table)
     replay.py              # quarantine replay - reprocess_quarantine() / reprocess_quarantined_files()
@@ -442,6 +595,33 @@ reprocesses the whole source directory. Use `trigger_mode: availableNow`
 (default) to drain the current backlog and stop - the right mode for a
 scheduled Databricks Job; use `processingTime` for an always-on stream.
 
+**Streaming and JSON-lines (`.jsonl` / `.ndjson`).** The per-file rule
+described under [Directory ingestion](#directory-ingestion-multi-file-sources)
+cannot fully apply here. Auto Loader is handed a *directory* and one
+`multiLine` value fixed when the stream starts, then reads whatever appears
+in that directory later - so a file that does not exist yet cannot be
+classified in advance, by validation or by anything else.
+
+Two things cover the gap:
+
+| Situation | Behaviour |
+|---|---|
+| `source_path` names a single `.jsonl`/`.ndjson` file | `multiLine` forced off, same as batch, with a warning if `multiline: true` was configured |
+| A JSON-lines file arrives in a directory stream reading `multiLine=true` | The micro-batch **fails** with `JsonLinesTruncationError`, naming the files |
+
+**Failing is the recoverable outcome, which is why it fails.** Structured
+Streaming commits a batch to the checkpoint only when the batch handler
+returns normally, so raising leaves the checkpoint *un*advanced: those files
+are not marked processed, and re-reading them in full is a config fix and a
+restart away. Succeeding is what makes the loss permanent - the checkpoint
+moves past files whose records were silently dropped, and there is no second
+read and no signal that one is needed.
+
+If the files really are single JSON documents that happen to be named
+`.jsonl`, set `reader_options: {multiLine: "true"}`. That is applied last,
+wins, and suppresses the guard - the override is treated as a deliberate
+statement about the data.
+
 **Schema drift & bad records.** `schema_evolution_mode` controls how Auto
 Loader reacts to new/changed fields (`addNewColumns` is the sane default).
 `rescued_data_column` captures anything that doesn't fit an explicit
@@ -474,12 +654,59 @@ so quarantine and replay (#60) are queryable per failure type:
 SELECT _quarantine_reason, count(*) FROM bronze.orders_raw_quarantine GROUP BY 1
 ```
 
+#### The quarantine table is keyed on content, and written with MERGE
+
+`_quarantine_id` is a **SHA-256 of the row's source content**, and the
+quarantine write is a `MERGE` on it rather than an append. That combination
+is what makes the write idempotent, and it matters because quarantine is
+written *before* the bronze write: a run that dies between the two and is
+retried quarantines the same rows again. `_quarantine_id` used to be
+`uuid()`, which is stable within one query plan but produces entirely
+different values on a fresh evaluation — so every attempt appended its own
+copy of the same bad rows, and replay treated them as distinct rows to
+re-promote (#148).
+
+Two consequences worth knowing before you query the table:
+
+- **Byte-identical bad rows collapse to one row.** They have to — Delta
+  refuses a `MERGE` where several source rows match one target row. Their
+  multiplicity is preserved in `_occurrence_count`, so `bad_count` in the
+  run log counts *rows* while the table counts *identities*, and
+  `SUM(_occurrence_count)` reconciles the two.
+- **`_occurrence_count` only increments when `_batch_id` changes**, so
+  re-running the same batch does not inflate it. That guarantee is only as
+  strong as `_batch_id`: the deployed job passes `{{job.run_id}}`, which is
+  stable across task attempts, but a config that leaves `batch_id` unset
+  gets a generated timestamp that differs per attempt and the count will
+  drift upward on retries. Row identity is correct either way — only the
+  count is affected.
+
+`_first_quarantined_at` is set on insert and never updated;
+`_ingested_at`/`_batch_id` track the *most recent* sighting.
+
+> **Rows quarantined before this change** carry UUID `_quarantine_id`s,
+> which can never match a content hash. They are left untouched, so the same
+> source row may appear once under an old UUID and once under its hash.
+> Nothing breaks, but those old rows will not deduplicate. Once you've
+> confirmed the current data has been re-quarantined, clear them with:
+>
+> ```sql
+> DELETE FROM bronze.orders_raw_quarantine WHERE length(_quarantine_id) <> 64
+> ```
+
 For `unique_columns`, the row **kept** is the one with the highest
 `dedupe_order_by` value. This quality gate runs before audit columns are
 added, so `dedupe_order_by` must name a **source** column (e.g. an upstream
-`updated_at`) to control which duplicate survives. If it's unset or not
-present on the source data, ties break on `monotonically_increasing_id()` -
-deterministic for a given DataFrame, but not reflecting any real ordering.
+`updated_at`) to control which duplicate survives. If it's unset, not
+present on the source data, or tied, the tie breaks on a SHA-256 of the
+row's full content — arbitrary, but a function of the data alone, so the
+same input always yields the same survivor.
+
+That last property is load-bearing rather than a nicety (#147). `good_df`
+and `bad_df` are two lazy plans over one tagged DataFrame and Spark
+evaluates each independently, so a tie-break that depended on anything but
+row content could let the two evaluations disagree — putting a row in both
+(written *and* quarantined) or neither (silently dropped).
 
 > **Scope note.** Only structural checks belong in bronze. Range, regex,
 > set-membership, cross-column expression and freshness rules all require
@@ -582,7 +809,50 @@ auto-generated defaults (a fresh timestamp / UUID per run).
 
 **Retries.** Both read and write paths wrap transient failures (throttling,
 concurrent-write conflicts) in exponential-backoff retries via
-`retry_attempts` / `retry_delay_seconds`.
+`retry_attempts` / `retry_delay_seconds` / `retry_max_total_seconds`. **Only
+failures a retry could plausibly fix are retried** — see below.
+
+### Retries: what is and is not retried
+
+| Failure | Retried? | Why |
+|---|---|---|
+| Storage throttling, 429/503, connection reset, timeout | **Yes** | The next attempt genuinely may succeed |
+| `ConcurrentAppendException` and siblings | **Yes** | Delta's own concurrency conflicts are the case backoff exists for |
+| An unrecognised failure | **Yes** | The default. See the note below |
+| `NullMergeKeyError`, `DuplicateMergeKeyError` | **No** | The data is identical on every attempt |
+| `DataQualityError`, `JsonLinesTruncationError` | **No** | Same |
+| `ValueError` / `TypeError` — unknown `write_mode`, missing order-by column | **No** | Config and programming errors |
+| `PERMISSION_DENIED`, `TABLE_OR_VIEW_NOT_FOUND`, `AnalysisException`, `PARSE_SYNTAX_ERROR` | **No** | Nothing changes between attempts |
+
+Before this, `retry.py` caught `Exception` and every call site took that
+default, so all of the above were retried three times with 10s and 20s
+sleeps. Directory ingestion processes units sequentially with per-unit
+failure isolation, so **a directory of 50 broken files spent 25 minutes
+sleeping** — and the log showed two `Retrying in 10.0s...` warnings per
+file for conditions that were never going to succeed.
+
+Three things worth knowing before changing this:
+
+- **Unknown failures are retried, deliberately.** Wrongly retrying a
+  permanent failure costs a bounded amount of time; wrongly refusing to
+  retry a transient one costs a failed run. The classifier exists to stop
+  the *known* permanent cases from burning the budget, not to be an
+  exhaustive taxonomy.
+- **Server-side conditions are matched on message text.** PySpark surfaces a
+  large family of distinct failures as one exception type, so the message is
+  the only signal available. That is a compromise forced by the platform,
+  kept in one place (`retry.PERMANENT_MESSAGE_MARKERS` /
+  `TRANSIENT_MESSAGE_MARKERS`) so it can be corrected in one place. Transient
+  markers are checked *first*, so a concurrency conflict that names a table
+  is not misread as a missing-table error.
+- **`retry_max_total_seconds` (default 120s) bounds sleeping, not the
+  operation.** Without it, `retry_attempts: 5` with `retry_delay_seconds: 30`
+  is up to 8 minutes of driver sleep with no ceiling. Set `None` for the old
+  unbounded behaviour.
+
+Backoff uses **full jitter** (`sleep(uniform(0, wait))`). Concurrent writers
+that collide on a `ConcurrentAppendException` and retry on identical fixed
+backoff simply collide again, in lockstep.
 
 **Directory ingestion resilience.** Multi-file sources get per-file failure
 isolation, automatic archival of successfully-ingested files, retry-limit
@@ -735,18 +1005,32 @@ by accident.
 
 ### Deploy prerequisites
 
-Deploying builds the wheel locally before uploading it, so the Python
-environment you deploy *from* needs the build tooling — not just the
-Databricks CLI:
+**Nothing beyond the Databricks CLI.** Deploying builds the wheel before
+uploading it, and `databricks.yml` builds it with `python -m pip wheel`,
+which needs only pip — present in every environment that can run the CLI.
+A deploy works the same from a laptop, a Databricks notebook, or the web
+terminal.
 
-```bash
-pip install build          # or: pip install -e "bronze_layer[dev]"
-```
+This was not always true, and the history is worth keeping. The build
+command used to be `python -m build --wheel`, which requires the `build`
+package. That is a reasonable assumption on a laptop that followed the
+setup guide and wrong everywhere else — a deploy from Databricks compute
+runs in the cluster's ephemeral Python environment
+(`/local_disk0/.ephemeral_nfs/envs/pythonEnv-…`), where `build` is absent
+and would not survive a restart even once installed. It failed with
+`No module named build` before reaching the workspace, twice, months apart.
+Documenting the prerequisite did not stop the second occurrence; removing it
+did.
 
-Without it, `bundle deploy` fails at the artifact step with
-`No module named build` before it reaches the workspace. The `dev` extra in
-`bronze_layer/setup.py` includes it, along with pytest and the local
-Spark/Delta stack.
+For local development, `pip install -e ".[dev]"` still installs `build`
+along with pytest and the Spark/Delta stack — `python -m build` remains the
+conventional way to package by hand. It is just no longer required to
+deploy.
+
+> **Do not install the `[dev]` extra on Databricks compute.** It pulls
+> `pyspark` and `delta-spark`, which the runtime already provides, and a
+> second copy risks the version conflict `setup.py` warns about for
+> `databricks-sdk`. Nothing needs installing there now.
 
 **Deploying `staging` or `prod` also needs the `Service Principal: User` role
 on the target service principal**, granted in the Databricks account console

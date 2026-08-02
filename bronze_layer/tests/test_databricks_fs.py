@@ -11,10 +11,10 @@ exercised deliberately.
 import pytest
 
 import bronze_ingest.databricks_fs as dfs
-import bronze_ingest.directory_ingestion as di
-
+from bronze_ingest.fs import discovery
 
 # ---- fakes ----
+
 
 class _SdkFileInfo:
     """Mirrors databricks.sdk.service.files.FileInfo: explicit is_dir, and
@@ -74,6 +74,7 @@ def _no_backends(monkeypatch):
 
 # ---- availability vs failure ----
 
+
 def test_returns_none_when_databricks_unavailable(monkeypatch):
     _no_backends(monkeypatch)
     assert dfs.list_entries("/anything") is None
@@ -84,7 +85,8 @@ def test_not_found_raises_rather_than_falling_back(monkeypatch):
     """A path that genuinely doesn't exist is an error, not a reason to
     silently try the local filesystem."""
     monkeypatch.setattr(
-        dfs, "_workspace_client",
+        dfs,
+        "_workspace_client",
         lambda: _FakeClient(error=RuntimeError("RESOURCE_DOES_NOT_EXIST: nope")),
     )
     with pytest.raises(FileNotFoundError):
@@ -95,7 +97,8 @@ def test_genuine_error_is_not_swallowed(monkeypatch):
     """The old code caught everything and fell through to local behaviour,
     so a real workspace failure was indistinguishable from running locally."""
     monkeypatch.setattr(
-        dfs, "_workspace_client",
+        dfs,
+        "_workspace_client",
         lambda: _FakeClient(error=RuntimeError("PERMISSION_DENIED")),
     )
     with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
@@ -104,11 +107,18 @@ def test_genuine_error_is_not_swallowed(monkeypatch):
 
 # ---- SDK backend ----
 
+
 def test_sdk_backend_preserves_is_dir(monkeypatch):
-    monkeypatch.setattr(dfs, "_workspace_client", lambda: _FakeClient([
-        _SdkFileInfo("/Volumes/x/orders.json", False),
-        _SdkFileInfo("/Volumes/x/multi_file", True),
-    ]))
+    monkeypatch.setattr(
+        dfs,
+        "_workspace_client",
+        lambda: _FakeClient(
+            [
+                _SdkFileInfo("/Volumes/x/orders.json", False),
+                _SdkFileInfo("/Volumes/x/multi_file", True),
+            ]
+        ),
+    )
 
     entries = dfs.list_entries("/Volumes/x")
 
@@ -133,12 +143,19 @@ def test_get_dbutils_falls_back_to_notebook(monkeypatch):
 
 # ---- notebook backend ----
 
+
 def test_notebook_backend_infers_is_dir_from_trailing_slash(monkeypatch):
     monkeypatch.setattr(dfs, "_workspace_client", lambda: None)
-    monkeypatch.setattr(dfs, "_notebook_dbutils", lambda: _FakeNotebookDbutils([
-        _NotebookFileInfo("dbfs:/x/orders.json"),
-        _NotebookFileInfo("dbfs:/x/multi_file/"),
-    ]))
+    monkeypatch.setattr(
+        dfs,
+        "_notebook_dbutils",
+        lambda: _FakeNotebookDbutils(
+            [
+                _NotebookFileInfo("dbfs:/x/orders.json"),
+                _NotebookFileInfo("dbfs:/x/multi_file/"),
+            ]
+        ),
+    )
 
     entries = dfs.list_entries("dbfs:/x")
 
@@ -150,6 +167,7 @@ def test_notebook_backend_infers_is_dir_from_trailing_slash(monkeypatch):
 
 # ---- the regression this refactor exists to prevent ----
 
+
 def test_subfolders_found_when_sdk_paths_have_no_trailing_slash(monkeypatch):
     """
     The SDK reports directories via an explicit is_dir flag and its paths
@@ -160,13 +178,19 @@ def test_subfolders_found_when_sdk_paths_have_no_trailing_slash(monkeypatch):
     next strategy), folder-as-table ingestion would have silently processed
     nothing, with no error and no warning.
     """
-    monkeypatch.setattr(dfs, "_workspace_client", lambda: _FakeClient([
-        _SdkFileInfo("/Volumes/x/orders", True),
-        _SdkFileInfo("/Volumes/x/customers", True),
-        _SdkFileInfo("/Volumes/x/loose.json", False),
-    ]))
+    monkeypatch.setattr(
+        dfs,
+        "_workspace_client",
+        lambda: _FakeClient(
+            [
+                _SdkFileInfo("/Volumes/x/orders", True),
+                _SdkFileInfo("/Volumes/x/customers", True),
+                _SdkFileInfo("/Volumes/x/loose.json", False),
+            ]
+        ),
+    )
 
-    dirs = di._try_dbutils_ls_dirs("/Volumes/x")
+    dirs = discovery._try_dbutils_ls_dirs("/Volumes/x")
 
     assert dirs == ["/Volumes/x/customers", "/Volumes/x/orders"]
 
@@ -174,18 +198,24 @@ def test_subfolders_found_when_sdk_paths_have_no_trailing_slash(monkeypatch):
 def test_file_listing_excludes_directories(monkeypatch):
     """A directory named `something.json` would pass the suffix filter, so
     the is_dir check is what actually keeps it out."""
-    monkeypatch.setattr(dfs, "_workspace_client", lambda: _FakeClient([
-        _SdkFileInfo("/Volumes/x/orders.json", False),
-        _SdkFileInfo("/Volumes/x/archive.json", True),
-        _SdkFileInfo("/Volumes/x/notes.txt", False),
-    ]))
+    monkeypatch.setattr(
+        dfs,
+        "_workspace_client",
+        lambda: _FakeClient(
+            [
+                _SdkFileInfo("/Volumes/x/orders.json", False),
+                _SdkFileInfo("/Volumes/x/archive.json", True),
+                _SdkFileInfo("/Volumes/x/notes.txt", False),
+            ]
+        ),
+    )
 
-    files = di._try_dbutils_ls("/Volumes/x")
+    files = discovery._try_dbutils_ls("/Volumes/x")
 
     assert files == ["/Volumes/x/orders.json"]
 
 
 def test_listing_returns_none_off_databricks_so_local_path_is_used(monkeypatch):
     _no_backends(monkeypatch)
-    assert di._try_dbutils_ls("/anything") is None
-    assert di._try_dbutils_ls_dirs("/anything") is None
+    assert discovery._try_dbutils_ls("/anything") is None
+    assert discovery._try_dbutils_ls_dirs("/anything") is None

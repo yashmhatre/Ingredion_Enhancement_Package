@@ -1,15 +1,14 @@
 import json
 import os
+
 import pytest
+
 from bronze_ingest.directory_ingestion import (
-    sanitize_table_name,
     build_table_name,
     list_json_files,
+    sanitize_table_name,
 )
-from bronze_ingest.directory_ingestion import (
-    _move_file,
-    _archive_ingested_file,
-)
+
 
 def _write(write_dir, name, content):
     with open(os.path.join(write_dir, name), "w") as f:
@@ -17,6 +16,7 @@ def _write(write_dir, name, content):
 
 
 # ---- pure-python naming tests (no Spark) - unchanged ----
+
 
 def test_sanitize_basic():
     assert sanitize_table_name("orders.json") == "orders"
@@ -48,6 +48,7 @@ def test_build_table_name_requires_placeholder():
 
 # ---- file discovery tests (real filesystem, local or Databricks Volume) ----
 
+
 def test_list_json_files_finds_only_json(spark, json_test_dir):
     write_dir, source_dir = json_test_dir
     _write(write_dir, "a.json", json.dumps({"x": 1}))
@@ -56,7 +57,7 @@ def test_list_json_files_finds_only_json(spark, json_test_dir):
     os.makedirs(os.path.join(write_dir, "subdir"), exist_ok=True)
 
     files = list_json_files(spark, source_dir)
-    names = sorted(f.split("/")[-1] for f in files)
+    names = sorted(os.path.basename(f) for f in files)
     assert names == ["a.json", "b.JSON"]
 
 
@@ -68,7 +69,7 @@ def test_list_json_files_includes_jsonl(spark, json_test_dir):
     _write(write_dir, "notes.txt", "ignore me")
 
     files = list_json_files(spark, source_dir)
-    names = sorted(f.split("/")[-1] for f in files)
+    names = sorted(os.path.basename(f) for f in files)
     assert names == ["a.json", "b.jsonl", "c.JSONL"]
 
 
@@ -85,10 +86,12 @@ def test_list_json_files_missing_dir_raises(spark, json_test_dir):
     with pytest.raises(FileNotFoundError):
         list_json_files(spark, f"{source_dir}/does_not_exist")
 
+
 # ---- file archival tests (real filesystem, local or Databricks Volume) ----
 
 
 import bronze_ingest.directory_ingestion as di
+from bronze_ingest.fs import RetryState, archival
 
 
 def test_move_file_relocates_to_subfolder(json_test_dir):
@@ -96,7 +99,7 @@ def test_move_file_relocates_to_subfolder(json_test_dir):
     _write(write_dir, "a.json", json.dumps({"x": 1}))
     src_path = f"{source_dir}/a.json"
 
-    dest = di._move_file(source_dir, src_path, "processed/2026-07-24")
+    dest = archival.move_file(source_dir, src_path, "processed/2026-07-24")
 
     assert dest == f"{source_dir}/processed/2026-07-24/a.json"
     assert os.path.exists(os.path.join(write_dir, "processed", "2026-07-24", "a.json"))
@@ -108,7 +111,7 @@ def test_archive_ingested_file_moves_to_processed_dated_folder(json_test_dir):
     _write(write_dir, "orders.json", json.dumps({"id": 1}))
     src_path = f"{source_dir}/orders.json"
 
-    result = di._archive_ingested_file(source_dir, src_path)
+    result = archival.archive_ingested_file(source_dir, src_path)
 
     assert result["move_status"] == "moved"
     assert "processed/" in result["move_detail"]
@@ -120,16 +123,18 @@ def test_archive_ingested_file_falls_back_to_quarantine_on_move_failure(json_tes
     _write(write_dir, "orders.json", json.dumps({"id": 1}))
     src_path = f"{source_dir}/orders.json"
 
-    real_move_file = di._move_file
+    real_move_file = archival.move_file
 
     def flaky_move(source_dir, file_path, dest_subfolder, relative_subpath=""):
         if dest_subfolder.startswith("processed/"):
             raise OSError("simulated failure archiving to processed/")
-        return real_move_file(source_dir, file_path, dest_subfolder, relative_subpath=relative_subpath)
+        return real_move_file(
+            source_dir, file_path, dest_subfolder, relative_subpath=relative_subpath
+        )
 
-    monkeypatch.setattr(di, "_move_file", flaky_move)
+    monkeypatch.setattr(archival, "move_file", flaky_move)
 
-    result = di._archive_ingested_file(source_dir, src_path)
+    result = archival.archive_ingested_file(source_dir, src_path)
 
     assert result["move_status"] == "quarantined"
     assert "quarantine_files" in result["move_detail"]
@@ -144,16 +149,15 @@ def test_archive_ingested_file_leaves_file_in_place_when_all_moves_fail(json_tes
     def always_fails(source_dir, file_path, dest_subfolder, relative_subpath=""):
         raise OSError(f"simulated total failure for {dest_subfolder}")
 
-    monkeypatch.setattr(di, "_move_file", always_fails)
+    monkeypatch.setattr(archival, "move_file", always_fails)
 
-    result = di._archive_ingested_file(source_dir, src_path)
+    result = archival.archive_ingested_file(source_dir, src_path)
 
     assert result["move_status"] == "failed_left_in_place"
     assert os.path.exists(os.path.join(write_dir, "orders.json"))  # untouched, not lost
 
-# ---- retry-limit before quarantine tests ----
 
-from bronze_ingest.directory_ingestion import ingest_directory_to_bronze
+# ---- retry-limit before quarantine tests ----
 
 
 def _make_failing_config_class(fail_on_filenames):
@@ -161,14 +165,18 @@ def _make_failing_config_class(fail_on_filenames):
     filenames and succeeds otherwise - lets us simulate repeated ingestion
     failures across multiple calls without needing real bad JSON content
     (which would also need real Spark schema behavior to fail correctly)."""
+
     def fake_run(self):
         if any(name in self.config.source_path for name in fail_on_filenames):
             raise ValueError("simulated ingestion failure")
         return {"table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0}
+
     return fake_run
 
 
-def test_retry_state_persists_across_calls_and_quarantines_at_limit(spark, json_test_dir, monkeypatch):
+def test_retry_state_persists_across_calls_and_quarantines_at_limit(
+    spark, json_test_dir, monkeypatch
+):
     write_dir, source_dir = json_test_dir
     _write(write_dir, "bad.json", json.dumps({"x": 1}))
     _write(write_dir, "good.json", json.dumps({"x": 2}))
@@ -187,7 +195,7 @@ def test_retry_state_persists_across_calls_and_quarantines_at_limit(spark, json_
     assert bad_result["attempts"] == 1
     assert "move_status" not in bad_result
 
-    state = di._read_retry_state(source_dir)
+    state = RetryState.load(source_dir).as_dict()
     assert state.get(actual_file_path) == 1
 
     results = di.ingest_directory_to_bronze(
@@ -205,7 +213,7 @@ def test_retry_state_persists_across_calls_and_quarantines_at_limit(spark, json_
     assert bad_result["move_status"] == "quarantined"
     assert not os.path.exists(os.path.join(write_dir, "bad.json"))
 
-    state = di._read_retry_state(source_dir)
+    state = RetryState.load(source_dir).as_dict()
     assert actual_file_path not in state
 
 
@@ -224,7 +232,7 @@ def test_retry_state_cleared_on_eventual_success(spark, json_test_dir, monkeypat
     assert flaky_result["attempts"] == 1
     actual_file_path = flaky_result["file"]  # use the real path, don't reconstruct it
 
-    state = di._read_retry_state(source_dir)
+    state = RetryState.load(source_dir).as_dict()
     assert state.get(actual_file_path) == 1
 
     monkeypatch.setattr(BronzeIngestion, "run", _make_failing_config_class([]))
@@ -234,7 +242,7 @@ def test_retry_state_cleared_on_eventual_success(spark, json_test_dir, monkeypat
     good_result = next(r for r in results if "flaky.json" in r["file"])
     assert good_result["status"] == "success"
 
-    state = di._read_retry_state(source_dir)
+    state = RetryState.load(source_dir).as_dict()
     assert actual_file_path not in state
 
 
@@ -242,16 +250,18 @@ def test_retry_state_file_never_treated_as_data(spark, json_test_dir):
     write_dir, source_dir = json_test_dir
     _write(write_dir, "a.json", json.dumps({"x": 1}))
 
-    di_module = __import__("bronze_ingest.directory_ingestion", fromlist=["_write_retry_state"])
-    di_module._write_retry_state(source_dir, {"some/file.json": 1})
+    seeded = RetryState.load(source_dir)
+    seeded.increment("some/file.json")
+    seeded.flush()
 
-    files = di_module.list_json_files(spark, source_dir)
-    names = [f.split("/")[-1] for f in files]
+    files = di.list_json_files(spark, source_dir)
+    names = [os.path.basename(f) for f in files]
     assert "retry_state.json" not in names
     assert names == ["a.json"]
 
 
 # ---- folder-as-table tests ----
+
 
 def test_folder_as_table_merges_files_into_one_table(spark, json_test_dir, monkeypatch):
     write_dir, source_dir = json_test_dir
@@ -262,13 +272,15 @@ def test_folder_as_table_merges_files_into_one_table(spark, json_test_dir, monke
     from bronze_ingest.pipeline import BronzeIngestion
 
     def fake_run_on_dataframe(self, df):
-        return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}
+        return {
+            "table": self.config.full_table_name,
+            "row_count": df.count(),
+            "quarantined_row_count": 0,
+        }
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
 
-    results = di.ingest_directory_to_bronze(
-        spark, source_dir, catalog=None, schema_name="default"
-    )
+    results = di.ingest_directory_to_bronze(spark, source_dir, catalog=None, schema_name="default")
 
     folder_result = next(r for r in results if r["table"].endswith("orders_bronze"))
     assert folder_result["status"] == "success"
@@ -286,9 +298,7 @@ def test_folder_with_no_json_is_skipped_not_failed(spark, json_test_dir):
     os.makedirs(os.path.join(write_dir, "multi_file"), exist_ok=True)
     _write(write_dir, "multi_file/readme.txt", "not json")
 
-    results = di.ingest_directory_to_bronze(
-        spark, source_dir, catalog=None, schema_name="default"
-    )
+    results = di.ingest_directory_to_bronze(spark, source_dir, catalog=None, schema_name="default")
 
     assert len(results) == 1
     assert results[0]["status"] == "skipped"
@@ -314,9 +324,7 @@ def test_folder_with_no_json_does_not_mask_a_real_failure(spark, json_test_dir, 
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", boom)
 
-    results = di.ingest_directory_to_bronze(
-        spark, source_dir, catalog=None, schema_name="default"
-    )
+    results = di.ingest_directory_to_bronze(spark, source_dir, catalog=None, schema_name="default")
 
     by_status = {r["status"] for r in results}
     assert by_status == {"skipped", "failed"}
@@ -329,8 +337,8 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     _write(write_dir, "orders/good1.json", json.dumps({"id": 1}))
     _write(write_dir, "orders/good2.json", json.dumps({"id": 2}))
 
-    from bronze_ingest.pipeline import BronzeIngestion
     from bronze_ingest import json_reader as jr
+    from bronze_ingest.pipeline import BronzeIngestion
 
     real_read_json = jr.read_json
 
@@ -342,7 +350,11 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     monkeypatch.setattr(di, "read_json", flaky_read_json)
 
     def fake_run_on_dataframe(self, df):
-        return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}
+        return {
+            "table": self.config.full_table_name,
+            "row_count": df.count(),
+            "quarantined_row_count": 0,
+        }
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
 
@@ -360,7 +372,9 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     assert bad_result["attempts"] == 1
 
 
-def test_folder_as_table_archives_files_with_folder_name_preserved(spark, json_test_dir, monkeypatch):
+def test_folder_as_table_archives_files_with_folder_name_preserved(
+    spark, json_test_dir, monkeypatch
+):
     write_dir, source_dir = json_test_dir
     os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
     _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
@@ -368,7 +382,11 @@ def test_folder_as_table_archives_files_with_folder_name_preserved(spark, json_t
     from bronze_ingest.pipeline import BronzeIngestion
 
     def fake_run_on_dataframe(self, df):
-        return {"table": self.config.full_table_name, "row_count": df.count(), "quarantined_row_count": 0}
+        return {
+            "table": self.config.full_table_name,
+            "row_count": df.count(),
+            "quarantined_row_count": 0,
+        }
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
 
@@ -376,12 +394,18 @@ def test_folder_as_table_archives_files_with_folder_name_preserved(spark, json_t
 
     # file should be archived under processed/{date}/orders/order1.json,
     # not processed/{date}/order1.json - folder context preserved
-    today = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d")
+    today = (
+        __import__("datetime")
+        .datetime.now(__import__("datetime").timezone.utc)
+        .strftime("%Y-%m-%d")
+    )
     expected_path = os.path.join(write_dir, "processed", today, "orders", "order1.json")
     assert os.path.exists(expected_path)
     assert not os.path.exists(os.path.join(write_dir, "orders", "order1.json"))
 
+
 # ---- parallel archival tests ----
+
 
 def test_archive_files_parallel_preserves_input_order(json_test_dir):
     write_dir, source_dir = json_test_dir
@@ -390,7 +414,7 @@ def test_archive_files_parallel_preserves_input_order(json_test_dir):
         _write(write_dir, n, json.dumps({"x": 1}))
     paths = [f"{source_dir}/{n}" for n in names]
 
-    results = di._archive_files_parallel(source_dir, paths)
+    results = archival.archive_files_parallel(source_dir, paths)
 
     # Order must match input despite concurrent execution - this is what
     # keeps per-file error attribution correct downstream.
@@ -400,7 +424,7 @@ def test_archive_files_parallel_preserves_input_order(json_test_dir):
 
 def test_archive_files_parallel_empty_list(json_test_dir):
     _, source_dir = json_test_dir
-    assert di._archive_files_parallel(source_dir, []) == []
+    assert archival.archive_files_parallel(source_dir, []) == []
 
 
 def test_archive_files_parallel_attributes_failures_correctly(json_test_dir, monkeypatch):
@@ -410,16 +434,16 @@ def test_archive_files_parallel_attributes_failures_correctly(json_test_dir, mon
         _write(write_dir, n, json.dumps({"x": 1}))
     paths = [f"{source_dir}/{n}" for n in names]
 
-    real_move = di._move_file
+    real_move = archival.move_file
 
     def selective_fail(source_dir, file_path, dest_subfolder, relative_subpath=""):
         if "file_2.json" in file_path:
             raise OSError("simulated move failure")
         return real_move(source_dir, file_path, dest_subfolder, relative_subpath=relative_subpath)
 
-    monkeypatch.setattr(di, "_move_file", selective_fail)
+    monkeypatch.setattr(archival, "move_file", selective_fail)
 
-    results = di._archive_files_parallel(source_dir, paths)
+    results = archival.archive_files_parallel(source_dir, paths)
     by_path = dict(results)
 
     # The failure must land on file_2 specifically, not bleed onto a
@@ -436,7 +460,7 @@ def test_archive_files_parallel_preserves_folder_subpath(json_test_dir):
     _write(write_dir, "orders/b.json", json.dumps({"x": 2}))
     paths = [f"{source_dir}/orders/a.json", f"{source_dir}/orders/b.json"]
 
-    results = di._archive_files_parallel(source_dir, paths, relative_subpath="orders")
+    results = archival.archive_files_parallel(source_dir, paths, relative_subpath="orders")
 
     for _, r in results:
         assert "/orders/" in r["move_detail"]
@@ -455,7 +479,11 @@ def test_directory_ingestion_rejects_overwrite_by_default(spark, json_test_dir):
 
     with pytest.raises(ValueError, match="write_mode='overwrite'"):
         di.ingest_directory_to_bronze(
-            spark, source_dir, catalog=None, schema_name="default", write_mode="overwrite",
+            spark,
+            source_dir,
+            catalog=None,
+            schema_name="default",
+            write_mode="overwrite",
         )
 
     # Nothing should have been touched - the file must still be sitting
@@ -470,7 +498,11 @@ def test_directory_ingestion_rejects_overwrite_for_folder_as_table(spark, json_t
 
     with pytest.raises(ValueError, match="write_mode='overwrite'"):
         di.ingest_directory_to_bronze(
-            spark, source_dir, catalog=None, schema_name="default", write_mode="overwrite",
+            spark,
+            source_dir,
+            catalog=None,
+            schema_name="default",
+            write_mode="overwrite",
         )
 
 
@@ -479,8 +511,12 @@ def test_directory_ingestion_allows_overwrite_with_explicit_opt_in(spark, json_t
     _write(write_dir, "orders.json", json.dumps({"id": 1}))
 
     results = di.ingest_directory_to_bronze(
-        spark, source_dir, catalog=None, schema_name="default",
-        write_mode="overwrite", allow_overwrite_in_directory_mode=True,
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
+        write_mode="overwrite",
+        allow_overwrite_in_directory_mode=True,
     )
 
     assert results[0]["status"] == "success"
@@ -496,7 +532,9 @@ def test_directory_ingestion_default_write_mode_is_unaffected(spark, json_test_d
 
     assert results[0]["status"] == "success"
 
+
 # ---- per_file_config (#145) ----
+
 
 def test_per_file_config_is_applied_to_the_named_file(spark, json_test_dir, monkeypatch):
     """The deployed job sets a per-file required_columns rule. Before this was
@@ -504,7 +542,7 @@ def test_per_file_config_is_applied_to_the_named_file(spark, json_test_dir, monk
     IngestionConfig.from_dict's unknown-key filter - the rule never ran and
     the run reported success."""
     write_dir, source_dir = json_test_dir
-    _write(write_dir, "strict.json", json.dumps({"id": 1}))          # missing order_id
+    _write(write_dir, "strict.json", json.dumps({"id": 1}))  # missing order_id
     _write(write_dir, "loose.json", json.dumps({"id": 2}))
 
     seen = {}
@@ -518,12 +556,15 @@ def test_per_file_config_is_applied_to_the_named_file(spark, json_test_dir, monk
     monkeypatch.setattr(BronzeIngestion, "run", fake_run)
 
     di.ingest_directory_to_bronze(
-        spark, source_dir, catalog=None, schema_name="default",
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
         per_file_config={"strict.json": {"required_columns": ["order_id"]}},
     )
 
-    assert seen["strict_bronze"] == ["order_id"]   # override applied
-    assert seen["loose_bronze"] == []              # others untouched
+    assert seen["strict_bronze"] == ["order_id"]  # override applied
+    assert seen["loose_bronze"] == []  # others untouched
 
 
 def test_unknown_config_override_raises_instead_of_being_dropped(spark, json_test_dir):
@@ -535,7 +576,10 @@ def test_unknown_config_override_raises_instead_of_being_dropped(spark, json_tes
 
     with pytest.raises(ValueError, match="Unknown IngestionConfig field"):
         di.ingest_directory_to_bronze(
-            spark, source_dir, catalog=None, schema_name="default",
+            spark,
+            source_dir,
+            catalog=None,
+            schema_name="default",
             not_a_real_field=123,
         )
 
@@ -546,7 +590,10 @@ def test_per_file_config_rejects_unknown_fields(spark, json_test_dir):
 
     with pytest.raises(ValueError, match="unknown IngestionConfig field"):
         di.ingest_directory_to_bronze(
-            spark, source_dir, catalog=None, schema_name="default",
+            spark,
+            source_dir,
+            catalog=None,
+            schema_name="default",
             per_file_config={"orders.json": {"nope": 1}},
         )
 
@@ -555,18 +602,97 @@ def test_per_file_config_warns_when_it_matches_nothing(spark, json_test_dir, mon
     """An override naming a file that was never discovered is a configured
     rule that will never run - the same silent-no-op #145 was about."""
     import logging
+
     write_dir, source_dir = json_test_dir
     _write(write_dir, "orders.json", json.dumps({"id": 1}))
 
     from bronze_ingest.pipeline import BronzeIngestion
-    monkeypatch.setattr(BronzeIngestion, "run", lambda self: {
-        "table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0})
+
+    monkeypatch.setattr(
+        BronzeIngestion,
+        "run",
+        lambda self: {
+            "table": self.config.full_table_name,
+            "row_count": 1,
+            "quarantined_row_count": 0,
+        },
+    )
 
     with caplog.at_level(logging.WARNING):
         di.ingest_directory_to_bronze(
-            spark, source_dir, catalog=None, schema_name="default",
+            spark,
+            source_dir,
+            catalog=None,
+            schema_name="default",
             per_file_config={"typo_in_name.json": {"required_columns": ["x"]}},
         )
 
     assert "matched no discovered file" in caplog.text
     assert "typo_in_name.json" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# One failure policy, two paths (#183)
+# ---------------------------------------------------------------------------
+
+
+def _failure_result(**kwargs):
+    """Drives the unified policy directly, so the two callers' shapes can be
+    compared without staging two full ingestion runs."""
+    from bronze_ingest.directory_ingestion import _handle_unit_failure
+
+    defaults = dict(
+        source_dir="file:///nowhere",
+        file_path="file:///nowhere/a.json",
+        exc=RuntimeError("boom"),
+        attempts=1,
+        max_ingestion_retries=3,
+    )
+    defaults.update(kwargs)
+    return _handle_unit_failure(**defaults)
+
+
+def test_below_the_retry_limit_the_unit_is_left_in_place(tmp_path):
+    state = RetryState(str(tmp_path), {})
+    result = _failure_result(attempts=1, max_ingestion_retries=3, retry_state=state)
+
+    assert result["status"] == "failed"
+    assert result["attempts"] == 1
+    # No move was attempted, so no move fields - the file stays for next run.
+    assert "move_status" not in result
+    # And its count is not forgotten.
+    assert state.attempts("file:///nowhere/a.json") == 0  # never incremented here
+
+
+def test_at_the_retry_limit_the_unit_is_quarantined_and_its_count_forgotten(tmp_path):
+    """A permanently-broken file must stop being retried forever."""
+    state = RetryState(str(tmp_path), {"file:///nowhere/a.json": 3})
+    result = _failure_result(attempts=3, max_ingestion_retries=3, retry_state=state)
+
+    # The move fails here (nowhere is not a real path), which is itself the
+    # documented fallback: report it rather than lose the file.
+    assert result["status"] == "failed"
+    assert result["move_status"] in ("quarantined", "failed_left_in_place")
+    assert state.attempts("file:///nowhere/a.json") == 0, "count cleared at the limit"
+
+
+def test_both_paths_produce_the_same_shape_for_the_same_failure(tmp_path):
+    """
+    The drift this issue is about. The two call sites previously had separate
+    implementations and had already diverged; nothing asserted they agreed.
+
+    They differ in exactly one documented way: the per-file path carries
+    `table`, because the folder path records the table once on the parent
+    folder result rather than on every inner file.
+    """
+    per_file = _failure_result(
+        retry_state=RetryState(str(tmp_path), {}), extra_fields={"table": "orders_bronze"}
+    )
+    folder_inner = _failure_result(
+        retry_state=RetryState(str(tmp_path), {}), relative_subpath="orders"
+    )
+
+    assert set(per_file) - set(folder_inner) == {"table"}
+    assert set(folder_inner) - set(per_file) == set()
+    for key in ("file", "status", "error", "attempts"):
+        assert per_file[key] == folder_inner[key]

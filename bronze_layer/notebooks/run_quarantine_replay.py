@@ -18,7 +18,14 @@
 # the same wheel into the session first:
 #   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
-from bronze_ingest import IngestionConfig, reprocess_quarantine, reprocess_quarantined_files, get_logger
+from typing import Any, Dict
+
+from bronze_ingest import (
+    IngestionConfig,
+    get_logger,
+    reprocess_quarantine,
+    reprocess_quarantined_files,
+)
 
 logger = get_logger()
 
@@ -27,16 +34,32 @@ logger = get_logger()
 dbutils.widgets.dropdown("replay_mode", "rows", ["rows", "files", "both"], "What to replay")
 
 # --- Row replay (reads from the quarantine table) ---
-dbutils.widgets.text("config_path", "", "Path to config YAML/JSON for the target table (row replay)")
+dbutils.widgets.text(
+    "config_path", "", "Path to config YAML/JSON for the target table (row replay)"
+)
 dbutils.widgets.text("catalog", "", "Catalog (optional, overrides config)")
 dbutils.widgets.text("schema_name", "", "Target schema (overrides config)")
 dbutils.widgets.text("table", "", "Target table (overrides config)")
 dbutils.widgets.text("batch_id", "", "Only replay rows from this original _batch_id (optional)")
-dbutils.widgets.text("since", "", "Only replay rows ingested at/after this ISO timestamp (optional)")
+dbutils.widgets.text(
+    "since", "", "Only replay rows ingested at/after this ISO timestamp (optional)"
+)
+# Replay is the operation run after fixing an upstream source, against a
+# quarantine table that has been accumulating since the problem started, so
+# "replay everything" is both the natural usage and the unbounded case
+# (#155). Blank uses the package default; set a number to raise it
+# deliberately, or "none" to lift the guard entirely.
+dbutils.widgets.text(
+    "max_rows",
+    "",
+    "Refuse to promote more than this many rows (blank = default, 'none' = no limit)",
+)
 
 # --- File replay (moves files back from quarantine_files/) ---
 dbutils.widgets.text("source_dir", "", "Directory ingestion's source_dir (file replay)")
-dbutils.widgets.text("pattern", "", "Only restore files matching this glob (optional, e.g. orders_*.json)")
+dbutils.widgets.text(
+    "pattern", "", "Only restore files matching this glob (optional, e.g. orders_*.json)"
+)
 
 # COMMAND ----------
 
@@ -62,7 +85,19 @@ if replay_mode in ("rows", "both"):
     since_raw = dbutils.widgets.get("since").strip()
     since = since_raw or None
 
-    row_result = reprocess_quarantine(spark, config, batch_id=batch_id, since=since)
+    max_rows_raw = dbutils.widgets.get("max_rows").strip().lower()
+    # Annotated because the three branches disagree on the value type -
+    # absent, explicitly None, or an int - and an unannotated dict takes its
+    # type from whichever branch is written first.
+    replay_kwargs: Dict[str, Any] = {}
+    if max_rows_raw in ("none", "unlimited"):
+        replay_kwargs["max_rows"] = None
+    elif max_rows_raw:
+        replay_kwargs["max_rows"] = int(max_rows_raw)
+
+    row_result = reprocess_quarantine(
+        spark, config, batch_id=batch_id, since=since, **replay_kwargs
+    )
     logger.info("Row replay result: %s", row_result)
     results["rows"] = row_result
 

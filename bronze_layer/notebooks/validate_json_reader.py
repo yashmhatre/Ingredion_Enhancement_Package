@@ -32,7 +32,8 @@ from bronze_ingest.json_reader import read_json
 
 BASE = "abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/raw/JSON"
 
-results = []
+results: list = []
+
 
 def check(name, fn):
     """Runs fn(), records pass/fail + message, never raises past this point."""
@@ -41,11 +42,15 @@ def check(name, fn):
         results.append((name, "PASS", ""))
     except AssertionError as e:
         results.append((name, "FAIL", str(e)))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a validation harness reports every failure rather than stopping at the first
         results.append((name, "ERROR", f"{type(e).__name__}: {e}"))
 
+
 def cfg(path, multiline=True, **kwargs):
-    return IngestionConfig(source_path=path, table="_validation_scratch", multiline=multiline, **kwargs)
+    return IngestionConfig(
+        source_path=path, table="_validation_scratch", multiline=multiline, **kwargs
+    )
+
 
 # COMMAND ----------
 
@@ -53,29 +58,71 @@ def cfg(path, multiline=True, **kwargs):
 
 # COMMAND ----------
 
-check("single_object", lambda: (
-    lambda df: (_ for _ in ()).throw(AssertionError(f"expected 1 row, got {df.count()}")) if df.count() != 1 else None
-)(read_json(spark, cfg(f"{BASE}/single_object.json"))))
+check(
+    "single_object",
+    lambda: (
+        lambda df: (
+            (_ for _ in ()).throw(AssertionError(f"expected 1 row, got {df.count()}"))
+            if df.count() != 1
+            else None
+        )
+    )(read_json(spark, cfg(f"{BASE}/single_object.json"))),
+)
 
-check("array_of_objects", lambda: (
-    lambda df: (_ for _ in ()).throw(AssertionError(f"expected 2 rows, got {df.count()}")) if df.count() != 2 else None
-)(read_json(spark, cfg(f"{BASE}/array_of_objects.json"))))
+check(
+    "array_of_objects",
+    lambda: (
+        lambda df: (
+            (_ for _ in ()).throw(AssertionError(f"expected 2 rows, got {df.count()}"))
+            if df.count() != 2
+            else None
+        )
+    )(read_json(spark, cfg(f"{BASE}/array_of_objects.json"))),
+)
 
-check("lines_jsonl", lambda: (
-    lambda df: (_ for _ in ()).throw(AssertionError(f"expected 2 rows, got {df.count()}")) if df.count() != 2 else None
-)(read_json(spark, cfg(f"{BASE}/lines.jsonl", multiline=False))))
+check(
+    "lines_jsonl",
+    lambda: (
+        lambda df: (
+            (_ for _ in ()).throw(AssertionError(f"expected 2 rows, got {df.count()}"))
+            if df.count() != 2
+            else None
+        )
+    )(read_json(spark, cfg(f"{BASE}/lines.jsonl", multiline=False))),
+)
 
-check("nested_one_level", lambda: (
-    lambda df: (_ for _ in ()).throw(AssertionError("customer struct missing")) if "customer" not in df.columns else None
-)(read_json(spark, cfg(f"{BASE}/nested_one_level.json"))))
+check(
+    "nested_one_level",
+    lambda: (
+        lambda df: (
+            (_ for _ in ()).throw(AssertionError("customer struct missing"))
+            if "customer" not in df.columns
+            else None
+        )
+    )(read_json(spark, cfg(f"{BASE}/nested_one_level.json"))),
+)
 
-check("nested_three_level", lambda: (
-    lambda df: (_ for _ in ()).throw(AssertionError("customer struct missing")) if "customer" not in df.columns else None
-)(read_json(spark, cfg(f"{BASE}/nested_three_level.json"))))
+check(
+    "nested_three_level",
+    lambda: (
+        lambda df: (
+            (_ for _ in ()).throw(AssertionError("customer struct missing"))
+            if "customer" not in df.columns
+            else None
+        )
+    )(read_json(spark, cfg(f"{BASE}/nested_three_level.json"))),
+)
 
-check("array_field", lambda: (
-    lambda df: (_ for _ in ()).throw(AssertionError("items array missing")) if "items" not in df.columns else None
-)(read_json(spark, cfg(f"{BASE}/array_field.json"))))
+check(
+    "array_field",
+    lambda: (
+        lambda df: (
+            (_ for _ in ()).throw(AssertionError("items array missing"))
+            if "items" not in df.columns
+            else None
+        )
+    )(read_json(spark, cfg(f"{BASE}/array_field.json"))),
+)
 
 check("array_of_arrays", lambda: read_json(spark, cfg(f"{BASE}/array_of_arrays.json")).count())
 
@@ -85,11 +132,13 @@ check("array_of_arrays", lambda: read_json(spark, cfg(f"{BASE}/array_of_arrays.j
 
 # COMMAND ----------
 
+
 def _check_multi_file():
     df = read_json(spark, cfg(f"{BASE}/multi_file/"))
     assert df.count() == 2, f"expected 2 rows across files, got {df.count()}"
     distinct_sources = df.select("_input_file_name").distinct().count()
     assert distinct_sources == 2, f"expected 2 distinct source files, got {distinct_sources}"
+
 
 check("multi_file_source", _check_multi_file)
 
@@ -99,36 +148,46 @@ check("multi_file_source", _check_multi_file)
 
 # COMMAND ----------
 
+
 def _check_malformed():
     df = read_json(spark, cfg(f"{BASE}/malformed.json"))
     # Should not raise. Corrupt record should be captured, not silently dropped.
     assert df.count() >= 1, "malformed file produced no rows at all"
     assert "_corrupt_record" in df.columns, "_corrupt_record column missing"
 
+
 check("malformed_json_does_not_crash", _check_malformed)
+
 
 def _check_empty_file():
     df = read_json(spark, cfg(f"{BASE}/empty_file.json"))
     assert df.count() == 0, f"expected 0 rows for empty file, got {df.count()}"
 
+
 check("empty_file", _check_empty_file)
+
 
 def _check_empty_object():
     df = read_json(spark, cfg(f"{BASE}/empty_object.json"))
     assert df.count() == 1, f"expected 1 row for empty object, got {df.count()}"
 
+
 check("empty_object", _check_empty_object)
+
 
 def _check_empty_array():
     df = read_json(spark, cfg(f"{BASE}/empty_array.json"))
     assert df.count() == 0, f"expected 0 rows for empty array, got {df.count()}"
 
+
 check("empty_array", _check_empty_array)
+
 
 def _check_mixed_valid_malformed():
     df = read_json(spark, cfg(f"{BASE}/mixed_valid_malformed.jsonl", multiline=False))
     good = df.filter("id IS NOT NULL").count()
     assert good >= 2, f"expected at least 2 valid rows, got {good}"
+
 
 check("mixed_valid_malformed", _check_mixed_valid_malformed)
 
@@ -138,16 +197,22 @@ check("mixed_valid_malformed", _check_mixed_valid_malformed)
 
 # COMMAND ----------
 
-check("nulls_preserved", lambda: (
-    lambda df: (_ for _ in ()).throw(AssertionError("row missing")) if df.count() != 1 else None
-)(read_json(spark, cfg(f"{BASE}/nulls.json"))))
+check(
+    "nulls_preserved",
+    lambda: (
+        lambda df: (_ for _ in ()).throw(AssertionError("row missing")) if df.count() != 1 else None
+    )(read_json(spark, cfg(f"{BASE}/nulls.json"))),
+)
+
 
 def _check_unicode():
     df = read_json(spark, cfg(f"{BASE}/unicode.json"))
     row = df.collect()[0]
     assert row["name"] == "Müller", f"unicode mangled: {row['name']!r}"
 
+
 check("unicode_preserved", _check_unicode)
+
 
 def _check_duplicate_keys():
     """
@@ -166,12 +231,17 @@ def _check_duplicate_keys():
             raise  # unexpected error type — surface it, don't silently pass
     assert raised_correctly, "expected AnalysisException/COLUMN_ALREADY_EXISTS for duplicate keys"
 
+
 check("duplicate_keys_documented_limitation", _check_duplicate_keys)
+
 
 def _check_numeric_as_string():
     df = read_json(spark, cfg(f"{BASE}/numeric_as_string.json"))
     dtypes = dict(df.dtypes)
-    assert dtypes.get("amount") == "string", f"expected amount inferred as string, got {dtypes.get('amount')}"
+    assert dtypes.get("amount") == "string", (
+        f"expected amount inferred as string, got {dtypes.get('amount')}"
+    )
+
 
 check("numeric_as_string_inference", _check_numeric_as_string)
 
@@ -181,21 +251,25 @@ check("numeric_as_string_inference", _check_numeric_as_string)
 
 # COMMAND ----------
 
+
 def _check_lineage_column():
     df = read_json(spark, cfg(f"{BASE}/single_object.json"))
     assert "_input_file_name" in df.columns, "_input_file_name missing"
     val = df.collect()[0]["_input_file_name"]
     assert val and "single_object.json" in val, f"unexpected lineage value: {val}"
 
+
 check("lineage_column_present", _check_lineage_column)
+
 
 def _check_missing_source_raises():
     raised = False
     try:
         read_json(spark, cfg(f"{BASE}/does_not_exist.json")).count()
-    except Exception:
+    except Exception:  # noqa: BLE001 - the assertion under test is that SOMETHING raised
         raised = True
     assert raised, "expected an error reading a nonexistent source_path"
+
 
 check("missing_source_raises", _check_missing_source_raises)
 
@@ -211,13 +285,17 @@ check("missing_source_raises", _check_missing_source_raises)
 HINT_DDL = "id INT, name STRING, age INT"
 SCHEMA_HINT_BASE = f"{BASE}/schema_hint"
 
+
 def _check_full_match():
     df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/full_match.json", schema_hint_ddl=HINT_DDL))
     assert df.count() == 1, "expected 1 row"
-    assert "_rescued_data" not in df.columns or df.filter("_rescued_data IS NOT NULL").count() == 0, \
-        "expected no rescued data for an exact schema match"
+    assert (
+        "_rescued_data" not in df.columns or df.filter("_rescued_data IS NOT NULL").count() == 0
+    ), "expected no rescued data for an exact schema match"
+
 
 check("schema_hint_full_match", _check_full_match)
+
 
 def _check_extra_fields():
     df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/extra_fields.json", schema_hint_ddl=HINT_DDL))
@@ -225,14 +303,20 @@ def _check_extra_fields():
     rescued = df.filter("_rescued_data IS NOT NULL").count()
     assert rescued == 1, f"expected 1 row with rescued data (extra 'email' field), got {rescued}"
 
+
 check("schema_hint_extra_fields_rescued", _check_extra_fields)
 
+
 def _check_missing_optional():
-    df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/missing_optional.json", schema_hint_ddl=HINT_DDL))
+    df = read_json(
+        spark, cfg(f"{SCHEMA_HINT_BASE}/missing_optional.json", schema_hint_ddl=HINT_DDL)
+    )
     row = df.collect()[0]
     assert row["age"] is None, f"expected age to be null when missing from source, got {row['age']}"
 
+
 check("schema_hint_missing_field_is_null", _check_missing_optional)
+
 
 def _check_no_schema_hint_regression():
     # No schema_hint_ddl provided at all - confirms inferred-schema path
@@ -240,15 +324,22 @@ def _check_no_schema_hint_regression():
     df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/full_match.json"))
     assert df.count() == 1, "expected 1 row with inferred schema (no hint)"
 
+
 check("schema_hint_absent_regression", _check_no_schema_hint_regression)
+
 
 def _check_type_mismatch():
     df = read_json(spark, cfg(f"{SCHEMA_HINT_BASE}/type_mismatch.json", schema_hint_ddl=HINT_DDL))
     row = df.collect()[0]
     assert row["id"] is None, f"expected id to be null on type mismatch, got {row['id']}"
-    assert row["_rescued_data"] is not None, "expected original mistyped value preserved in _rescued_data"
-    assert "not_a_number" in row["_rescued_data"], \
-        f"expected original value 'not_a_number' recoverable in _rescued_data, got {row['_rescued_data']}"
+    assert row["_rescued_data"] is not None, (
+        "expected original mistyped value preserved in _rescued_data"
+    )
+    assert "not_a_number" in row["_rescued_data"], (
+        "expected original value 'not_a_number' recoverable in _rescued_data, "
+        f"got {row['_rescued_data']}"
+    )
+
 
 check("schema_hint_type_mismatch_nulls_and_rescues", _check_type_mismatch)
 
@@ -258,13 +349,21 @@ check("schema_hint_type_mismatch_nulls_and_rescues", _check_type_mismatch)
 
 # COMMAND ----------
 
-import pandas as pd
+# Explicit schema, no pandas (#157). pandas was imported here and in
+# run_directory_ingestion but declared in no extra of setup.py - it worked
+# only because the Databricks runtime happens to ship it, and nothing
+# asserted that. A runtime version that dropped it would have failed in
+# production on a line whose only job is to render a report.
+#
+# `results` is already a list of (case, status, detail) tuples, so this needs
+# no reshaping - the DataFrame was only ever being used to render and to
+# count.
+display(spark.createDataFrame(results, schema="case STRING, status STRING, detail STRING"))
 
-report_df = pd.DataFrame(results, columns=["case", "status", "detail"])
-display(spark.createDataFrame(report_df))
+failed = [r for r in results if r[1] != "PASS"]
+if failed:
+    dbutils.notebook.exit(
+        f"FAILED: {len(failed)}/{len(results)} case(s) failed: {[r[0] for r in failed]}"
+    )
 
-failed = report_df[report_df["status"] != "PASS"]
-if len(failed) > 0:
-    dbutils.notebook.exit(f"FAILED: {len(failed)}/{len(report_df)} case(s) failed: {list(failed['case'])}")
-
-dbutils.notebook.exit(f"SUCCESS: all {len(report_df)} case(s) passed")
+dbutils.notebook.exit(f"SUCCESS: all {len(results)} case(s) passed")

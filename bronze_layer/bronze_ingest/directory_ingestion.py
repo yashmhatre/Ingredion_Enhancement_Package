@@ -1,7 +1,7 @@
 """
-Directory-level ingestion: discover JSON files in a directory and load each
-one into its own bronze table, with the table name derived from the filename
-via a configurable template (e.g. "{filename}_bronze" or "bronze_{filename}").
+Directory-level ingestion: discover files in a directory and load each one
+into its own bronze table, named from the filename via a configurable
+template (e.g. "{filename}_bronze" or "bronze_{filename}").
 
 Usage (notebook):
 
@@ -12,305 +12,137 @@ Usage (notebook):
         source_dir="/Volumes/main/default/raw_json/",
         catalog="main",
         schema_name="bronze",
-        table_name_template="{filename}_bronze",   # or "bronze_{filename}"
-        flatten_mode="auto",
+        table_name_template="{filename}_bronze",
     )
 
-Each file is processed independently: one bad file is logged and reported in
-the results list, but does not stop the remaining files from loading.
+Each unit - a file, or a folder under folder-as-table - is processed
+independently: one bad unit is logged and reported in the results list, but
+does not stop the rest from loading.
+
+Orchestration only, as of #151. This module was 729 lines holding four
+unrelated responsibilities; table naming, filesystem discovery, archival
+and retry-state persistence now live in `naming` and `fs/*`, none of which
+depends on directory ingestion. The public API is unchanged - the names
+this module used to define are re-exported below, so no caller moves.
 """
 
 import os
-import re
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
-from .databricks_fs import get_dbutils, list_entries
-import shutil
-import json as _json
-from datetime import datetime, timezone
 from .config import IngestionConfig
-from .logging_utils import logger
+from .fs import (
+    RetryState,
+    archive_files_parallel,
+    archive_ingested_file,
+    list_json_files,
+    list_subfolders,
+    local_path_from_uri,
+    move_file,
+    move_file_direct,
+    retry_state_path,
+)
 from .json_reader import read_json
-from concurrent.futures import ThreadPoolExecutor
+from .logging_utils import logger
+from .naming import build_table_name, sanitize_table_name
+
+# Re-exported for backwards compatibility. `sanitize_table_name` and
+# `build_table_name` are in the package's `__all__`, and the CI wheel check
+# asserts the public imports resolve; the rest were reachable and may be
+# imported by callers outside this repo. Moving a symbol should not break
+# anyone (#151).
+__all__ = [
+    "RetryState",
+    "archive_files_parallel",
+    "archive_ingested_file",
+    "build_table_name",
+    "ingest_directory_to_bronze",
+    "list_json_files",
+    "list_subfolders",
+    "local_path_from_uri",
+    "move_file",
+    "move_file_direct",
+    "retry_state_path",
+    "sanitize_table_name",
+]
 
 
-def sanitize_table_name(filename: str) -> str:
+def _handle_unit_failure(
+    *,
+    source_dir: str,
+    file_path: str,
+    exc: Exception,
+    attempts: int,
+    max_ingestion_retries: int,
+    retry_state: RetryState,
+    relative_subpath: str = "",
+    extra_fields: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
-    Converts a filename into a valid Databricks/Unity Catalog table name:
-      orders-2026 Jan.json -> orders_2026_jan
-    Rules: strip extension, lowercase, replace non [a-z0-9_] with '_',
-    collapse repeats, prefix 't_' if it starts with a digit.
+    The failure -> retry-count -> quarantine policy, in one place (#183).
+
+    This existed twice - once in the folder-as-table path and once in the
+    per-file path - and the two had already drifted: they produced different
+    result-dict shapes, and only one of them logged. Two implementations of
+    one policy is how those paths diverge, and the divergence had happened
+    before anyone noticed.
+
+    The policy: a unit that has failed `max_ingestion_retries` times is moved
+    to `quarantine_files/` and its retry count forgotten, so a permanently
+    broken file stops being retried forever. Below the limit it is left in
+    place for the next run, with its count carried forward.
+
+    Returns the result dict for this unit. `extra_fields` is how the two
+    callers keep the shapes they already had - the per-file path carries
+    `table`, the folder path's inner entries do not, because the table is
+    recorded once on the parent folder result. Preserving that was
+    deliberate: the notebook summary reads these, and changing the shape is a
+    separate decision from removing the duplication.
+
+    `retry_state` is mutated but not flushed - the caller flushes once per
+    run (#151).
     """
-    name = os.path.splitext(os.path.basename(filename))[0]
-    name = re.sub(r"[^0-9a-zA-Z_]", "_", name).lower()
-    name = re.sub(r"_+", "_", name).strip("_")
-    if not name:
-        raise ValueError(f"Filename {filename!r} produced an empty table name")
-    if name[0].isdigit():
-        name = f"t_{name}"
-    return name
+    result: Dict[str, Any] = {
+        "file": file_path,
+        "status": "failed",
+        "error": str(exc),
+        "attempts": attempts,
+        **(extra_fields or {}),
+    }
 
-
-def build_table_name(filename: str, template: str = "{filename}_bronze") -> str:
-    """
-    Applies the naming template. The template must contain '{filename}'.
-      template="{filename}_bronze"  -> orders_bronze
-      template="bronze_{filename}"  -> bronze_orders
-    """
-    if "{filename}" not in template:
-        raise ValueError("table_name_template must contain '{filename}'")
-    return template.replace("{filename}", sanitize_table_name(filename))
-
-
-def _try_dbutils_ls(source_dir: str) -> Optional[List[str]]:
-    """Databricks-native file listing - works on ALL Databricks compute,
-    including serverless (where spark._jvm is blocked). Returns None if
-    Databricks isn't available at all (e.g. local pytest runs); raises if it
-    is available and the listing genuinely fails. See databricks_fs.py."""
-    entries = list_entries(source_dir)
-    if entries is None:
-        return None
-
-    return sorted(
-        e.path
-        for e in entries
-        if not e.is_dir and e.name.lower().endswith((".json", ".jsonl"))
-    )
-
-
-def _try_posix_ls(source_dir: str) -> Optional[List[str]]:
-    """File listing via os.listdir for POSIX-style paths: local file:/ paths
-    and FUSE-mounted locations like /Volumes/... . Returns None if the path
-    isn't visible as a local directory."""
-    local = source_dir[len("file://"):] if source_dir.startswith("file://") else source_dir
-    if not os.path.isdir(local):
-        return None
-    return sorted(
-        os.path.join(source_dir.rstrip("/"), f)
-        for f in os.listdir(local)
-        if f.lower().endswith((".json", ".jsonl")) and os.path.isfile(os.path.join(local, f))
-    )
-
-
-def _try_dbutils_ls_dirs(source_dir: str) -> Optional[List[str]]:
-    """Lists immediate subdirectories. Returns None if Databricks isn't
-    available. Directory detection uses the authoritative `is_dir` flag
-    rather than a trailing-slash convention - see databricks_fs.py."""
-    entries = list_entries(source_dir)
-    if entries is None:
-        return None
-    return sorted(e.path.rstrip("/") for e in entries if e.is_dir)
-
-
-def _try_posix_ls_dirs(source_dir: str) -> Optional[List[str]]:
-    """Lists immediate subdirectories via os.listdir for local/FUSE paths."""
-    local = source_dir[len("file://"):] if source_dir.startswith("file://") else source_dir
-    if not os.path.isdir(local):
-        return None
-    return sorted(
-        os.path.join(source_dir.rstrip("/"), d)
-        for d in os.listdir(local)
-        if os.path.isdir(os.path.join(local, d))
-    )
-
-
-def list_subfolders(spark, source_dir: str) -> List[str]:
-    """
-    Lists immediate (one-level-deep) subdirectories of source_dir. Each
-    one is treated as a folder-as-table unit by ingest_directory_to_bronze.
-    Excludes the reserved _state/ folder (retry-state tracking) and any
-    folder starting with an underscore, to avoid accidentally treating
-    internal bookkeeping folders as data.
-    """
-    dirs = _try_dbutils_ls_dirs(source_dir)
-    if dirs is None:
-        dirs = _try_posix_ls_dirs(source_dir)
-    if dirs is None:
-        jvm = spark._jvm
-        hadoop_conf = spark._jsc.hadoopConfiguration()
-        path = jvm.org.apache.hadoop.fs.Path(source_dir)
-        fs = path.getFileSystem(hadoop_conf)
-        if not fs.exists(path):
-            raise FileNotFoundError(f"source_dir does not exist: {source_dir}")
-        statuses = fs.listStatus(path)
-        dirs = sorted(
-            str(status.getPath().toString())
-            for status in statuses
-            if status.isDirectory()
+    if attempts < max_ingestion_retries:
+        # increment() has already recorded the attempt; the state file is
+        # written once at the end of the run.
+        logger.warning(
+            "%s failed ingestion (attempt %d/%d) - left in place for retry",
+            file_path,
+            attempts,
+            max_ingestion_retries,
         )
+        return result
 
-    return [
-        d for d in dirs
-        if not os.path.basename(d.rstrip("/")).startswith("_")
-        and os.path.basename(d.rstrip("/")) not in ("processed", "quarantine_files")
-    ]
-
-
-def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> List[str]:
-    """
-    Lists .json files in source_dir (non-recursive).
-
-    Strategy, in order:
-      1. dbutils.fs.ls - available on every Databricks compute type,
-         including serverless.
-      2. os.listdir - for local paths and FUSE mounts (/Volumes/...),
-         also covers local pytest runs.
-      3. Hadoop FileSystem API via spark._jvm - classic clusters only
-         (serverless blocks _jvm), needed for direct cloud URIs like
-         abfss:// or s3:// when dbutils isn't available.
-    """
-    files = _try_dbutils_ls(source_dir)
-
-    if files is None:
-        files = _try_posix_ls(source_dir)
-
-    if files is None:
-        # Classic-cluster / spark-submit fallback for cloud URIs.
-        jvm = spark._jvm
-        hadoop_conf = spark._jsc.hadoopConfiguration()
-        path = jvm.org.apache.hadoop.fs.Path(source_dir)
-        fs = path.getFileSystem(hadoop_conf)
-        if not fs.exists(path):
-            raise FileNotFoundError(f"source_dir does not exist: {source_dir}")
-        statuses = fs.listStatus(path)
-        files = sorted(
-            str(status.getPath().toString())
-            for status in statuses
-            if status.isFile() and str(status.getPath().getName()).lower().endswith((".json", ".jsonl"))
-        )
-
-    if max_files is not None:
-        files = files[:max_files]
-    return files
-
-def _move_file_direct(src_path: str, dest_path: str) -> None:
-    """
-    Moves a file from src_path to dest_path directly (both absolute),
-    using dbutils.fs.mv when available (works on all Databricks compute,
-    including UC Volumes and cloud paths), falling back to shutil.move for
-    local/pytest paths. Raises on failure - caller decides how to handle
-    it; this function does not swallow errors.
-    """
-    dbutils = get_dbutils()
-    if dbutils is not None:
-        # Databricks is available, so a failure here is a real failure -
-        # deliberately not caught. Previously any exception fell through to
-        # the local move below, which meant a genuine workspace error
-        # silently relocated files on the driver's local disk instead.
-        dbutils.fs.mv(src_path, dest_path)
-        return
-
-    local_src = src_path[len("file://"):] if src_path.startswith("file://") else src_path
-    local_dest = dest_path[len("file://"):] if dest_path.startswith("file://") else dest_path
-    os.makedirs(os.path.dirname(local_dest), exist_ok=True)
-    shutil.move(local_src, local_dest)
-
-
-def _move_file(source_dir: str, file_path: str, dest_subfolder: str, relative_subpath: str = "") -> str:
-    """
-    Moves a single file from its current location into `dest_subfolder`
-    (relative to source_dir). relative_subpath, if given (e.g. "orders"),
-    is preserved between dest_subfolder and the filename - used for files
-    ingested as part of a folder-as-table unit, so
-    processed/{date}/orders/order1.json keeps its folder context instead
-    of flattening to processed/{date}/order1.json.
-
-    Returns the destination path. Raises on failure - caller decides how
-    to handle it; this function does not swallow errors.
-    """
-    filename = file_path.rsplit("/", 1)[-1]
-    subpath = f"{relative_subpath.strip('/')}/" if relative_subpath else ""
-    dest_path = f"{source_dir.rstrip('/')}/{dest_subfolder}/{subpath}{filename}"
-    _move_file_direct(file_path, dest_path)
-    return dest_path
-
-
-def _archive_ingested_file(source_dir: str, file_path: str, relative_subpath: str = "") -> Dict[str, str]:
-    """
-    Moves a successfully-ingested file to processed/{date}/[relative_subpath/].
-    If that move fails, falls back to quarantine_files/[relative_subpath/] for
-    manual review. If even that fails, the file is left in place (backlog)
-    and the failure is logged - data is never silently lost, and ingestion
-    of other files is never blocked by one file's move failure.
-
-    relative_subpath preserves folder context for files ingested as part of
-    a folder-as-table unit (see _ingest_folder_as_table).
-
-    Returns {"move_status": "moved"|"quarantined"|"failed_left_in_place",
-             "move_detail": <destination path or error message>}.
-    Never raises.
-    """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
+    retry_state.clear(file_path)
     try:
-        dest = _move_file(source_dir, file_path, f"processed/{today}", relative_subpath=relative_subpath)
-        logger.info("Archived %s -> %s", file_path, dest)
-        return {"move_status": "moved", "move_detail": dest}
-    except Exception as move_exc:
-        logger.warning("Failed to archive %s (%s) - attempting quarantine", file_path, move_exc)
-        try:
-            dest = _move_file(source_dir, file_path, "quarantine_files", relative_subpath=relative_subpath)
-            logger.warning("Quarantined %s -> %s (original archive move failed)", file_path, dest)
-            return {"move_status": "quarantined", "move_detail": dest}
-        except Exception as quarantine_exc:
-            logger.error(
-                "Failed to archive or quarantine %s - left in place for manual review (backlog): %s",
-                file_path, quarantine_exc,
-            )
-            return {"move_status": "failed_left_in_place", "move_detail": str(quarantine_exc)}
+        dest = move_file(
+            source_dir, file_path, "quarantine_files", relative_subpath=relative_subpath
+        )
+        logger.warning(
+            "%s failed ingestion %d time(s) - quarantined to %s", file_path, attempts, dest
+        )
+        result.update({"move_status": "quarantined", "move_detail": dest})
+    except Exception as move_exc:  # noqa: BLE001 - per-unit isolation: one unit's failure must not stop the others
+        logger.error(
+            "%s failed ingestion %d time(s) and could not be quarantined: %s",
+            file_path,
+            attempts,
+            move_exc,
+        )
+        result.update({"move_status": "failed_left_in_place", "move_detail": str(move_exc)})
+    return result
 
-_ARCHIVE_MAX_WORKERS = 10
 
-
-def _archive_files_parallel(source_dir, file_paths, relative_subpath=""):
-    """
-    Archives multiple files concurrently. Each dbutils.fs.mv / shutil.move
-    is independent, so these parallelize safely.
-
-    **On serverless this produces no speedup, and that is measured, not
-    assumed.** Archival is the dominant linear cost in folder ingestion
-    (~0.45s per file, 9.4x scaling for 10x files vs ~4x for read/write),
-    which is why it was parallelized - but the benchmark showed 163.0s with
-    10 workers against 161.3s sequential. Logs show files still completing
-    in exact input order at consistent ~0.45s intervals: the threads are
-    created correctly and serialize below, most likely in the Spark Connect
-    gRPC client, which appears to handle one request at a time per session.
-
-    The implementation is kept deliberately - it is correct, costs nothing,
-    and would help on any filesystem where moves genuinely parallelize
-    (local execution, or if Databricks changes this behaviour). Do not read
-    its existence as evidence that archival is parallel on serverless; it
-    is not. Full measurement in docs/testing_directory_ingestion.md, which
-    owns this benchmark.
-
-    Consequently the single-file path in ingest_directory_to_bronze
-    archiving sequentially via _archive_ingested_file is immaterial on
-    serverless rather than an oversight - there is no speedup being left
-    on the table.
-
-    Returns a list of (file_path, move_result_dict) tuples in the same
-    order as file_paths, so per-file error attribution is preserved
-    despite concurrent execution.
-
-    _archive_ingested_file never raises (it handles its own failures and
-    returns a status dict), so no exception handling is needed here.
-    """
-    if not file_paths:
-        return []
-
-    workers = min(_ARCHIVE_MAX_WORKERS, len(file_paths))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(
-            lambda fp: _archive_ingested_file(source_dir, fp, relative_subpath=relative_subpath),
-            file_paths,
-        ))
-
-    return list(zip(file_paths, results))
-
-_RETRY_STATE_SUBFOLDER = "_state"
-_RETRY_STATE_FILENAME = "retry_state.json"
-
-def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config, stop_on_error, max_ingestion_retries):
+def _ingest_folder_as_table(
+    spark, source_dir, folder_path, table, shared_config, stop_on_error, max_ingestion_retries
+):
     """
     Handles a folder-as-table plan item: reads every file inside folder_path
     individually and validates each with a count() (catches bad files early,
@@ -342,22 +174,26 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
         # neither counted as a success nor treated as a failure.
         logger.warning("Folder %s contains no JSON files - skipping.", folder_path)
         return {
-            "file": folder_path, "table": table, "status": "skipped",
+            "file": folder_path,
+            "table": table,
+            "status": "skipped",
             "reason": "no JSON files in folder",
         }
 
     validated_dataframes = []
     validated_file_paths = []
     file_results = []
-    retry_state = _read_retry_state(source_dir)
+    retry_state = RetryState.load(source_dir)
 
     for file_path in inner_files:
         try:
-            cfg = IngestionConfig.from_dict({**shared_config, "source_path": file_path, "table": table})
+            cfg = IngestionConfig.from_dict(
+                {**shared_config, "source_path": file_path, "table": table}
+            )
             df = read_json(spark, cfg)
             df.count()  # eagerly validate this file is actually readable,
-                        # without persisting - files stay in place, safe to
-                        # re-read again later at final write time
+            # without persisting - files stay in place, safe to
+            # re-read again later at final write time
             validated_dataframes.append(df)
             validated_file_paths.append(file_path)
         except Exception as exc:
@@ -365,33 +201,28 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
             if stop_on_error:
                 raise
 
-            attempts = retry_state.get(file_path, 0) + 1
-            if attempts >= max_ingestion_retries:
-                retry_state.pop(file_path, None)
-                try:
-                    dest = _move_file(source_dir, file_path, "quarantine_files", relative_subpath=folder_name)
-                    file_results.append({
-                        "file": file_path, "status": "failed", "error": str(exc), "attempts": attempts,
-                        "move_status": "quarantined", "move_detail": dest,
-                    })
-                except Exception as move_exc:
-                    file_results.append({
-                        "file": file_path, "status": "failed", "error": str(exc), "attempts": attempts,
-                        "move_status": "failed_left_in_place", "move_detail": str(move_exc),
-                    })
-            else:
-                retry_state[file_path] = attempts
-                file_results.append({
-                    "file": file_path, "status": "failed", "error": str(exc), "attempts": attempts,
-                })
+            file_results.append(
+                _handle_unit_failure(
+                    source_dir=source_dir,
+                    file_path=file_path,
+                    exc=exc,
+                    attempts=retry_state.increment(file_path),
+                    max_ingestion_retries=max_ingestion_retries,
+                    retry_state=retry_state,
+                    relative_subpath=folder_name,
+                )
+            )
 
-    _write_retry_state(source_dir, retry_state)
+    retry_state.flush()
 
     if not validated_dataframes:
         logger.error("All files in folder %s failed to read - no table written.", folder_path)
         return {
-            "file": folder_path, "table": table, "status": "failed",
-            "error": "all files in folder failed", "file_results": file_results,
+            "file": folder_path,
+            "table": table,
+            "status": "failed",
+            "error": "all files in folder failed",
+            "file_results": file_results,
         }
 
     merged_df = validated_dataframes[0]
@@ -399,27 +230,32 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
         merged_df = merged_df.unionByName(df, allowMissingColumns=True)
 
     try:
-        cfg = IngestionConfig.from_dict({**shared_config, "source_path": folder_path, "table": table})
+        cfg = IngestionConfig.from_dict(
+            {**shared_config, "source_path": folder_path, "table": table}
+        )
         summary = BronzeIngestion(spark, cfg).run_on_dataframe(merged_df)
     except Exception as exc:
         logger.error("Failed to write merged table for folder %s: %s", folder_path, exc)
         if stop_on_error:
             raise
         return {
-            "file": folder_path, "table": table, "status": "failed",
-            "error": str(exc), "file_results": file_results,
+            "file": folder_path,
+            "table": table,
+            "status": "failed",
+            "error": str(exc),
+            "file_results": file_results,
         }
 
     # Write succeeded - now safe to archive the validated files, since
     # Spark has already finished reading them. Archival is parallelized:
     # benchmarking showed sequential moves at ~0.5s/file were the dominant
     # linear cost (9.4x scaling for 10x files, vs ~4x for read/write).
-    retry_state = _read_retry_state(source_dir)
+    retry_state = RetryState.load(source_dir)
     for file_path in validated_file_paths:
-        retry_state.pop(file_path, None)
-    _write_retry_state(source_dir, retry_state)
+        retry_state.clear(file_path)
+    retry_state.flush()
 
-    for file_path, move_result in _archive_files_parallel(
+    for file_path, move_result in archive_files_parallel(
         source_dir, validated_file_paths, relative_subpath=folder_name
     ):
         file_results.append({"file": file_path, "status": "success", **move_result})
@@ -433,82 +269,19 @@ def _ingest_folder_as_table(spark, source_dir, folder_path, table, shared_config
         "file_results": file_results,
     }
 
-    
-def _retry_state_path(source_dir: str) -> str:
-    return f"{source_dir.rstrip('/')}/{_RETRY_STATE_SUBFOLDER}/{_RETRY_STATE_FILENAME}"
-
-
-def _read_retry_state(source_dir: str) -> Dict[str, int]:
-    """Reads the persisted {file_path: consecutive_failure_count} map.
-    Returns an empty dict if the state file doesn't exist yet (first run)
-    or can't be parsed - never raises, since losing retry counts is a
-    minor issue and should not block ingestion."""
-    path = _retry_state_path(source_dir)
-    dbutils = get_dbutils()
-    content = None
-
-    if dbutils is not None:
-        try:
-            content = dbutils.fs.head(path, 1_000_000)
-        except Exception:
-            # A missing state file is the normal first-run case, so this
-            # stays tolerant even on Databricks - unlike the move/list paths,
-            # losing retry counts is explicitly a minor issue.
-            return {}
-
-    if content is None:
-        local_path = path[len("file://"):] if path.startswith("file://") else path
-        try:
-            with open(local_path, "r") as f:
-                content = f.read()
-        except Exception:
-            return {}
-
-    try:
-        return _json.loads(content)
-    except Exception:
-        logger.warning("Could not parse retry state at %s - starting fresh.", path)
-        return {}
-
-
-def _write_retry_state(source_dir: str, state: Dict[str, int]) -> None:
-    """Writes the retry-state map back. Never raises - a failure to persist
-    retry counts should not fail the ingestion run itself."""
-    path = _retry_state_path(source_dir)
-    content = _json.dumps(state)
-
-    dbutils = get_dbutils()
-    if dbutils is not None:
-        try:
-            dbutils.fs.put(path, content, overwrite=True)
-            return
-        except Exception as exc:
-            # Tolerated, but no longer silent: losing retry counts is minor,
-            # yet a persistent failure here means the retry limit never
-            # advances and permanently-failing files are retried forever.
-            logger.warning("Could not persist retry state to %s: %s", path, exc)
-            return
-
-    try:
-        local_path = path[len("file://"):] if path.startswith("file://") else path
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        with open(local_path, "w") as f:
-            f.write(content)
-    except Exception as exc:
-        logger.warning("Could not persist retry state to %s: %s", path, exc)
 
 def ingest_directory_to_bronze(
-        spark,
-        source_dir: str,
-        table_name_template: str = "{filename}_bronze",
-        max_files: Optional[int] = None,
-        stop_on_error: bool = False,
-        max_ingestion_retries: int = 3,
-        allow_overwrite_in_directory_mode: bool = False,
-        base_config: Optional[Dict[str, Any]] = None,
-        per_file_config: Optional[Dict[str, Dict[str, Any]]] = None,
-        **config_overrides,
-    ) -> List[Dict[str, Any]]:
+    spark,
+    source_dir: str,
+    table_name_template: str = "{filename}_bronze",
+    max_files: Optional[int] = None,
+    stop_on_error: bool = False,
+    max_ingestion_retries: int = 3,
+    allow_overwrite_in_directory_mode: bool = False,
+    base_config: Optional[Dict[str, Any]] = None,
+    per_file_config: Optional[Dict[str, Dict[str, Any]]] = None,
+    **config_overrides,
+) -> List[Dict[str, Any]]:
     """
     Discovers JSON files in source_dir and loads each into its own bronze
     table named via table_name_template.
@@ -559,7 +332,9 @@ def ingest_directory_to_bronze(
     shared.update(config_overrides)
     for forbidden in ("source_path", "table"):
         if forbidden in shared:
-            raise ValueError(f"{forbidden!r} is derived per file and cannot be set for directory ingestion")
+            raise ValueError(
+                f"{forbidden!r} is derived per file and cannot be set for directory ingestion"
+            )
 
     # Reject unknown config keys loudly. IngestionConfig.from_dict filters
     # unrecognised keys silently by design, so anything misspelled or
@@ -588,7 +363,9 @@ def ingest_directory_to_bronze(
     subfolders = list_subfolders(spark, source_dir)
     logger.info(
         "Discovered %d JSON file(s) and %d subfolder(s) in %s",
-        len(files), len(subfolders), source_dir,
+        len(files),
+        len(subfolders),
+        source_dir,
     )
     if not files and not subfolders:
         logger.warning("No .json files or subfolders found in %s - nothing to do.", source_dir)
@@ -634,10 +411,15 @@ def ingest_directory_to_bronze(
         logger.warning(
             "per_file_config entries matched no discovered file or folder: %s. "
             "Those overrides will not be applied. Discovered: %s",
-            unmatched, sorted(discovered_names),
+            unmatched,
+            sorted(discovered_names),
         )
 
     results: List[Dict[str, Any]] = []
+    # One load and (at most) one write for the whole run, instead of a
+    # read-modify-write of the entire map per file (#151).
+    retry_state = RetryState.load(source_dir)
+
     for item in plan:
         table = item["table"]
         overrides = per_file_config.get(os.path.basename(item["source"].rstrip("/")), {})
@@ -645,86 +427,72 @@ def ingest_directory_to_bronze(
         if overrides:
             logger.info(
                 "Applying per-file config override for %s: %s",
-                item["source"], sorted(overrides),
+                item["source"],
+                sorted(overrides),
             )
 
         if item["type"] == "file":
             file_path = item["source"]
             logger.info("Ingesting %s -> %s", file_path, table)
             try:
-                cfg = IngestionConfig.from_dict({**item_config, "source_path": file_path, "table": table})
+                cfg = IngestionConfig.from_dict(
+                    {**item_config, "source_path": file_path, "table": table}
+                )
                 summary = BronzeIngestion(spark, cfg).run()
 
-                retry_state = _read_retry_state(source_dir)
-                if file_path in retry_state:
-                    retry_state.pop(file_path)
-                    _write_retry_state(source_dir, retry_state)
+                retry_state.clear(file_path)
 
-                move_result = _archive_ingested_file(source_dir, file_path)
-                results.append({
-                    "file": file_path,
-                    "table": summary["table"],
-                    "status": "success",
-                    "rows": summary["row_count"],
-                    "quarantined_rows": summary.get("quarantined_row_count", 0),
-                    **move_result,
-                })
+                move_result = archive_ingested_file(source_dir, file_path)
+                results.append(
+                    {
+                        "file": file_path,
+                        "table": summary["table"],
+                        "status": "success",
+                        "rows": summary["row_count"],
+                        "quarantined_rows": summary.get("quarantined_row_count", 0),
+                        **move_result,
+                    }
+                )
             except Exception as exc:
                 logger.error("Failed to ingest %s: %s", file_path, exc)
                 if stop_on_error:
                     raise
 
-                retry_state = _read_retry_state(source_dir)
-                attempts = retry_state.get(file_path, 0) + 1
-
-                if attempts >= max_ingestion_retries:
-                    retry_state.pop(file_path, None)
-                    _write_retry_state(source_dir, retry_state)
-                    try:
-                        dest = _move_file(source_dir, file_path, "quarantine_files")
-                        logger.warning(
-                            "%s failed ingestion %d time(s) - quarantined to %s", file_path, attempts, dest
-                        )
-                        results.append({
-                            "file": file_path, "table": table, "status": "failed",
-                            "error": str(exc), "attempts": attempts,
-                            "move_status": "quarantined", "move_detail": dest,
-                        })
-                    except Exception as move_exc:
-                        logger.error(
-                            "%s failed ingestion %d time(s) and could not be quarantined: %s",
-                            file_path, attempts, move_exc,
-                        )
-                        results.append({
-                            "file": file_path, "table": table, "status": "failed",
-                            "error": str(exc), "attempts": attempts,
-                            "move_status": "failed_left_in_place", "move_detail": str(move_exc),
-                        })
-                else:
-                    retry_state[file_path] = attempts
-                    _write_retry_state(source_dir, retry_state)
-                    logger.warning(
-                        "%s failed ingestion (attempt %d/%d) - left in raw/ for retry",
-                        file_path, attempts, max_ingestion_retries,
+                results.append(
+                    _handle_unit_failure(
+                        source_dir=source_dir,
+                        file_path=file_path,
+                        exc=exc,
+                        attempts=retry_state.increment(file_path),
+                        max_ingestion_retries=max_ingestion_retries,
+                        retry_state=retry_state,
+                        extra_fields={"table": table},
                     )
-                    results.append({
-                        "file": file_path, "table": table, "status": "failed",
-                        "error": str(exc), "attempts": attempts,
-                    })
-
+                )
         elif item["type"] == "folder":
             folder_path = item["source"]
             folder_result = _ingest_folder_as_table(
-                spark, source_dir, folder_path, table, item_config,
-                stop_on_error=stop_on_error, max_ingestion_retries=max_ingestion_retries,
+                spark,
+                source_dir,
+                folder_path,
+                table,
+                item_config,
+                stop_on_error=stop_on_error,
+                max_ingestion_retries=max_ingestion_retries,
             )
             results.append(folder_result)
+
+    # One write for the whole run, and none at all if nothing changed.
+    retry_state.flush()
 
     ok = sum(1 for r in results if r["status"] == "success")
     failed = sum(1 for r in results if r["status"] == "failed")
     skipped = sum(1 for r in results if r["status"] == "skipped")
     logger.info(
         "Directory ingestion finished: %d succeeded, %d failed, %d skipped (of %d unit(s))",
-        ok, failed, skipped, len(results),
+        ok,
+        failed,
+        skipped,
+        len(results),
     )
     return results
