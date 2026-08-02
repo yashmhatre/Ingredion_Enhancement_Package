@@ -1,0 +1,19 @@
+# Silver layer resources.
+#
+# A deliberate placeholder, not an oversight (#162). `databricks.yml`'s
+# `include:` could not name `silver_layer/resources/*.yml` while the
+# directory was empty, because an include pattern matching zero files is a
+# bundle error - so the line was commented out, and the layer was not
+# deployable even in principle.
+#
+# This file makes the include valid. It defines no jobs, because there is no
+# silver pipeline yet; the Bronze->Silver contract in
+# docs/bronze_silver_contract.md decides what one would look like before
+# anything is built.
+#
+# When a silver job is added, it belongs here. Delete this comment then, not
+# before - the reason the file exists is worth keeping until it stops being
+# empty.
+
+resources:
+  jobs: {}

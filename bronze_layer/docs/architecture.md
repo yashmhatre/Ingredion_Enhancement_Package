@@ -272,6 +272,34 @@ This ordering corrects an earlier version of this document, which placed
 the AI layer before the schema registry — an ordering that would have
 left it with no drift data to work from.
 
+### Silver, and what Bronze owes it
+
+This list ended at the AI metadata layer and did not mention Silver at all,
+which was a real gap: three shipped or planned bronze decisions defer to a
+layer that had no design (#162). `#76` archived the flattener "for Silver",
+`#109` moved five of seven quality rules "to Silver", and `#58` proposes
+Change Data Feed "so Silver can read incrementally".
+
+**`docs/bronze_silver_contract.md` now records what Silver is handed.** It
+does not propose building Silver — it decides the interface, so that further
+bronze work is not built against an assumption nobody checked.
+
+The bronze-side obligations that fall out of it, in dependency order:
+
+1. **CDF enabled on bronze and quarantine tables** (#58) — with the
+   retention floor from #159, since `VACUUM` deletes change history and a
+   feature whose data is silently deleted is not a guarantee
+2. **`overwrite` rejected together with CDF at config load** — under
+   `overwrite` the change feed emits the whole table as deletes plus
+   inserts, which makes it strictly worse than a full rescan
+3. **`layer` column on `AUDIT_SCHEMA`** — the contract keeps one audit table
+   across layers, and deciding that after #62's dashboard exists would mean
+   rebuilding it
+
+Silver's own delivery is not scheduled here. #109 remains its first real
+task, gated on #163's buy-vs-build answer rather than on the previous
+unfalsifiable prerequisite of "Silver has a real pipeline".
+
 ---
 
 ## Known operational characteristics
@@ -310,7 +338,17 @@ format does.
 
 ## Open questions
 
-None blocking. All previously-open design questions (format dispatch
-mechanism, metadata store boundaries, async trigger mechanism,
-`flatten_mode` across formats, AI failure handling, cost position) have
-been resolved and are documented above.
+Two, both recorded rather than resolved:
+
+**The CDF retention floor.** `docs/bronze_silver_contract.md` recommends
+**30 days**, and it is the one number in that document that cannot be
+derived from the code — it must exceed the slowest CDF consumer's lag, and
+no consumer exists yet. Needs confirming before #58 ships. Tracked in #159.
+
+**Buy-vs-build (#163).** Whether Databricks Labs DQX replaces the silver
+rule engine #109 proposes. The contract's §5 decision — that Silver
+reimplements rather than sharing `quality.py` — is contingent on the answer.
+
+All previously-open design questions (format dispatch mechanism, metadata
+store boundaries, async trigger mechanism, `flatten_mode` across formats,
+AI failure handling, cost position) remain resolved and documented above.
