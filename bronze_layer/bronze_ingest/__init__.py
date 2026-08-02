@@ -26,4 +26,4 @@ __all__ = [
 # built as 0.4.0 while the package reported 0.3.0), which defeats the point
 # of shipping a versioned artifact - you couldn't tell what was deployed
 # from inside a running job.
-__version__ = "0.4.0"
+__version__ = "0.5.0"

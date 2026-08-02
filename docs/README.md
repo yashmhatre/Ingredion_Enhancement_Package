@@ -20,6 +20,7 @@ documents disagree, the owner below wins over the other.
 | **What order the remaining work happens in, and why** | `docs/roadmap.md` | Phase plan over the open issues, with the gating relationships between them. The issues own *what* is left; this owns *when* and *why*. Re-audited against the code when it is updated — treat the phase numbering as current only as of the date in its header. |
 | First-time Azure / Databricks setup | `azure_setup.md` | Written from an actual walkthrough, including the real error text encountered. |
 | Contribution workflow, branch model | `CONTRIBUTING.md` | |
+| What changed in a release, and what to do before deploying it | `CHANGELOG.md` | Written per release, not per PR. The migration steps at its top are the part that matters - several changes in a release are silent until something is queried. |
 | Performance numbers (archival cost, files-per-folder guidance) | `bronze_layer/docs/testing_directory_ingestion.md` | **Sole owner of the benchmark.** `architecture.md` and the `_archive_files_parallel` docstring both quote it and link back here; neither should carry an independent number. |
 
 ## Point-in-time records — not maintained

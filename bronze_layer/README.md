@@ -24,7 +24,7 @@ and install it as a cluster/notebook-scoped library:
 ```bash
 cd bronze_layer
 python setup.py bdist_wheel
-# upload dist/bronze_ingest-0.4.0-py3-none-any.whl to DBFS/Volumes,
+# upload dist/bronze_ingest-0.5.0-py3-none-any.whl to DBFS/Volumes,
 # then in a notebook: %pip install /dbfs/path/to/that.whl
 ```
 
