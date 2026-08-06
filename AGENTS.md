@@ -47,21 +47,34 @@ the roadmap.
 
 ## Agent roster and approval tiers
 
-This repo has purpose-built subagents in `.claude/agents/` —
-`data-engineer`, `qa-engineer`, `devops-engineer`,
-`platform-engineer`, `business-analyst` — each scoped to a part of the
-codebase (or, for `business-analyst`, a part of the intake process) with its
-own conventions. Prefer the matching subagent over general-purpose editing
-when one fits. `business-analyst` captures and reconciles business asks
-against what's already built or decided — it never writes code and never
-files an issue for something still under review.
+This repo runs **8 purpose-built subagents**, organized as a real reporting
+structure rather than a flat list — see `docs/agent_governance.md`'s "Agent
+org chart" for the full diagram. Short version: Yash (Principal Data
+Engineer, human) sits above two branches. `business-analyst` and
+`solution-architect` are peers who jointly direct `data-engineer`,
+`qa-engineer`, and `data-analyst` on the delivery side. `devops-lead`
+sequences `devops-engineer` and `platform-engineer` on the DevOps side.
+Prefer the matching subagent over general-purpose editing when one fits.
+`business-analyst` captures and reconciles business asks against what's
+already built or decided; `solution-architect` turns an Approved case into a
+technical design. Neither writes pipeline code themselves.
+
+**The actual agent definitions — prompts, tool grants, workflow
+instructions — are proprietary and are not stored in this repo, including in
+its git history.** They live in the private `ingredion-agent-config` repo
+and are fetched into the gitignored `.claude/agents/` directory by
+`scripts/bootstrap_agents.sh` — run it once after cloning, per
+`.claude/agents/README.md`. `agents.lock` pins which version is currently in
+use. See `docs/private_agent_architecture.md` for the full reasoning and the
+options considered.
 
 **`docs/agent_governance.md` owns what any agent (subagent or not) may do
 without a human sign-off versus what requires the Principal Data Engineer's
 explicit go-ahead first** — deploys to staging/prod, GRANT/DROP/VACUUM SQL,
 credential handling, and promotion PRs all require that sign-off regardless
-of which agent is doing the work. Read it before touching anything in
-`databricks.yml`, `bronze_layer/resources/*.yml`, or `azure_setup.md`.
+of which agent is doing the work, or which one is coordinating it. Read it
+before touching anything in `databricks.yml`, `bronze_layer/resources/*.yml`,
+or `azure_setup.md`.
 
 ## Where to find things (don't duplicate — go read the owner)
 
@@ -69,6 +82,7 @@ of which agent is doing the work. Read it before touching anything in
 | --- | --- |
 | I'm not an engineer — where do I start? | `docs/overview.md` |
 | Where do new business asks/feature requests get captured and reconciled? | `docs/business_requirements.md` |
+| Why don't I see the actual agent prompts in this repo? | `docs/private_agent_architecture.md` (and `.claude/agents/README.md`) |
 | How do I set up, configure, run the bronze package? | `bronze_layer/README.md` |
 | How do I set up my local dev environment (Java/Python/Spark/Windows prereqs), find an issue, branch, commit, open a PR? | `CONTRIBUTING.md` |
 | What changed in a release, and what do I need to do before deploying it? | `CHANGELOG.md` |
@@ -163,6 +177,13 @@ first.** The environment model (one catalog, isolation by schema, per-target
 service principals) is deliberate and has a documented known gap (source
 volumes aren't isolated per environment — see `databricks.yml`'s header). Don't
 "fix" that gap as a drive-by; it's tracked (#160).
+
+**Never commit real agent-config content.** `.claude/agents/*.md` (other
+than `README.md`) is gitignored on purpose — it's populated by
+`scripts/bootstrap_agents.sh` from the private `ingredion-agent-config` repo.
+If `git status` ever shows one of those files as untracked-and-stageable
+with real prompt content in it, that's a sign the gitignore or the fetch
+script has drifted — fix that before committing anything else.
 
 ## What to work on
 

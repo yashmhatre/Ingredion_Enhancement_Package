@@ -34,3 +34,11 @@ dist/
 .venv/
 .venv*/
 venv/
+
+# Real agent definitions (prompts, tool grants, instructions) are
+# proprietary and live in the private ingredion-agent-config repo, not
+# here. scripts/bootstrap_agents.sh fetches them into .claude/agents/ at
+# dev/CI setup time per agents.lock's pinned version - never commit its
+# output. See docs/private_agent_architecture.md.
+.claude/agents/*.md
+!.claude/agents/README.md
