@@ -6,11 +6,14 @@
 # locally. .claude/agents/*.md (other than README.md) is gitignored — this
 # script is the only thing that populates it. Never commit its output.
 #
-# Requires: git, and a credential with read access to the private repo.
-#   Local dev : a personal GitHub PAT with access to yashmhatre/ingredion-agent-config,
-#               exported as AGENT_CONFIG_TOKEN (or `gh auth login` with access to it).
-#   CI        : a CI-scoped deploy key or fine-grained PAT with read-only access
-#               to that one repo, injected as the AGENT_CONFIG_TOKEN secret.
+# Requires: git, and a GitHub token with read access to the private repo,
+# in AGENT_CONFIG_TOKEN. This script reads that variable and nothing else:
+# there is no `gh auth login` fallback, and an SSH deploy key will not work
+# (the fetch below is HTTPS with an Authorization header, not SSH).
+#   Local dev : a fine-grained PAT scoped to yashmhatre/ingredion-agent-config
+#               with Contents: read-only, exported as AGENT_CONFIG_TOKEN.
+#   CI        : the same kind of fine-grained PAT, injected from the
+#               AGENT_CONFIG_TOKEN secret.
 #
 # Never hardcode a token here or anywhere in this repo. This script only
 # ever reads AGENT_CONFIG_TOKEN from the environment.
@@ -45,7 +48,12 @@ echo "Fetching agent configs ${VERSION} from ${REPO_OWNER}/${REPO_NAME}..."
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-git -c http.extraheader="AUTHORIZATION: bearer ${AGENT_CONFIG_TOKEN}" \
+# GitHub's git-over-HTTPS endpoint accepts `bearer` only for GitHub App
+# installation tokens (ghs_*). A personal access token — fine-grained or
+# classic — must be sent as Basic auth, username `x-access-token`.
+AUTH_B64="$(printf 'x-access-token:%s' "${AGENT_CONFIG_TOKEN}" | base64 | tr -d '\n')"
+
+git -c http.extraheader="AUTHORIZATION: basic ${AUTH_B64}" \
   clone --depth 1 --branch "$VERSION" \
   "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" "$TMP_DIR" >/dev/null
 
