@@ -7,35 +7,6 @@ it, following the same rule the rest of this repo's docs already follow (see
 `docs/README.md`). **The code wins over any document, including this one.**
 
 ---
-## Startup Routine
-
-Read all files in context/ — this is your foundation
-Read MEMORY.md — this is what you've learned over time
-Use both to shape every task
-
-## Memory System
-
-When I correct you or you learn something new, update the relevant section in MEMORY.md:
-
-Voice — tone, phrasing, writing corrections
-Process — how I want tasks done
-People — who people are, relationships
-Projects — active work, current tasks, status
-Output — formats, naming, delivery preferences
-Tools — which tools to use and how
-
-Keep MEMORY.md current. When something changes, update it in place — replace outdated info,
-don't just append below it. The file should always reflect the latest state.
-
----
-
-## About Remy
-
-**Name:** Remy Gaskell
-**Role:** Founder of AI with Remy
-
-**What the business does:** AI education and consulting for founders and small teams.
-
 
 ## What this repo is, right now
 
@@ -52,17 +23,38 @@ self-contained layers on Databricks + Unity Catalog. Today that means:
 
 If a task description assumes silver/gold pipeline logic exists, stop and
 check `docs/roadmap.md` and the open issues — it's almost certainly aspirational,
-not current state. `docs/current_behavior.md` and `docs/architecture_review_2026-07.md`
-are point-in-time audit records, not living specs — don't treat their findings
-as still-open without checking the issue each one links to.
+not current state.
+
+**Anything under `docs/archive/` (and `bronze_layer/docs/archive/`) is a
+point-in-time record, not current guidance.** Each archived file carries its
+own banner explaining what superseded it and why it was kept rather than
+deleted — read the banner, but don't treat the archived content itself as a
+still-open finding or a design to follow. If you need the current version of
+something an archived doc discusses, go to the doc that owns that subject
+today per the table below (or `docs/README.md`'s full index) — never infer
+current behavior from an archived file without checking the issue or living
+doc it points to. `docs/current_behavior.md` and `docs/architecture_review_2026-07.md`
+now live at `docs/archive/` under this rule; `bronze_layer/docs/testing_json_reader.md`
+and `bronze_layer/docs/testing_end_to_end_deployment.md` now live at
+`bronze_layer/docs/archive/`.
+
+**If you're not sure whether a request is a technical task or a business
+ask, start at `docs/overview.md`** — a plain-language companion doc aimed at
+non-engineers, and the front door for anyone who isn't already fluent in this
+repo's architecture. New business asks belong in `docs/business_requirements.md`
+(owned by the `business-analyst` subagent below), not as a silent addition to
+the roadmap.
 
 ## Agent roster and approval tiers
 
 This repo has purpose-built subagents in `.claude/agents/` —
 `data-engineer`, `qa-engineer`, `devops-engineer`,
-`platform-engineer` — each scoped to a part of the codebase with its
+`platform-engineer`, `business-analyst` — each scoped to a part of the
+codebase (or, for `business-analyst`, a part of the intake process) with its
 own conventions. Prefer the matching subagent over general-purpose editing
-when one fits.
+when one fits. `business-analyst` captures and reconciles business asks
+against what's already built or decided — it never writes code and never
+files an issue for something still under review.
 
 **`docs/agent_governance.md` owns what any agent (subagent or not) may do
 without a human sign-off versus what requires the Principal Data Engineer's
@@ -75,6 +67,8 @@ of which agent is doing the work. Read it before touching anything in
 
 | Question | Owning doc |
 | --- | --- |
+| I'm not an engineer — where do I start? | `docs/overview.md` |
+| Where do new business asks/feature requests get captured and reconciled? | `docs/business_requirements.md` |
 | How do I set up, configure, run the bronze package? | `bronze_layer/README.md` |
 | How do I set up my local dev environment (Java/Python/Spark/Windows prereqs), find an issue, branch, commit, open a PR? | `CONTRIBUTING.md` |
 | What changed in a release, and what do I need to do before deploying it? | `CHANGELOG.md` |
