@@ -98,6 +98,7 @@ a side door.
 | `qa-engineer` | Tier 0 drafting, Tier 1 merge |
 | `devops-engineer` | Tier 0 (verification only; narrow suppression drafts are Tier 1) |
 | `platform-engineer` | Drafts Tier 1/2/3 actions; **never executes Tier 2/3 itself** |
+| `business-analyst` | Tier 0 (captures, reconciles, and documents business asks in `docs/business_requirements.md`); never writes code and never files an issue for a case still "Proposed" or "Under review" — turning an accepted case into engineering work is Yash's call, not this agent's |
 
 If a general-purpose agent session (not one of the above) ends up touching
 deploy config, credentials, or a promotion branch, it should still follow
