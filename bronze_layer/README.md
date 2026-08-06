@@ -168,7 +168,7 @@ flattened). Pass `schema_hint_ddl` when ingesting sources where files in
 the same folder might have inconsistent inferred types, to keep the
 merge predictable.
 
-Note: this means subfolders are no longer silently skipped — if your
+Note: this means subfolders are no longer silently skipped - if your
 `source_dir` has subfolders you don't want treated as tables, keep them
 outside `source_dir`, or be aware they'll now produce a table on the
 next run.
@@ -206,7 +206,7 @@ failed and *at which stage* without parsing `error_message` text.
 
 #### What each count column means
 
-Take these from the table below rather than guessing — before #149 a single
+Take these from the table below rather than guessing - before #149 a single
 `row_count` meant something different for every write mode, which is how an
 ops surface loses trust in its first month.
 
@@ -221,7 +221,7 @@ ops surface loses trust in its first month.
 
 Every number comes from **Delta's transaction log** (`operationMetrics` on
 the commit the run just made), not from recounting the DataFrame. That is
-free — it is a metadata read — and it is authoritative. The previous
+free - it is a metadata read - and it is authoritative. The previous
 `final_df.count()` re-read the source and re-ran the entire quality gate to
 produce a number Delta already had, because `.cache()` is unavailable on
 serverless.
@@ -233,7 +233,7 @@ Two things worth knowing before writing a query against this:
   nowhere else.
 - **Rows written before this change carry `NULL` in the new columns.** The
   audit table is written with `mergeSchema`, so the migration is automatic,
-  but older rows cannot be reinterpreted — a `NULL` `write_mode` is how you
+  but older rows cannot be reinterpreted - a `NULL` `write_mode` is how you
   recognise one.
 
 The column formerly called `table` is now `table_name`, matching
@@ -243,7 +243,7 @@ every query written against it.
 ### Schema registry
 
 Every ingestion records its target table's current schema to a dedicated
-registry table (`enable_schema_registry: true`, the default) — one row
+registry table (`enable_schema_registry: true`, the default) - one row
 per bronze table, upserted **only when the schema actually changes**. A
 table ingesting daily with a stable schema stays at exactly one row.
 
@@ -428,7 +428,7 @@ When `add_audit_columns: true` (default), every load adds:
 - `_batch_id` - a batch identifier (auto-generated UTC timestamp unless you
   pass `batch_id` explicitly, e.g. from a job run ID)
 
-These are separate from the run-level audit trail described above —
+These are separate from the run-level audit trail described above -
 per-row columns describe individual rows within a table; the audit
 trail describes the run itself.
 
@@ -479,7 +479,7 @@ rather than silently risking a duplicate promotion on the next replay.
 
 Replay is not a steady-state trickle. It is what an operator runs **after
 fixing an upstream source**, against a quarantine table that has been
-accumulating since the problem started — so *"we fixed the feed, replay
+accumulating since the problem started - so *"we fixed the feed, replay
 everything"* is simultaneously the natural usage and the unbounded case.
 
 `reprocess_quarantine` therefore refuses to promote more than
@@ -496,17 +496,17 @@ The deployed replay notebook exposes the same control as a `max_rows`
 widget (blank = default, `none` = no limit).
 
 **Scale characteristics.** The delete is a distributed MERGE against the
-promoted ids — no row data is brought to the driver, and no SQL `IN` list
+promoted ids - no row data is brought to the driver, and no SQL `IN` list
 is generated. That matters because the previous implementation did both:
 ~200 bytes of driver heap per id, and ~39 bytes of SQL text per id in a
 single predicate. At a million rows that was ~200MB of driver memory (on
 serverless, whose driver size the operator does not control) and a ~39MB
-SQL string, which Spark's parser fails on well before that — at a
+SQL string, which Spark's parser fails on well before that - at a
 version-dependent threshold somewhere in the tens of thousands.
 
 That failure mode was worse than a slow one. The bronze write commits
 *first*, so a parser failure in the delete left rows in **both** tables,
-ready to be promoted again by the next replay — deterministically, since
+ready to be promoted again by the next replay - deterministically, since
 the retry built the same oversized statement. **If you see the
 "failed to remove them from quarantine" error, do not simply re-run
 replay**: reconcile using the `replay-<timestamp>` `_batch_id` named in
@@ -534,14 +534,14 @@ task, separate from the normal ingestion schedule.
 
 `directory_ingestion.py` was 729 lines holding four unrelated
 responsibilities, and `replay.py` reached across the boundary for three
-*underscore-prefixed* names to get at them — so any refactor of that module
+*underscore-prefixed* names to get at them - so any refactor of that module
 broke replay silently, with the privacy marker actively misleading. Split in
 #151. The direction is now strictly one-way:
 
 ```
 directory_ingestion ─┐
                      ├─> fs/* ──> databricks_fs
-replay ──────────────┘     └────> fs/paths
+replay ───────────┘     └────> fs/paths
 
 errors ──> (nothing)
 naming ──> (nothing)
@@ -584,9 +584,9 @@ bronze_layer/
     validate_json_reader.py        # ADLS-based validation notebook (not part of pytest)
   docs/
     architecture.md                    # target-state architecture (multi-format + async AI layer)
-    testing_json_reader.md              # JSON reader validation notes + findings
+    archive/testing_json_reader.md      # ARCHIVED - JSON reader validation notes
     testing_directory_ingestion.md       # directory ingestion, archival, retry-limit, folder-as-table testing
-    testing_end_to_end_deployment.md     # full deployed-bundle validation
+    archive/testing_end_to_end_deployment.md  # ARCHIVED - deployed-bundle validation
   tests/                # pytest suite (config, flatten, quality, directory ingestion, archival, retry-limit, folder-as-table, audit)
   databricks.yml        # Databricks Asset Bundle - scheduled job deployment
   setup.py
@@ -670,13 +670,13 @@ is what makes the write idempotent, and it matters because quarantine is
 written *before* the bronze write: a run that dies between the two and is
 retried quarantines the same rows again. `_quarantine_id` used to be
 `uuid()`, which is stable within one query plan but produces entirely
-different values on a fresh evaluation — so every attempt appended its own
+different values on a fresh evaluation - so every attempt appended its own
 copy of the same bad rows, and replay treated them as distinct rows to
 re-promote (#148).
 
 Two consequences worth knowing before you query the table:
 
-- **Byte-identical bad rows collapse to one row.** They have to — Delta
+- **Byte-identical bad rows collapse to one row.** They have to - Delta
   refuses a `MERGE` where several source rows match one target row. Their
   multiplicity is preserved in `_occurrence_count`, so `bad_count` in the
   run log counts *rows* while the table counts *identities*, and
@@ -686,7 +686,7 @@ Two consequences worth knowing before you query the table:
   strong as `_batch_id`: the deployed job passes `{{job.run_id}}`, which is
   stable across task attempts, but a config that leaves `batch_id` unset
   gets a generated timestamp that differs per attempt and the count will
-  drift upward on retries. Row identity is correct either way — only the
+  drift upward on retries. Row identity is correct either way - only the
   count is affected.
 
 `_first_quarantined_at` is set on insert and never updated;
@@ -707,13 +707,13 @@ For `unique_columns`, the row **kept** is the one with the highest
 added, so `dedupe_order_by` must name a **source** column (e.g. an upstream
 `updated_at`) to control which duplicate survives. If it's unset, not
 present on the source data, or tied, the tie breaks on a SHA-256 of the
-row's full content — arbitrary, but a function of the data alone, so the
+row's full content - arbitrary, but a function of the data alone, so the
 same input always yields the same survivor.
 
 That last property is load-bearing rather than a nicety (#147). `good_df`
 and `bad_df` are two lazy plans over one tagged DataFrame and Spark
 evaluates each independently, so a tie-break that depended on anything but
-row content could let the two evaluations disagree — putting a row in both
+row content could let the two evaluations disagree - putting a row in both
 (written *and* quarantined) or neither (silently dropped).
 
 > **Scope note.** Only structural checks belong in bronze. Range, regex,
@@ -740,7 +740,7 @@ what isn't.
 
 ### Job-level safety controls
 
-The package's own failure handling is thorough — retry with backoff,
+The package's own failure handling is thorough - retry with backoff,
 quarantine fallback chains, retry limits across runs, `failure_stage`
 tagging, an audit row on every outcome. None of that bounds a run that is
 merely *stuck*, and the job wrapper is what stands between a hung run and
@@ -750,7 +750,7 @@ the bill. `bronze_ingest_jobs.yml` sets:
 |---|---|---|
 | `max_concurrent_runs` | `1` | Two runs over one `source_dir` race on discovery, archival and the shared `_state/` retry file |
 | `queue.enabled` | `true` | An overlapping scheduled run waits instead of being silently dropped |
-| `health` warn | 1800s | The only proactive signal — everything else fires on failure |
+| `health` warn | 1800s | The only proactive signal - everything else fires on failure |
 | task `timeout_seconds` | 3300s | Task dies first, so the run records *which* task hung |
 | job `timeout_seconds` | 3600s | Backstop |
 | `max_retries` | `2` | Transient platform failures shouldn't need a human |
@@ -761,15 +761,15 @@ timeout (3600s)**, so a stuck run is visible while still stuck rather than
 only once it exits.
 
 The timeouts are derived, not round numbers. `docs/testing_directory_ingestion.md`
-measures 100 files ≈ 163s, and the job caps at `max_files: 50` — so nominal
+measures 100 files ≈ 163s, and the job caps at `max_files: 50` - so nominal
 is ~82s. The realistic ceiling is a *failing* run, not a slow one: with
 `retry_attempts: 3` and `retry_delay_seconds: 10`, each failing file sleeps
 10s + 20s before giving up, so 50 failing files is ~1500s of pure waiting.
-3600s bounds a genuinely hung run at roughly 2× that.
+3600s bounds a genuinely hung run at roughly 2x that.
 
 > **`max_retries` depends on `batch_id` stability.** The job passes
 > `batch_id: "{{job.run_id}}"`, which becomes the Delta `txnVersion`, so a
-> retried attempt re-writes the same version and Delta skips it — a file
+> retried attempt re-writes the same version and Delta skips it - a file
 > written but not yet archived is not duplicated. That holds only while
 > `{{job.run_id}}` stays constant across task attempts. If a retried run ever
 > duplicates rows for already-written files, this is the reason: set
@@ -818,7 +818,7 @@ auto-generated defaults (a fresh timestamp / UUID per run).
 **Retries.** Both read and write paths wrap transient failures (throttling,
 concurrent-write conflicts) in exponential-backoff retries via
 `retry_attempts` / `retry_delay_seconds` / `retry_max_total_seconds`. **Only
-failures a retry could plausibly fix are retried** — see below.
+failures a retry could plausibly fix are retried** - see below.
 
 ### Retries: what is and is not retried
 
@@ -829,14 +829,14 @@ failures a retry could plausibly fix are retried** — see below.
 | An unrecognised failure | **Yes** | The default. See the note below |
 | `NullMergeKeyError`, `DuplicateMergeKeyError` | **No** | The data is identical on every attempt |
 | `DataQualityError`, `JsonLinesTruncationError` | **No** | Same |
-| `ValueError` / `TypeError` — unknown `write_mode`, missing order-by column | **No** | Config and programming errors |
+| `ValueError` / `TypeError` - unknown `write_mode`, missing order-by column | **No** | Config and programming errors |
 | `PERMISSION_DENIED`, `TABLE_OR_VIEW_NOT_FOUND`, `AnalysisException`, `PARSE_SYNTAX_ERROR` | **No** | Nothing changes between attempts |
 
 Before this, `retry.py` caught `Exception` and every call site took that
 default, so all of the above were retried three times with 10s and 20s
 sleeps. Directory ingestion processes units sequentially with per-unit
 failure isolation, so **a directory of 50 broken files spent 25 minutes
-sleeping** — and the log showed two `Retrying in 10.0s...` warnings per
+sleeping** - and the log showed two `Retrying in 10.0s...` warnings per
 file for conditions that were never going to succeed.
 
 Three things worth knowing before changing this:
@@ -906,10 +906,10 @@ pytest
 
 For deeper validation notes, findings, and known Spark behaviors
 discovered during testing (e.g. duplicate-key handling, schema-hint
-rescued data, folder-as-table gotchas), see `docs/testing_json_reader.md`
+rescued data, folder-as-table gotchas), see `docs/archive/testing_json_reader.md`
 and `docs/testing_directory_ingestion.md`. Full production deployment
 validation (real Databricks jobs, real Unity Catalog environment) is in
-`docs/testing_end_to_end_deployment.md`.
+`docs/archive/testing_end_to_end_deployment.md`.
 
 ## Deployment (Asset Bundles)
 
@@ -932,11 +932,11 @@ rather than one per layer, so the layers can never be deployed against
 mismatched settings.
 
 Paths inside a resource file are relative to **that file's own directory**,
-not to the bundle root — so `bronze_layer/resources/bronze_ingest_jobs.yml`
+not to the bundle root - so `bronze_layer/resources/bronze_ingest_jobs.yml`
 refers to its notebooks as `../notebooks/run_directory_ingestion.py`.
 
 Paths in the root `databricks.yml` itself (such as the `artifacts:` build
-path) are relative to the root, since that is the file declaring them —
+path) are relative to the root, since that is the file declaring them -
 same rule, different file.
 
 Verified against Databricks CLI v1.9.0. Using a bundle-root-relative path
@@ -947,7 +947,7 @@ inside a resource file resolves it as
 ### Environment model
 
 Environments are separated by **Unity Catalog schema and by the service
-principal jobs run as** — not by workspace, and not by catalog. One
+principal jobs run as** - not by workspace, and not by catalog. One
 workspace, one catalog, one schema and one service principal per
 environment. That gives per-environment isolation and audit without paying
 for multiple workspaces.
@@ -959,7 +959,7 @@ for multiple workspaces.
 | `prod` | `ingredion_en` | `ingredion_prd` | `bronze_directory_ingestion_prd` | prod service principal | as configured |
 
 Job **display names** carry an environment suffix because all three targets
-deploy into the same workspace — without it the Jobs list would show three
+deploy into the same workspace - without it the Jobs list would show three
 identically-named jobs with no way to tell which one is production, and
 running the wrong one is a single misclick. The **resource key** is
 deliberately not suffixed, so `databricks bundle run
@@ -968,21 +968,21 @@ target selecting the environment.
 
 **The boundary is the schema, so every grant that matters is a schema
 grant.** `USE CATALOG` on its own conveys no data access, which is what
-makes a shared catalog sound — but it also means a single
+makes a shared catalog sound - but it also means a single
 `GRANT SELECT ON CATALOG` would flatten the entire boundary in one
 statement. Grant `USE CATALOG` and nothing else at catalog level.
 
 The audit and schema-registry tables follow the same boundary:
 `audit_schema_name` and `registry_schema_name` are pinned per environment in
 the bundle. Left at their package default (`bronze`) all three environments
-would write run history and schema fingerprints into one shared table —
+would write run history and schema fingerprints into one shared table -
 mixing the trails, and giving every service principal read access to the
 others'. `_write_audit_row` creates the schema if it is missing, so this
 would have worked silently rather than failing.
 
 > **Source-file isolation is not enforced.** All three environments read
 > from subpaths of a single volume (`ext-ingredion-dev`). Unity Catalog
-> grants `READ VOLUME` at volume granularity — there is no sub-path grant —
+> grants `READ VOLUME` at volume granularity - there is no sub-path grant -
 > so any principal that can read its own subpath can read the others,
 > including `PROD/Raw/`. Directory separation here is a convention, not a
 > control. Tables, audit and registry are properly isolated; source files
@@ -991,11 +991,11 @@ would have worked silently rather than failing.
 >
 > The volume also lives in the `ingredion_dev` schema, so staging and prod
 > need `USE SCHEMA` on `ingredion_dev` purely to reach their own source
-> data — another reason per-environment volumes are cleaner.
+> data - another reason per-environment volumes are cleaner.
 
 **All three environments are real Databricks environments.** `dev` is a
-deployed environment like the others — same code path, same bundle, same UC
-semantics — not a fallback for things local Delta can't do. Developing
+deployed environment like the others - same code path, same bundle, same UC
+semantics - not a fallback for things local Delta can't do. Developing
 against it means UC-only behavior (Volumes, tags, Auto Loader,
 `information_schema`) is exercised continuously rather than first meeting
 production.
@@ -1003,7 +1003,7 @@ production.
 Local pytest remains the **fast inner loop**: the full suite against local Spark +
 Delta in ~3 minutes with no workspace round-trip, which is where logic bugs
 should be caught. It is a complement to the `dev` environment, not a
-substitute for it — local Delta cannot reproduce the UC surface, so green
+substitute for it - local Delta cannot reproduce the UC surface, so green
 tests alone never prove a deploy will work.
 
 Because `dev` uses `mode: development`, the bundle prefixes every resource
@@ -1015,14 +1015,14 @@ by accident.
 
 **Nothing beyond the Databricks CLI.** Deploying builds the wheel before
 uploading it, and `databricks.yml` builds it with `python -m pip wheel`,
-which needs only pip — present in every environment that can run the CLI.
+which needs only pip - present in every environment that can run the CLI.
 A deploy works the same from a laptop, a Databricks notebook, or the web
 terminal.
 
 This was not always true, and the history is worth keeping. The build
 command used to be `python -m build --wheel`, which requires the `build`
 package. That is a reasonable assumption on a laptop that followed the
-setup guide and wrong everywhere else — a deploy from Databricks compute
+setup guide and wrong everywhere else - a deploy from Databricks compute
 runs in the cluster's ephemeral Python environment
 (`/local_disk0/.ephemeral_nfs/envs/pythonEnv-…`), where `build` is absent
 and would not survive a restart even once installed. It failed with
@@ -1031,7 +1031,7 @@ Documenting the prerequisite did not stop the second occurrence; removing it
 did.
 
 For local development, `pip install -e ".[dev]"` still installs `build`
-along with pytest and the Spark/Delta stack — `python -m build` remains the
+along with pytest and the Spark/Delta stack - `python -m build` remains the
 conventional way to package by hand. It is just no longer required to
 deploy.
 
@@ -1044,7 +1044,7 @@ deploy.
 on the target service principal**, granted in the Databricks account console
 under User management → Service principals → Permissions. This is an
 account-level permission on the *identity*, unrelated to any Unity Catalog
-grant — `run_as` asks Databricks to let a job execute *as* another identity,
+grant - `run_as` asks Databricks to let a job execute *as* another identity,
 so the deployer must be authorised to act on that identity. Without it:
 
 ```
@@ -1057,7 +1057,7 @@ It reads like a data-access problem and is not one; no amount of `GRANT` fixes
 it. The requirement disappears once deploys move to OIDC federation, where the
 deploying identity *is* the service principal.
 
-Set it in the **Databricks account console, not the Azure portal** — even
+Set it in the **Databricks account console, not the Azure portal** - even
 though these are Entra ID service principals. Entra ID owns that the identity
 exists and how you authenticate as it; Databricks owns who may bind a job to
 run as it. Azure RBAC does not reach inside Databricks' permission model, so
@@ -1074,30 +1074,30 @@ databricks bundle deploy -t prod \
 `notification_email` and `run_as_service_principal` deliberately have **no
 defaults** for staging/prod. A deploy that omits them fails immediately
 rather than silently running under a human identity or sending alerts
-nowhere. In `dev`, alerts go to `${workspace.current_user.userName}` — the
-person who deployed — so no shared inbox collects noise from someone else's
+nowhere. In `dev`, alerts go to `${workspace.current_user.userName}` - the
+person who deployed - so no shared inbox collects noise from someone else's
 experiment.
 
 ### Authentication
 
-The CLI is the tool; OAuth is how it authenticates. They aren't alternatives —
+The CLI is the tool; OAuth is how it authenticates. They aren't alternatives -
 the CLI uses OAuth. What matters is **which** OAuth flow, and that depends on
 whether a human or a machine is acting:
 
 | Who | Flow | Credential | Used for |
 |---|---|---|---|
 | A person at a terminal | **OAuth U2M** (`databricks auth login`) | Short-lived token in the OS keychain | Deploying `dev`, ad-hoc inspection |
-| CI/CD | **OIDC federation** | No stored credential at all — a per-run token minted from GitHub's identity | Deploying `staging` / `prod` |
+| CI/CD | **OIDC federation** | No stored credential at all - a per-run token minted from GitHub's identity | Deploying `staging` / `prod` |
 | A running job | Service principal (`run_as`) | Managed by the workspace | Job execution |
 
 OAuth is the enterprise-grade option here, not the shortcut. The thing to
-avoid is a **personal access token** — long-lived, invisible once issued, and
+avoid is a **personal access token** - long-lived, invisible once issued, and
 rotated only when someone remembers.
 
 A human's U2M login is never on the production path. It exists to bootstrap:
 you need an authenticated identity to create service principals in the first
 place, and something has to deploy `dev`. Production deploys come from CI via
-federation, and jobs run as a service principal — neither involves a person's
+federation, and jobs run as a service principal - neither involves a person's
 browser session.
 
 ### Code is shipped as a versioned wheel
@@ -1134,11 +1134,11 @@ tasks:
     environment_key: default
 ```
 
-This workspace is serverless by design — see `azure_setup.md` Step 3, chosen
+This workspace is serverless by design - see `azure_setup.md` Step 3, chosen
 because trial subscriptions have a hard 4-vCPU quota that blocks classic
 compute entirely.
 
-`bronze_ingest/__init__.py`'s `__version__` is the single source of truth —
+`bronze_ingest/__init__.py`'s `__version__` is the single source of truth -
 `setup.py` parses it rather than declaring a second copy. CI enforces that
 the wheel builds, contains no test/notebook/config files, and reports a
 version matching its own filename, so a deployed job can always report
@@ -1156,13 +1156,13 @@ dbutils.library.restartPython()
 
 The bundle consumes these; it does not create them.
 
-- **Entra ID service principals** — one per non-dev environment. Never a
+- **Entra ID service principals** - one per non-dev environment. Never a
   personal account: a job running under a named human inherits their full
   permissions and breaks when they leave.
-- **One catalog** — `ingredion_en`, shared by all three environments.
-- **One schema per environment** — `ingredion_dev` / `ingredion_stg` /
+- **One catalog** - `ingredion_en`, shared by all three environments.
+- **One schema per environment** - `ingredion_dev` / `ingredion_stg` /
   `ingredion_prd`. **The schema is the isolation boundary**, not the catalog.
-- **Volumes** — the `source_volume_path` per environment.
+- **Volumes** - the `source_volume_path` per environment.
 - **An address** for `notification_email` in staging/prod.
 
 **Grant `USE CATALOG` and nothing else at catalog level.** A single
@@ -1176,7 +1176,7 @@ GRANT USE SCHEMA, CREATE TABLE, MODIFY, SELECT
 ```
 
 That one schema grant covers the bronze tables, `_ingestion_audit` and
-`_schema_registry` together — they all live in the environment's own schema,
+`_schema_registry` together - they all live in the environment's own schema,
 so there is nothing separate to grant or keep in sync.
 
 **Also required, and not a Unity Catalog grant:** the deploying identity
@@ -1187,7 +1187,7 @@ act on that identity. No `GRANT` fixes it, and `Manage` does not imply
 `Use`. See `azure_setup.md` Step 12.
 
 > **Source files are not isolated.** All three environments read subpaths of
-> one Volume, and Unity Catalog grants `READ VOLUME` at volume granularity —
+> one Volume, and Unity Catalog grants `READ VOLUME` at volume granularity -
 > there is no sub-path grant. Any principal that can read its own subpath can
 > read `PROD/Raw/`. Tables, audit and registry *are* isolated by schema.
 > Per-environment Volumes would close this; tracked as #160.
@@ -1195,17 +1195,17 @@ act on that identity. No `GRANT` fixes it, and `Manage` does not imply
 ### Not yet implemented
 
 Kept in step with `docs/architecture.md`'s "Remaining enterprise-hardening
-phases" and the issue tracker — if those disagree with this list, this list
+phases" and the issue tracker - if those disagree with this list, this list
 is the one that drifted.
 
 - **CI/CD deploy** (#113). CI runs tests and verifies the wheel; it does not
   deploy. Deploys are manual. The intended next step is GitHub OIDC
   federation to a service principal, so no long-lived tokens are stored
-  anywhere — which also removes the `Service Principal: User` requirement
+  anywhere - which also removes the `Service Principal: User` requirement
   above, since the deploying identity would *be* the service principal.
 - **Secret scopes** (#115, architecture.md phase 7).
 - **Per-environment Volume isolation** (#160). Source-file separation is
-  currently a naming convention, not a control — see the note above.
+  currently a naming convention, not a control - see the note above.
 - **Table lifecycle** (#159). Nothing runs `OPTIMIZE` or `VACUUM`, and no
   retention policy exists for the quarantine or audit tables, which grow
   monotonically.
