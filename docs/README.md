@@ -22,6 +22,7 @@ documents disagree, the owner below wins over the other.
 | Contribution workflow, branch model | `CONTRIBUTING.md` | |
 | What changed in a release, and what to do before deploying it | `CHANGELOG.md` | Written per release, not per PR. The migration steps at its top are the part that matters - several changes in a release are silent until something is queried. |
 | Performance numbers (archival cost, files-per-folder guidance) | `bronze_layer/docs/testing_directory_ingestion.md` | **Sole owner of the benchmark.** `architecture.md` and the `_archive_files_parallel` docstring both quote it and link back here; neither should carry an independent number. |
+| What an AI coding agent may do unattended vs. needs sign-off for | `docs/agent_governance.md` | Defines approval tiers (deploy targets, GRANT/DROP/VACUUM SQL, credentials, promotions) and maps them to the subagents in `.claude/agents/`. `AGENTS.md` is the general entry point for any coding agent; this is the specific "who signs off on what" policy. |
 
 ## Point-in-time records — not maintained
 
