@@ -24,7 +24,7 @@ own actual names wherever you see the placeholders below.
 differ from what Steps 5-6 originally planned — see the corrected Step 6 below
 for actual values (`ingredion_en.ingredion_dev.ext-ingredion-dev`, not
 `workspace.bronze.ingredion`). Confirmed via live testing in the JSON reader
-and directory ingestion validation work (see `docs/testing_json_reader.md` and
+and directory ingestion validation work (see `bronze_layer/docs/archive/testing_json_reader.md` and
 `docs/testing_directory_ingestion.md`).
 
 **Catalog rename note:** the catalog was originally created as
@@ -286,7 +286,7 @@ pending task — now applied):
 **Note:** `bronze_orders_ingestion` (the job that originally used
 `order_bronze.yaml`) has since been disabled (commented out) — it was a
 sample/test job, not needed for ongoing production use. See
-`docs/testing_end_to_end_deployment.md`.
+`bronze_layer/docs/archive/testing_end_to_end_deployment.md`.
 
 **Layout note:** the values above are still current, but the bundle has
 since moved to a single root `databricks.yml` with `dev`/`staging`/`prod`
