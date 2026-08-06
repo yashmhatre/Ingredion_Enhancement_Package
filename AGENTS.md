@@ -43,21 +43,27 @@ ask, start at `docs/overview.md`** — a plain-language companion doc aimed at
 non-engineers, and the front door for anyone who isn't already fluent in this
 repo's architecture. New business asks belong in `docs/business_requirements.md`
 (owned by the `business-analyst` subagent below), not as a silent addition to
-the roadmap.
+the roadmap. If there's no real ask on hand yet, `business-stakeholder` can
+research a sourced candidate — but even then, `business-analyst` is the only
+path from candidate to validated case.
 
 ## Agent roster and approval tiers
 
-This repo runs **8 purpose-built subagents**, organized as a real reporting
+This repo runs **9 purpose-built subagents**, organized as a real reporting
 structure rather than a flat list — see `docs/agent_governance.md`'s "Agent
 org chart" for the full diagram. Short version: Yash (Principal Data
-Engineer, human) sits above two branches. `business-analyst` and
-`solution-architect` are peers who jointly direct `data-engineer`,
+Engineer, human) sits above three branches. `business-stakeholder` researches
+and proposes candidate opportunities when no real ask exists yet, and always
+hands them to `business-analyst` rather than skipping ahead. `business-analyst`
+and `solution-architect` are peers who jointly direct `data-engineer`,
 `qa-engineer`, and `data-analyst` on the delivery side. `devops-lead`
 sequences `devops-engineer` and `platform-engineer` on the DevOps side.
 Prefer the matching subagent over general-purpose editing when one fits.
 `business-analyst` captures and reconciles business asks against what's
-already built or decided; `solution-architect` turns an Approved case into a
-technical design. Neither writes pipeline code themselves.
+already built or decided (from a human *or* from `business-stakeholder`'s
+research — same reconciliation either way); `solution-architect` turns an
+Approved case into a technical design. Neither `solution-architect` nor
+`business-stakeholder` writes pipeline code themselves.
 
 **The actual agent definitions — prompts, tool grants, workflow
 instructions — are proprietary and are not stored in this repo, including in
@@ -184,6 +190,13 @@ than `README.md`) is gitignored on purpose — it's populated by
 If `git status` ever shows one of those files as untracked-and-stageable
 with real prompt content in it, that's a sign the gitignore or the fetch
 script has drifted — fix that before committing anything else.
+
+**A researched candidate is not a validated case.** `business-stakeholder`
+can propose a sourced opportunity when no real ask exists, but it never
+skips `business-analyst`'s reconciliation, never gets a fabricated owner or
+impact figure, and never reaches `solution-architect` or an implementing
+agent directly. Treat any candidate the same as an unreconciled human ask
+until `business-analyst` says otherwise.
 
 ## What to work on
 

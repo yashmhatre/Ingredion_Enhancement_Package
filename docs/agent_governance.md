@@ -30,6 +30,7 @@ the human's judgment is required regardless of how capable the agent is.
 - Opening or updating a PR **into `dev`** (never merging it).
 - `databricks bundle validate` (any target) — read-only, resolves config,
   touches no compute or data.
+- Researching and drafting a candidate business opportunity (`business-stakeholder`) — it's a Tier 0 draft, same as any other, until `business-analyst` reconciles it.
 
 ### Tier 1 — draft freely, but don't merge without review
 
@@ -103,6 +104,7 @@ regardless of which branch raised it.
 ```mermaid
 graph TD
     Yash["Yash — Principal Data Engineer<br/>(human, final reviewer of record)"]
+    BS["Business Stakeholder (agent)<br/>researches & proposes candidate opportunities"]
     BA["Business Analyst<br/>captures & reconciles business asks"]
     SA["Solution Architect<br/>turns approved asks into technical designs"]
     DL["DevOps Lead<br/>sequences verification & deployment"]
@@ -112,9 +114,11 @@ graph TD
     DVE["DevOps Engineer<br/>pre-PR verification"]
     PE["Platform Engineer<br/>deploy & provisioning drafts"]
 
+    Yash --> BS
     Yash --> BA
     Yash --> SA
     Yash --> DL
+    BS -->|candidate opportunities, always via BA| BA
     BA --> DE
     BA --> QA
     BA --> DA
@@ -125,8 +129,15 @@ graph TD
     DL --> PE
 ```
 
-Two branches, same reporting discipline:
+Three branches, same reporting discipline:
 
+- **Origination** — `business-stakeholder` sits under Yash and researches
+  candidate opportunities when no real business owner has raised one yet
+  (stalled roadmap items, `Deferred`/`Rejected` cases worth revisiting,
+  cited industry context). Its output is never a validated case — it always
+  routes through `business-analyst`'s reconciliation first, exactly like a
+  human-raised ask would, so a researched idea can never skip the
+  no-fabrication discipline that process enforces.
 - **Delivery branch** — `business-analyst` and `solution-architect` sit as
   peers directly under Yash. Together they jointly direct `data-engineer`,
   `qa-engineer`, and `data-analyst`: Business Analyst supplies the
@@ -143,7 +154,9 @@ deploy drafted by `platform-engineer` still needs Yash's named sign-off
 whether `devops-lead` is coordinating it or not, and `solution-architect`
 reopening a recorded decision (a buy-vs-build verdict, the bronze/silver
 contract) still surfaces that explicitly rather than routing around it,
-exactly as `business-analyst` already must.
+exactly as `business-analyst` already must. `business-stakeholder` gets no
+shortcut either — it cannot hand a candidate directly to `solution-architect`
+or any implementing agent, only to `business-analyst`.
 
 ## Where agent definitions actually live
 
@@ -158,6 +171,7 @@ that governance doesn't change based on which repo the definition lives in.
 
 | Subagent | Reports to | Typical tier of its own work |
 | --- | --- | --- |
+| `business-stakeholder` | Yash | Tier 0 (researches and drafts candidate opportunities; never a validated case, never fabricates an owner/impact/urgency, never hands a candidate to anyone but `business-analyst`) |
 | `business-analyst` | Yash | Tier 0 (captures, reconciles, and documents business asks in `docs/business_requirements.md`); never writes code and never files an issue for a case still "Proposed" or "Under review" — turning an accepted case into engineering work is Yash's call, not this agent's |
 | `solution-architect` | Yash (peer to `business-analyst`) | Tier 0 (drafts technical designs for Approved cases; never writes pipeline code or deploys anything itself) |
 | `data-engineer` | `business-analyst` + `solution-architect` | Tier 0 drafting, Tier 1 merge |
