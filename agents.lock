@@ -1,0 +1,12 @@
+# Pins the version of the private ingredion-agent-config repo that
+# scripts/bootstrap_agents.sh fetches into .claude/agents/.
+#
+# This is the ONLY place this (public) repo records anything about the
+# private agent-config content — a version string, not the content itself.
+# Bumping it is the update mechanism: change the line below, open a normal
+# one-line PR here, after the corresponding release has already been
+# reviewed and tagged in the private repo.
+#
+# See docs/private_agent_architecture.md for the full model.
+
+version=v1.0.0

@@ -359,9 +359,9 @@ and `json_test_dir` fixtures for how that works).
 notebooks), needed when a change touches:
 - Reading behavior against real cloud storage (see
   `notebooks/validate_json_reader.py` and
-  [testing_json_reader.md](docs/testing_json_reader.md))
+  [testing_json_reader.md](bronze_layer/docs/archive/testing_json_reader.md))
 - Deployment or job configuration (`databricks.yml`, notebook entrypoints)
-  — see [testing_end_to_end_deployment.md](docs/testing_end_to_end_deployment.md)
+  — see [testing_end_to_end_deployment.md](bronze_layer/docs/archive/testing_end_to_end_deployment.md)
   for the kind of validation expected before considering a deployment
   change done
 

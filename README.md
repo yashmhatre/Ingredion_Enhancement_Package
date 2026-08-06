@@ -158,9 +158,9 @@ The package has two layers of testing:
    behavior against real ADLS-hosted files, and a full end-to-end
    deployment test (bundle deploy + real job runs against the actual
    Unity Catalog environment). See:
-   - [testing_json_reader.md](bronze_layer/docs/testing_json_reader.md)
+   - [testing_json_reader.md](bronze_layer/docs/archive/testing_json_reader.md)
    - [testing_directory_ingestion.md](bronze_layer/docs/testing_directory_ingestion.md)
-   - [testing_end_to_end_deployment.md](bronze_layer/docs/testing_end_to_end_deployment.md)
+   - [testing_end_to_end_deployment.md](bronze_layer/docs/archive/testing_end_to_end_deployment.md)
 
 Run the local suite:
 ```bash

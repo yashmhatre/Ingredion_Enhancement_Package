@@ -5,7 +5,7 @@
 `tests/test_directory_ingestion.py` covers `directory_ingestion.py`'s file
 discovery and naming logic (`list_json_files`, `sanitize_table_name`,
 `build_table_name`). Unlike `json_reader.py`'s ADLS-based validation
-(see `docs/testing_json_reader.md`), this suite runs as real `pytest` —
+(see `archive/testing_json_reader.md`), this suite runs as real `pytest` —
 either fully locally, or directly on a Databricks cluster (serverless or
 classic), using the same test file and fixtures in both places.
 

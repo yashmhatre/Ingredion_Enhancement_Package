@@ -46,8 +46,8 @@ the human's judgment is required regardless of how capable the agent is.
   attached.
 
 Agents should get a Tier 1 change fully green on the local quality gates
-(via `devops-engineer`) *before* asking for review — that's table
-stakes, not a substitute for the review itself.
+(via `devops-engineer`, coordinated by `devops-lead`) *before* asking for
+review — that's table stakes, not a substitute for the review itself.
 
 ### Tier 2 — draft only; requires Yash's explicit, named sign-off before executing
 
@@ -75,9 +75,12 @@ general "sounds good."
 ### Tier 3 — never autonomous, no drafting shortcut
 
 - Creating, rotating, or displaying service principal credentials or any
-  secret.
+  secret — including the `AGENT_CONFIG_TOKEN` credential that reads the
+  private `ingredion-agent-config` repo.
 - Any IAM/RBAC change in Azure or the Databricks account console
-  (`Service Principal: User` role grants, `Use` grants, workspace admin).
+  (`Service Principal: User` role grants, `Use` grants, workspace admin) —
+  and, equally, any access-grant change on the private `ingredion-agent-config`
+  repo itself.
 - A hotfix commit directly to `main`.
 - Removing or weakening a CI gate (making a currently-blocking check
   non-blocking, or vice versa without discussion — the reverse direction is
@@ -90,14 +93,79 @@ a side door.
 
 ---
 
+## Agent org chart
+
+This project's subagents mirror a real engineering org, not a flat toolbox.
+Each subagent reports to a specific role above it; Yash sits at the top of
+both branches and is the human sign-off for every tier above Tier 0
+regardless of which branch raised it.
+
+```mermaid
+graph TD
+    Yash["Yash — Principal Data Engineer<br/>(human, final reviewer of record)"]
+    BA["Business Analyst<br/>captures & reconciles business asks"]
+    SA["Solution Architect<br/>turns approved asks into technical designs"]
+    DL["DevOps Lead<br/>sequences verification & deployment"]
+    DE["Data Engineer<br/>bronze_layer/bronze_ingest/"]
+    QA["QA Engineer<br/>notebooks/ + notebook tests"]
+    DA["Data Analyst<br/>read-only data/metrics analysis"]
+    DVE["DevOps Engineer<br/>pre-PR verification"]
+    PE["Platform Engineer<br/>deploy & provisioning drafts"]
+
+    Yash --> BA
+    Yash --> SA
+    Yash --> DL
+    BA --> DE
+    BA --> QA
+    BA --> DA
+    SA --> DE
+    SA --> QA
+    SA --> DA
+    DL --> DVE
+    DL --> PE
+```
+
+Two branches, same reporting discipline:
+
+- **Delivery branch** — `business-analyst` and `solution-architect` sit as
+  peers directly under Yash. Together they jointly direct `data-engineer`,
+  `qa-engineer`, and `data-analyst`: Business Analyst supplies the
+  reconciled *why*, Solution Architect supplies the technical *how*, and the
+  three implementing agents build/verify/analyze against both.
+- **DevOps branch** — `devops-lead` sits under Yash, parallel to the
+  delivery branch's two leads, and sequences `devops-engineer`
+  (verification) and `platform-engineer` (deployment/provisioning drafting)
+  so Yash gets one coordinated status instead of two partial ones.
+
+This structure changes *coordination*, not *authority*. Every tier
+restriction in this document still binds by action, not by role — a Tier 2
+deploy drafted by `platform-engineer` still needs Yash's named sign-off
+whether `devops-lead` is coordinating it or not, and `solution-architect`
+reopening a recorded decision (a buy-vs-build verdict, the bronze/silver
+contract) still surfaces that explicitly rather than routing around it,
+exactly as `business-analyst` already must.
+
+## Where agent definitions actually live
+
+The prompts/instructions themselves are proprietary and live in the private
+`yashmhatre/ingredion-agent-config` repo, not in this one — see
+`docs/private_agent_architecture.md` for the full reasoning and
+`.claude/agents/README.md` for the fetch mechanics. This file governs
+*behavior and approval tiers* regardless of where the prompt text is stored;
+that governance doesn't change based on which repo the definition lives in.
+
 ## How this maps to the subagents in `.claude/agents/`
 
-| Subagent | Typical tier of its own work |
-| --- | --- |
-| `data-engineer` | Tier 0 drafting, Tier 1 merge |
-| `qa-engineer` | Tier 0 drafting, Tier 1 merge |
-| `devops-engineer` | Tier 0 (verification only; narrow suppression drafts are Tier 1) |
-| `platform-engineer` | Drafts Tier 1/2/3 actions; **never executes Tier 2/3 itself** |
+| Subagent | Reports to | Typical tier of its own work |
+| --- | --- | --- |
+| `business-analyst` | Yash | Tier 0 (captures, reconciles, and documents business asks in `docs/business_requirements.md`); never writes code and never files an issue for a case still "Proposed" or "Under review" — turning an accepted case into engineering work is Yash's call, not this agent's |
+| `solution-architect` | Yash (peer to `business-analyst`) | Tier 0 (drafts technical designs for Approved cases; never writes pipeline code or deploys anything itself) |
+| `data-engineer` | `business-analyst` + `solution-architect` | Tier 0 drafting, Tier 1 merge |
+| `qa-engineer` | `business-analyst` + `solution-architect` | Tier 0 drafting, Tier 1 merge |
+| `data-analyst` | `business-analyst` + `solution-architect` | Tier 0 (read-only analysis; never writes code or files issues) |
+| `devops-lead` | Yash (peer to `business-analyst`/`solution-architect`) | Tier 0 (coordinates and aggregates status; no additional authority beyond what `devops-engineer`/`platform-engineer` already have) |
+| `devops-engineer` | `devops-lead` | Tier 0 (verification only; narrow suppression drafts are Tier 1) |
+| `platform-engineer` | `devops-lead` | Drafts Tier 1/2/3 actions; **never executes Tier 2/3 itself** |
 
 If a general-purpose agent session (not one of the above) ends up touching
 deploy config, credentials, or a promotion branch, it should still follow
