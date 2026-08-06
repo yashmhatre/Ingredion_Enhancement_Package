@@ -4,8 +4,8 @@ A tester-facing catalogue of what to test, how, and what "correct" looks
 like. Written for someone who did not build the package.
 
 Companion to the developer-facing validation logs in this folder
-(`testing_json_reader.md`, `testing_directory_ingestion.md`,
-`testing_end_to_end_deployment.md`), which record what *was* tested. This
+(`archive/testing_json_reader.md`, `testing_directory_ingestion.md`,
+`archive/testing_end_to_end_deployment.md`), which record what *was* tested. This
 document records what *should* be tested, before a release.
 
 ---
@@ -18,7 +18,7 @@ should know which is which before planning time.
 | | Batch JSON | Streaming JSON (Auto Loader) |
 | --- | --- | --- |
 | Automated test coverage | Extensive — 322 tests, run on every PR | **Partial by construction** |
-| Executed end to end on Databricks | **Yes** — `testing_end_to_end_deployment.md` | **No record exists** |
+| Executed end to end on Databricks | **Yes** — `archive/testing_end_to_end_deployment.md` | **No record exists** |
 | Deployed job definition | Yes, `bronze_directory_ingestion` | Job definition exists; no validated run |
 | Verdict | **Ready to deploy** | **Needs this manual pass before production** |
 
