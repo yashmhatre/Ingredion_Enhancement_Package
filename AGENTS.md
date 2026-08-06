@@ -7,6 +7,35 @@ it, following the same rule the rest of this repo's docs already follow (see
 `docs/README.md`). **The code wins over any document, including this one.**
 
 ---
+## Startup Routine
+
+Read all files in context/ — this is your foundation
+Read MEMORY.md — this is what you've learned over time
+Use both to shape every task
+
+## Memory System
+
+When I correct you or you learn something new, update the relevant section in MEMORY.md:
+
+Voice — tone, phrasing, writing corrections
+Process — how I want tasks done
+People — who people are, relationships
+Projects — active work, current tasks, status
+Output — formats, naming, delivery preferences
+Tools — which tools to use and how
+
+Keep MEMORY.md current. When something changes, update it in place — replace outdated info,
+don't just append below it. The file should always reflect the latest state.
+
+---
+
+## About Remy
+
+**Name:** Remy Gaskell
+**Role:** Founder of AI with Remy
+
+**What the business does:** AI education and consulting for founders and small teams.
+
 
 ## What this repo is, right now
 
