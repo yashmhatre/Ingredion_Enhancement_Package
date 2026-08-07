@@ -33,6 +33,7 @@ saying so. Do not update them to match new behaviour; supersede them.
 | --- | --- |
 | `docs/current_behavior.md` | Audit of the package against the README's claims, for #6. At least one section is explicitly superseded (first-load merge, changed by #46). |
 | `docs/architecture_review_2026-07.md` | Whole-repository review of `dev` @ `ceeda69`, 2026-07-29. Its findings became issues #145–#164; those issues, not this document, track their state. |
+| `docs/architecture_ai_metadata_2026-08.md` | Review of the AI/metadata half of the target architecture against Databricks native AI services (Data Classification, Data Quality Monitoring, AI Functions, Metric Views, Genie Agents), 2026-08-07. **A proposal, not an accepted design** — `bronze_layer/docs/architecture.md` still owns the AI-layer design until this is adopted. Its § 11 lists exactly what would change there if it is. |
 | `bronze_layer/docs/testing_json_reader.md` | Manual ADLS validation of `json_reader.py`. Requires a live cluster; not part of the pytest suite. |
 | `bronze_layer/docs/testing_end_to_end_deployment.md` | A real deployment run. Names the catalog as it was at the time (`ingredion_en_dev`), which was later renamed to `ingredion_en` — the run is the record, the names are not current. |
 
