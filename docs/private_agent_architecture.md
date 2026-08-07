@@ -157,9 +157,18 @@ second identity model). The only new things to stand up are one private
 repo (done) and one storage container (not yet), both of which this team
 already knows how to operate.
 
-Bumping `agents.lock` to a new tag is the update/versioning mechanism — an
-ordinary, reviewable one-line PR diff in this repo, with the actual content
-change reviewed separately in the private repo's own PR.
+Bumping `agents.lock` is the update/versioning mechanism — an ordinary,
+reviewable two-line PR diff in this repo, with the actual content change
+reviewed separately in the private repo's own PR.
+
+The lockfile pins both halves: `version` names the release tag, and `sha`
+records the commit that tag resolved to when it was reviewed. The bootstrap
+script fetches `refs/tags/$VERSION` explicitly — a branch of the same name
+cannot satisfy that refspec — and then refuses to install if the tag no
+longer resolves to the pinned commit. The `sha` line is what makes the pin
+real: a tag is a movable name, and tag-protection rulesets are unavailable
+on this private repo's plan, so this check is the only thing between a
+force-moved tag and every developer's `.claude/agents/`.
 
 This gets every property asked for: private (never in this repo's git
 history), securely loaded (a scoped credential, not a broad one), supports
