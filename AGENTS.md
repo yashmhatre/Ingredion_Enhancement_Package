@@ -49,21 +49,28 @@ path from candidate to validated case.
 
 ## Agent roster and approval tiers
 
-This repo runs **9 purpose-built subagents**, organized as a real reporting
+This repo runs **10 purpose-built subagents**, organized as a real reporting
 structure rather than a flat list — see `docs/agent_governance.md`'s "Agent
-org chart" for the full diagram. Short version: Yash (Principal Data
-Engineer, human) sits above three branches. `business-stakeholder` researches
-and proposes candidate opportunities when no real ask exists yet, and always
-hands them to `business-analyst` rather than skipping ahead. `business-analyst`
-and `solution-architect` are peers who jointly direct `data-engineer`,
-`qa-engineer`, and `data-analyst` on the delivery side. `devops-lead`
-sequences `devops-engineer` and `platform-engineer` on the DevOps side.
-Prefer the matching subagent over general-purpose editing when one fits.
-`business-analyst` captures and reconciles business asks against what's
-already built or decided (from a human *or* from `business-stakeholder`'s
-research — same reconciliation either way); `solution-architect` turns an
-Approved case into a technical design. Neither `solution-architect` nor
-`business-stakeholder` writes pipeline code themselves.
+org chart" for the full diagram. Short version: Yash, the Project Lead
+(human), sits at the top. `principal-data-engineer` is the managerial and
+senior-technical layer directly below Yash — the three branches below
+(`business-stakeholder`; `business-analyst` + `solution-architect`;
+`devops-lead`) all report to it, and it holds standing authority to review
+and merge Tier 1 PRs into `dev` on its own, escalating anything that feels
+like more than Tier 1 rather than self-approving. Yash still holds every
+Tier 2/3 sign-off directly — that authority does not shift.
+`business-stakeholder` researches and proposes candidate opportunities when
+no real ask exists yet, and always hands them to `business-analyst` rather
+than skipping ahead. `business-analyst` and `solution-architect` are peers
+who jointly direct `data-engineer`, `qa-engineer`, and `data-analyst` on the
+delivery side. `devops-lead` sequences `devops-engineer` and
+`platform-engineer` on the DevOps side. Prefer the matching subagent over
+general-purpose editing when one fits. `business-analyst` captures and
+reconciles business asks against what's already built or decided (from a
+human *or* from `business-stakeholder`'s research — same reconciliation
+either way); `solution-architect` turns an Approved case into a technical
+design. Neither `solution-architect` nor `business-stakeholder` writes
+pipeline code themselves.
 
 **The actual agent definitions — prompts, tool grants, workflow
 instructions — are proprietary and are not stored in this repo, including in
@@ -75,8 +82,8 @@ use. See `docs/private_agent_architecture.md` for the full reasoning and the
 options considered.
 
 **`docs/agent_governance.md` owns what any agent (subagent or not) may do
-without a human sign-off versus what requires the Principal Data Engineer's
-explicit go-ahead first** — deploys to staging/prod, GRANT/DROP/VACUUM SQL,
+without a human sign-off versus what requires the Project Lead's explicit
+go-ahead first** — deploys to staging/prod, GRANT/DROP/VACUUM SQL,
 credential handling, and promotion PRs all require that sign-off regardless
 of which agent is doing the work, or which one is coordinating it. Read it
 before touching anything in `databricks.yml`, `bronze_layer/resources/*.yml`,

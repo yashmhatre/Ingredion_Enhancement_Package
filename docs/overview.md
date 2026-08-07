@@ -96,8 +96,11 @@ still under review; nothing there has been built or committed to yet.
 
 ## Who owns what
 
-Yash is the Principal Data Engineer and final reviewer on this project —
-every significant decision (what gets built, what gets deployed, what a
-business case actually means for the roadmap) goes through that review,
-whether the work was drafted by a person or by one of the project's AI
-coding assistants.
+Yash is the Project Lead and final reviewer on this project — every
+significant decision (what gets built, what gets deployed, what a business
+case actually means for the roadmap) goes through that review, whether the
+work was drafted by a person or by one of the project's AI coding
+assistants. Day-to-day Tier 1 review (merging routine work into `dev`) is
+now delegated to the `principal-data-engineer` agent, which reports
+status back to Yash — see `docs/agent_governance.md` for exactly what did
+and didn't change.
