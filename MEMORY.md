@@ -29,10 +29,13 @@ place as conventions prove wrong or new ones emerge, the same way
   `bronze_layer/docs/archive/`) with a banner explaining what superseded
   them. Content is preserved, not lost — old paths only get removed once
   the archived copy exists and every cross-reference is updated.
-- **Yash reviews before merge.** Agents open/update PRs into `dev` and
-  stack related work onto an existing open PR rather than opening
-  duplicate/competing PRs — but never merge. See `docs/agent_governance.md`
-  for the full tier system (Tier 0 autonomous → Tier 3 never-autonomous).
+- **Yash reviews Tier 2/3 before merge; `principal-data-engineer` reviews
+  Tier 1.** Agents open/update PRs into `dev` and stack related work onto
+  an existing open PR rather than opening duplicate/competing PRs — Tier 1
+  merges are approved by `principal-data-engineer` on its own authority,
+  Tier 2/3 still needs Yash's own named sign-off. See
+  `docs/agent_governance.md` for the full tier system (Tier 0 autonomous →
+  Tier 3 never-autonomous).
 - **Task-first.** Non-trivial work should trace back to an open GitHub
   issue. If a request implies work with no issue, say so before starting.
 - Judgment calls that aren't explicitly confirmed (e.g., stacking commits
@@ -41,10 +44,11 @@ place as conventions prove wrong or new ones emerge, the same way
 
 ## People — who people are, relationships
 
-- **Yash** — Principal Data Engineer on this project. The human reviewer
-  of record for every approval tier that isn't fully autonomous
-  (`docs/agent_governance.md`). Final say on architecture, promotions,
-  credentials, and anything Tier 2/3.
+- **Yash** — Project Lead on this project. The human sign-off authority
+  for every approval tier `principal-data-engineer` doesn't already handle
+  on its own (`docs/agent_governance.md`) — Tier 1 merge review now
+  happens there; Yash still holds Tier 2/3 directly. Final say on
+  architecture, promotions, credentials, and anything Tier 2/3.
 
 ## Projects — active work, current tasks, status
 
@@ -56,11 +60,20 @@ place as conventions prove wrong or new ones emerge, the same way
   `AGENTS.md`, `docs/agent_governance.md`, role-based subagents
   (`data-engineer`, `qa-engineer`, `devops-engineer`, `platform-engineer`),
   the archive pass, and the new `docs/overview.md` /
-  `bronze_layer/docs/architecture.md` split. Open, awaiting Yash's review.
+  `bronze_layer/docs/architecture.md` split. Merged.
 - **Business-analyst subagent (PR #198, `docs/business-analyst-agent` →
   `dev`)** — `business-analyst.md` + `docs/business_requirements.md`
-  (BR-001 intake). Open, awaiting Yash's review, kept as a separate PR
-  from #197 by design.
+  (BR-001 intake). Merged.
+- **Private agent-config architecture (PR #199)** — moved real agent
+  definitions to the private `ingredion-agent-config` repo, added the
+  lockfile/bootstrap fetch mechanism. Merged.
+- **Business-stakeholder role (PR #200)** — added the sourced-candidate
+  origination agent. Merged.
+- **Project Lead rename + `principal-data-engineer` role** — Yash's title
+  renamed everywhere; new managerial/senior-technical agent inserted above
+  `business-stakeholder`, `business-analyst`+`solution-architect`, and
+  `devops-lead`, with standing Tier 1 merge authority and a
+  Pending/In-progress/Future status-report duty to Yash. In review.
 
 ## Output — formats, naming, delivery preferences
 
@@ -79,8 +92,9 @@ place as conventions prove wrong or new ones emerge, the same way
 - GitHub MCP tools for all repo operations (branches, file pushes, PRs) —
   authenticated, auditable, no local git shortcuts.
 - Claude Code subagents in `.claude/agents/`, one per role
-  (`data-engineer`, `qa-engineer`, `devops-engineer`, `platform-engineer`,
-  `business-analyst`) — prefer the matching subagent over general-purpose
-  editing when one fits the task.
+  (`principal-data-engineer`, `business-stakeholder`, `business-analyst`,
+  `solution-architect`, `data-engineer`, `qa-engineer`, `data-analyst`,
+  `devops-lead`, `devops-engineer`, `platform-engineer`) — prefer the
+  matching subagent over general-purpose editing when one fits the task.
 - Excalidraw MCP for architecture walkthroughs when a live, inspectable
   diagram is more useful than static Mermaid.

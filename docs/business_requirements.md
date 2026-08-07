@@ -3,7 +3,7 @@
 A living log of business problems and opportunities raised by business
 owners/stakeholders, each turned into a scoped business case, and — once
 reconciled against what this repo has already decided and validated with
-Yash (Principal Data Engineer) — carried into GitHub issues using the
+Yash (Project Lead) — carried into GitHub issues using the
 existing `.github/ISSUE_TEMPLATE/feature_request.md` / `task.md` templates.
 
 Owned by the `business-analyst` agent (see `docs/agent_governance.md`'s

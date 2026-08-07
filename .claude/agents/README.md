@@ -32,7 +32,14 @@ fetch instead of committing agent content directly here, encrypted or not.
 ## Current org structure
 
 See `docs/agent_governance.md`'s "Agent org chart" section for who reports
-to whom and what each role does. Short version: Yash (Principal Data
-Engineer) → Business Analyst + Solution Architect (jointly overseeing
-Data Engineer, QA Engineer, Data Analyst) and DevOps Lead (overseeing
-DevOps Engineer, Platform Engineer).
+to whom and what each role does. Short version: Yash, the Project Lead
+(human) → `principal-data-engineer` (managerial + senior-technical layer,
+with standing authority to review and merge Tier 1 work into `dev` on its
+own) → three branches reporting to it: `business-stakeholder`
+(origination), `business-analyst` + `solution-architect` (jointly
+overseeing `data-engineer`, `qa-engineer`, `data-analyst`), and
+`devops-lead` (overseeing `devops-engineer`, `platform-engineer`). Ten
+subagents in total, pinned at `agents.lock`'s current version. Tier 2/3
+actions (staging/prod deploys, GRANT/DROP/VACUUM, credentials, promotions)
+still require Yash's own named sign-off — that authority does not shift to
+`principal-data-engineer`.
