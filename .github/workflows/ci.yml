@@ -335,7 +335,7 @@ jobs:
           # Notebooks ARE watched here, unlike the test job. They are the
           # deployed entrypoints, and #157 records that both known live
           # defects were in that layer precisely because nothing looked at it.
-          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^\.github/workflows/ci\.yml$'
+          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^scripts/hooks/|^\.github/workflows/ci\.yml$'
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -380,6 +380,15 @@ jobs:
           # signatures; without this every bronze_ingest import is Any and
           # call-arg silently stops working.
           pip install -e ".[dev]"
+
+      # Orchestrator write-lockdown hook. Deliberately ungated: it guards who
+      # may edit implementation code, it needs no dependencies, and it runs in
+      # about a second. The first version of this hook shipped failing open on
+      # every Windows-shaped path and nothing caught it, because CI's pytest
+      # suite runs under bronze_layer/ and never sees scripts/.
+      - name: hook lockdown tests
+        if: '!cancelled()'
+        run: python3 scripts/hooks/test_block_orchestrator_writes.py
 
       # Each gate runs even if an earlier one failed, so one PR gets the full
       # picture instead of one finding per push.
