@@ -1,7 +1,7 @@
 # Architecture Review & Design Proposal — Metadata Intelligence on Databricks Native AI
 
-**Branch reviewed:** `claude/bronze-architecture-databricks-ai-r4csve` @ `3433cdd`
-**Date:** 2026-08-07
+**Branch reviewed:** `main` @ `3433cdd`; **revised against `dev` @ `b028ccf`**
+**Date:** 2026-08-07 (revised same day)
 **Scope:** the AI/metadata half of the target architecture — `bronze_layer/docs/architecture.md`
 § "Asynchronous AI-assisted metadata layer", the `_ai_metadata` three-table model, and the
 proposed business-facing semantic layer. Read against the whole repository: 13 package
@@ -21,11 +21,17 @@ is marked **[verify]** rather than asserted.
 
 ## 1. Verdict
 
-**The proposed AI layer is well-reasoned and mostly obsolete.** Not because the reasoning
-was wrong — it was right when written — but because between then and now Databricks shipped
-GA versions of three of the four things it proposed to build. The correct move is not to
-port the design onto Databricks AI. It is to **delete most of its scope** and keep the
-one part the platform does not cover.
+**The AI layer is well-reasoned and mostly obsolete.** Not because the reasoning was wrong
+— it was right when written — but because between then and now Databricks shipped GA
+versions of three of the four things it set out to build. The correct move is not to port
+the design onto Databricks AI. It is to **delete most of its scope** and keep the one part
+the platform does not cover.
+
+**It is also no longer a design. It is shipped code.** `ai_metadata.py` is on `dev`, and it
+authenticates with an Anthropic API key through the official SDK — precisely the pattern
+§ 10 argues against. That makes this urgent rather than theoretical, and cheap rather than
+disruptive: the module defines a `MetadataDrafter` Protocol, so adopting AI Functions is a
+second implementation of an existing interface, not a rewrite (§ 10.7).
 
 **And the premise of the question needs correcting before anything is designed on it.**
 
@@ -78,16 +84,25 @@ Verified by reading the code, not the README — the two disagree, and the code 
 | Catalog metadata | Partial | ✅ COMMENTs only; **tags deliberately not shipped** (#64) |
 | Directory ingestion | Implemented | ✅ With per-file isolation, archival, retry-limit |
 | Unity Catalog integration | Implemented | ✅ One catalog, three schemas, per-env service principals |
-| Multi-agent architecture | **Listed as a current capability** | ❌ **Zero references anywhere in the repository** |
-| Silver layer | Planned | ❌ A README and an archived `flattener.py` |
+| Multi-agent architecture | Listed as a current capability | ✅ **Exists on `dev`** — ten SDLC subagents, four approval tiers, org chart (`docs/agent_governance.md`), definitions in a private repo pinned by `agents.lock` |
+| Silver layer | Planned | ⚠️ Contract written (`docs/bronze_silver_contract.md`), `silver_layer/resources/silver_jobs.yml` exists; no transformation code |
 | Gold layer | Planned | ❌ Does not exist |
 | Business semantic layer | Listed as a current capability | ❌ Does not exist |
-| AI metadata layer | Designed | ❌ Designed only — no `_ai_metadata`, no job, no module |
+| AI metadata layer | Designed | ✅ **Built on `dev`** — `ai_metadata.py` (445 lines), `test_ai_metadata.py` (391 lines) |
+| Buy-vs-build decision (#163) | Open | ✅ **Made** — `docs/buy_vs_build_2026-08.md` |
+| Bronze→Silver contract (#162) | Open | ✅ **Written** — `docs/bronze_silver_contract.md` |
 
-Three of the capabilities in the brief's "current capabilities" list — multi-agent
-architecture, the semantic layer, and Silver/Gold — do not exist in any form. This is
-worth stating plainly because the roadmap below depends on it: **this is a
-one-layer platform with an excellent bronze layer**, not a platform with a missing AI tier.
+> **Correction.** The first revision of this document was written against `main` @ `3433cdd`
+> and declared the multi-agent architecture, the AI metadata layer, and the #162/#163
+> decisions to be missing. **`dev` is 64 commits ahead of `main`, and all four exist there.**
+> The brief's "current capabilities" list was accurate; this document was not. Every
+> conclusion that rested on those four being open has been re-derived below — most
+> materially § 6, § 10 and § 12.
+
+What remains true, and is what the roadmap below actually depends on: **the medallion is
+still one layer deep in executable code.** Bronze is excellent, Silver has a contract but no
+transformations, Gold does not exist, and there is no semantic layer. That — not a missing
+AI tier — is the constraint on everything business-facing.
 
 ### 2.2 What the existing design got right
 
@@ -100,6 +115,26 @@ whether it preserves them.
 2. **"Nothing in the write path ever reads `_ai_metadata`."** An invariant enforced by
    construction rather than by convention. Keep the invariant; § 4 changes only where the
    output lands.
+
+   **Amended on `dev`, 2026-08-07 — and this document does not reopen it.** BR-001 was
+   decided by the Project Lead to mean autonomous remediation rather than advisory-only,
+   with the conflict stated in those terms before the decision was made
+   (`docs/business_requirements.md`, `docs/decisions/2026-08_autonomous_remediation.md`).
+   That is a decision, not an oversight, and § 5.2's "never" list is written against the
+   *default* path, not against a ratified exception.
+
+   Three properties of how it was scoped are worth naming, because they are what make it
+   survivable: the eligible fix-class set is **empty**, the decision record is **draft
+   pending named sign-off**, and `_ingestion_audit` / `_schema_registry` are explicitly on
+   the never-touch list — *"if the remediator can rewrite facts, the audit trail stops being
+   evidence of what happened and becomes evidence of what something decided should have
+   happened."* That reasoning is exactly right and is the load-bearing constraint.
+
+   **What this document adds:** every recommendation below is compatible with the exception
+   because none of it depends on the exception. The Metadata Intelligence Layer writes
+   proposals and nothing else. If a fix class is ever promoted into the eligible set, the
+   § 4.2 review gate and § 6.0's Tier-2 mapping are the mechanisms that should govern it —
+   they were designed for a stricter rule and hold under the looser one.
 3. **Fact / interpretation separation.** `_ingestion_audit` and `_schema_registry` record
    what the pipeline *knows*; the AI table records *opinion*. This distinction is the
    backbone of everything in § 3 and § 5.
@@ -218,12 +253,17 @@ AI may draft *candidate* definitions from query history and may *explain* an exi
 metric in business language. The definition itself is human-authored in a Unity Catalog
 Metric View, reviewed, and deployed through the bundle. § 5 treats this as a hard line.
 
-### P2 — ten agents for a one-layer platform
+### P2 — ten *runtime* agents for a one-layer platform
 
-The brief proposes ten agents for a platform that today runs one job, over one layer,
-processing ~50 files per run. Each agent is a deployable unit with its own failure mode,
-identity, cost line and upgrade path. Ten of them is more operational surface than the
-ingestion framework they would describe.
+To be precise, because `dev` already has ten agents and this is not about them: the ten
+**SDLC** agents in `docs/agent_governance.md` build the repository, and they are well
+governed. The concern is the ten **runtime** agents the brief proposes — agents that would
+execute as service principals inside Databricks against a platform that today runs one job,
+over one layer, at ~50 files per run.
+
+Each runtime agent is a deployable unit with its own failure mode, identity, cost line and
+upgrade path. Ten of them is more operational surface than the ingestion framework they
+would describe.
 
 The number that matches the problem is **three**, and phase one needs **zero** — see § 6.
 A scheduled SQL statement calling `ai_query` is not an agent and does not benefit from
@@ -446,7 +486,8 @@ Non-negotiable. Every item is something where a wrong answer is either silent or
 irreversible:
 
 1. **The write path** — reader dispatch, quality gate, quarantine routing, merge keys,
-   dedupe, idempotency, `txnAppId`/`txnVersion`
+   dedupe, idempotency, `txnAppId`/`txnVersion`. *Subject to the ratified BR-001 exception
+   (§ 2.2), whose eligible set is currently empty; nothing in this document depends on it*
 2. **Any number in an audit row** — `row_count`, `rows_inserted`, `rows_updated`.
    #149 fought to make these mean one consistent thing; an estimate would undo it
 3. **Schema drift *detection*** — a fingerprint comparison is exact and free
@@ -462,10 +503,44 @@ The test: *if this is wrong, does anyone find out?* If the answer is no, it does
 
 ## 6. Multi-Agent Architecture
 
-### 6.1 Start by not building agents
+### 6.0 There are two agent populations, and conflating them is the whole risk
 
-The brief lists ten. The honest engineering answer is that **phase one needs zero**, and
-saying so is more useful than designing ten.
+`dev` already carries a mature multi-agent system: ten subagents, a four-tier approval
+model, and an org chart under a human Project Lead (`docs/agent_governance.md`). Nothing
+below replaces it. It answers a different question.
+
+| | **SDLC agents — exist today** | **Runtime agents — proposed here** |
+|---|---|---|
+| Population | `principal-data-engineer`, `business-analyst`, `solution-architect`, `data-engineer`, `qa-engineer`, `data-analyst`, `devops-lead`, `devops-engineer`, `platform-engineer`, `business-stakeholder` | Curator, Observability, Semantic |
+| Execute in | Claude Code sessions, on a developer's or CI's machine | Databricks jobs, on a schedule |
+| Identity | A human's session, or a CI credential | A Unity Catalog **service principal** |
+| Act on | Branches, PRs, docs, tests | Unity Catalog metadata |
+| Output | A pull request | A row in `_metadata_proposals` |
+| Reviewed by | `principal-data-engineer` (Tier 1) or the Project Lead (Tier 2/3) | The review gate (§ 4.2) |
+| Failure mode | A bad PR — caught in review | A bad catalog write — caught only if audited |
+
+They are disjoint. "Three agents, not ten" is a statement about the **runtime** population
+and is not a proposal to reduce the SDLC org.
+
+**The governance model transfers, and should.** `agent_governance.md`'s tiers already
+classify the actions a runtime agent would take, in the project's own language:
+
+| Runtime agent action | Existing tier | Consequence |
+|---|---|---|
+| Read audit, registry, lineage, system tables | **Tier 0** | Fully autonomous |
+| Write a row to `_metadata_proposals` | **Tier 0** | It is a draft, by construction |
+| Apply a COMMENT to a UC object | **Tier 1** | Reviewable, revertible |
+| Apply a **governed tag** that drives an ABAC mask | **Tier 2** — *"any `GRANT`/`REVOKE` … against Unity Catalog"* | Needs the Project Lead's named sign-off |
+| Create or rotate the metadata service principal's credential | **Tier 3** | Never autonomous |
+
+This resolves § 3's P2 finding without inventing anything: the identity question was
+already answered, and the answer is that a tag write is an access-control write and lands at
+Tier 2. **Do not build a second governance model for runtime agents. Extend this one.**
+
+### 6.1 Start by not building runtime agents
+
+The brief lists ten runtime agents. The honest engineering answer is that **phase one needs
+zero**, and saying so is more useful than designing ten.
 
 An agent earns its existence when a task requires **planning under uncertainty** — deciding
 which tools to call, in what order, based on intermediate results. Most of the metadata
@@ -555,7 +630,8 @@ creates a distributed system with no transaction boundary for no benefit — Dat
 Supervisor Agent coordinates Genie Agents, UC functions, MCP servers and custom agents
 under one orchestrator, which is the pattern to use rather than to reinvent.
 
-**Ownership.** Each agent is a separate service principal with distinct grants:
+**Ownership.** Governed by `agent_governance.md`'s existing tiers (§ 6.0), not by a parallel
+model. Each runtime agent is a separate service principal with distinct grants:
 
 | Agent | Grants | Explicitly denied |
 |---|---|---|
@@ -565,7 +641,8 @@ under one orchestrator, which is the pattern to use rather than to reinvent.
 | **Review gate** | The **only** principal with `MODIFY` on UC comments and governed tags | — |
 
 That last row is the load-bearing one. **No agent holds catalog write authority.** The
-review gate does, and the gate is a human decision recorded in `system.access.audit`.
+review gate does, and the gate is a human decision recorded in `system.access.audit` — the
+runtime equivalent of the Project Lead's named Tier 2 sign-off.
 
 **Shared memory.** Three stores, deliberately separate:
 
@@ -726,6 +803,39 @@ The original design's PII detection, drift intelligence and description generati
 now platform features. **Roughly 70% of the proposed AI layer should be deleted rather
 than ported.**
 
+### 9.2 The cost this mapping does not show: local testability
+
+`docs/buy_vs_build_2026-08.md` rejects DQX on a criterion this section ignored, and the
+criterion is right: **DQX cannot be constructed without an authenticated workspace, which
+makes the local suite untestable.** It is the same principle `catalog_metadata.py` cites for
+deferring UC tags — *an unverified governance feature silently reports success while
+applying nothing, which is worse than not shipping it.*
+
+That constraint applies to everything in § 9. Every native service here needs a live
+workspace and **none can be exercised by `pytest` locally.** "Buy native" is therefore not
+free; it trades engineering effort for test coverage, and this document previously presented
+it as a pure win. It is not.
+
+Two things keep the trade favourable, and they should be checked rather than assumed:
+
+| | DQX (rejected) | Native services (recommended here) |
+|---|---|---|
+| What you own | A **library** in your dependency tree | A **platform feature** behind an API |
+| What breaks locally | Your own code paths, untested | Nothing — there is no code to test |
+| Who verifies correctness | You | Databricks |
+| Residual local surface | Rule construction, evaluation, quarantine split | The watermark query and the write — **both still testable** |
+
+The distinction is real: rejecting a library you must call correctly is different from
+adopting a service that does its own work. What you lose is not unit coverage of your logic
+— it is the **integration** assertion that the service did what you asked. That gap is
+closed by a workspace-gated smoke test in CI (#113's deploy path), not by local pytest, and
+it should be scoped as part of Phase 3 rather than discovered afterwards.
+
+**Where this changes a verdict:** #61's "build (small)" was decided partly because *"DQX
+inherits the same workspace constraint."* Data Quality Monitoring does not inherit it the
+same way — it is a platform feature, not an imported library. #61 is worth re-testing on
+that basis; the other `buy_vs_build` verdicts stand.
+
 ---
 
 ## 10. Cost Analysis
@@ -862,6 +972,31 @@ narration, where the reasoning is the product. At ~20K tokens/day the difference
 them is noise against compute (§ 10.1), so **choose on output quality, not on price** —
 and revisit only if the estate grows by an order of magnitude.
 
+### 10.7 This is now a change to shipped code, and it is a small one
+
+`ai_metadata.py` exists on `dev` and **authenticates with an Anthropic API key through the
+official SDK** — the exact pattern § 10.2 argues against. That makes this recommendation
+more urgent than a design preference, and simultaneously much cheaper than a rewrite:
+
+The module defines a **`MetadataDrafter` Protocol**, with `AnthropicMetadataDrafter`
+documented as "the one concrete" implementation, its SDK import deliberately lazy so
+importing the module needs no dependency. **The seam is already there.** Adopting AI
+Functions means adding a second implementation of an existing interface — not touching the
+prompt builder, the watermark logic, the parser, or the writer.
+
+| | Today on `dev` | Proposed |
+|---|---|---|
+| Interface | `MetadataDrafter` Protocol | unchanged |
+| Implementation | `AnthropicMetadataDrafter` — SDK + `api_key` | `AIFunctionsMetadataDrafter` — `ai_query` via Spark SQL |
+| Credential | A PAT in the environment | **None** |
+| Cost attribution | An Anthropic invoice | `system.billing.usage` |
+| Model | Claude | **Still Claude** — Databricks-hosted (§ 10.6) |
+| Local testability | Protocol is stubbed in tests | unchanged — stub the same Protocol |
+
+The existing test suite stubs the Protocol rather than the SDK, so it keeps working against
+either implementation. Whoever designed that seam made this migration cheap without knowing
+it would be needed.
+
 ---
 
 ## 11. Migration Strategy
@@ -874,9 +1009,9 @@ targets* change.
 | 1 | PII detection | Custom LLM prompt | UC Data Classification | **Delete scope** |
 | 2 | Freshness/volume anomalies (#61, #62) | Custom baselines over audit | DQ Monitoring + built-in dashboard | **Delete most of #61** |
 | 3 | Description baseline | Custom prompt | UC AI-generated comments | **Delete scope** |
-| 4 | Inference | Generic LLM / OpenAI | `ai_query` / `ai_gen` | Swap |
+| 4 | Inference | **Shipped:** `AnthropicMetadataDrafter`, SDK + PAT | A second `MetadataDrafter` calling `ai_query` | **Swap — one class** (§ 10.7) |
 | 5 | AI output destination | `_ai_metadata` terminal table | `_metadata_proposals` → review → UC | **Redesign** |
-| 6 | Drift explanation | Planned | Keep — the residual custom capability | Build |
+| 6 | Drift explanation | **Shipped** in `ai_metadata.py` | Keep — the residual custom capability | Retain |
 | 7 | Semantic layer | Undesigned | UC Metric Views, human-authored | Build (Plane 4) |
 | 8 | Business access | Undesigned | Genie Agents over Metric Views + Gold | Build (Plane 5) |
 | 9 | Identity | Ingestion SP | Dedicated metadata SP + review-gate principal | **Provision (#112)** |
@@ -895,6 +1030,13 @@ records must be superseded rather than edited. Accepting this proposal implies:
   bullet in native terms.
 - `docs/roadmap.md` — insert the gating chain from § 12 and re-order Phase 5.
 - `docs/README.md` — index this document as a point-in-time record. **Done in this change.**
+- `bronze_layer/bronze_ingest/ai_metadata.py` — add an `AIFunctionsMetadataDrafter`
+  implementing the existing `MetadataDrafter` Protocol; make it the default. Leave
+  `AnthropicMetadataDrafter` in place as the escape hatch and for local development.
+- `docs/agent_governance.md` — extend the tier table to name **runtime** agent actions
+  (§ 6.0), so a governed-tag write is explicitly Tier 2 rather than inferred to be.
+- `docs/buy_vs_build_2026-08.md` — add the classification addendum (§ 12, Phase 2). The
+  existing verdicts stand; this calls the deferral it already scheduled.
 
 ### Prerequisites that are genuinely blocking
 
@@ -903,7 +1045,7 @@ CHANGELOG 0.5.0 table -> table_name backfill   ──►  ANY read of _ingestion
 #159 audit lifecycle: OPTIMIZE/VACUUM/retention ──►  intelligence layer at steady state
 #112 provisioning + dedicated metadata SP       ──►  ANY UC write by the AI layer
 #64  governed tags                              ──►  ABAC masking on classified data
-#162 Bronze->Silver contract                    ──►  Silver ──► Gold ──► Metric Views ──► Genie
+#162 contract  [WRITTEN]  ──►  Silver CODE ──► Gold ──► Metric Views ──► Genie
 ```
 
 ---
@@ -921,11 +1063,16 @@ reads `_ingestion_audit`.
 
 ### Phase 2 — decisions **[extended]**
 
-- #163 buy-vs-build, **rescoped**: no longer only DQX vs. build. Now DQX **and** DQ
-  Monitoring **and** UC Data Classification against a real fixture. Three of the answers
-  are probably "the platform already does this."
-- #162 Bronze→Silver contract — **now the single highest-leverage item in the repository**,
-  because it gates the entire consumption plane.
+- #163 buy-vs-build — **decided** in `docs/buy_vs_build_2026-08.md`, on a criterion this
+  document initially missed (§ 9.2). One **addendum** is warranted, not a re-opening: the
+  doc evaluated *libraries* (DQX, discoverx) and deliberately deferred classification
+  — *"build the mechanics; do not build a classifier … evaluate discoverx then."* That
+  deferral is now callable, and the candidate is **UC Data Classification**, a platform
+  feature rather than a library, so it does not inherit DQX's workspace-testability
+  objection in the same form. Same for DQ Monitoring against #61.
+- #162 Bronze→Silver contract — **written.** The gate is no longer the contract; it is
+  **Silver transformation code**, which does not exist. `silver_layer/` has a resources
+  file and a contract, and no pipeline.
 - **[AI]** Decide the AI Functions vs. external LLM question. § 10 argues it is settled.
 
 ### Phase 3 — provisioning **[extended]**
@@ -944,15 +1091,27 @@ reads `_ingestion_audit`.
 - #61 anomaly detection — **mostly delete.** Freshness and completeness are native.
   Keep only quarantine-rate anomalies, which are framework-specific
 
-### Phase 5 — Metadata Intelligence **[AI, new]**
+### Phase 5 — Metadata Intelligence **[AI — partly built, on `dev`]**
 
-Only now, and only because everything it depends on is finally true.
+`ai_metadata.py` already implements the watermark, prompt construction, parsing and write.
+This phase is therefore **not a build from zero** — it is four changes to a module that
+exists, plus one that does not.
 
-1. `_metadata_proposals` table + review state model
-2. Metadata Intelligence job — watermarked, `ai_query`, drift explanation + descriptions
-3. Wire approved proposals through `catalog_metadata.py`'s existing diff-and-apply
-4. Review surface — AI/BI dashboard or a small Databricks App
-5. **[AI]** #64 governed tags → ABAC column masks on classified columns
+1. **Swap the drafter** — add `AIFunctionsMetadataDrafter` against the existing
+   `MetadataDrafter` Protocol, make it the default (§ 10.7). *One class. Do this first —
+   it removes the PAT dependency, which is the only credential in the layer.*
+2. **Retarget the output** — `_ai_metadata` gains review state and becomes
+   `_metadata_proposals`; it stops being terminal (§ 3, P1)
+3. **Wire approved proposals** through `catalog_metadata.py`'s existing diff-and-apply
+4. **Review surface** — AI/BI dashboard or a small Databricks App
+5. **Delete the superseded scope** — PII prompting and description drafting, once UC Data
+   Classification and AI-generated comments are enabled in Phase 3. Keep drift explanation:
+   it is the residual nothing native covers
+6. **[AI]** #64 governed tags → ABAC column masks, gated at Tier 2 (§ 6.0)
+
+**Ordering note.** Step 1 is independent of everything else in this document and of every
+prerequisite in § 11. It can ship on its own, immediately, and it is the single change with
+the best ratio of governance gained to effort spent.
 
 ### Phase 6 — Semantic layer **[new, and the largest]**
 
@@ -983,7 +1142,7 @@ the three agents from § 6.2, UC functions and MCP as tools, MLflow evaluation.
 ```mermaid
 graph LR
     P0["Phase 0<br/>promote + BACKFILL"] --> P2
-    P2["#162 contract<br/>#163 buy-vs-build"] --> P3
+    P2["#162 + #163 DONE<br/>classification addendum only"] --> P3
     P3["#112 provisioning<br/>+ metadata SP"] --> P4
     P3 --> P5
     P4["#159 lifecycle<br/>DQ Monitoring on"] --> P5
@@ -996,7 +1155,9 @@ graph LR
     class P0,P2 gate
 ```
 
-**Genie sits behind four gates: the backfill, #162, Silver/Gold, and Metric Views.**
+**Genie sits behind four gates: the backfill, Silver transformation code, Gold, and Metric
+Views.** #162 closed one of the original five — the contract is written, so what Silver will
+be handed is settled. What is not built is Silver itself.
 Nothing shortens that chain — and an attempt to shorten it produces § 3's P0 defect in
 front of business users, which is the most expensive way to discover it.
 
@@ -1026,9 +1187,15 @@ front of business users, which is the most expensive way to discover it.
 **Yes, redesign around Databricks native AI — but the redesign is mostly deletion, and
 Genie is not where you think it goes.**
 
-Six recommendations, in order of consequence:
+Seven recommendations, in order of consequence.
 
-1. **Delete ~70% of the proposed AI metadata layer.** PII detection, freshness and volume
+**Recommendation 0, because it is the only one that can ship this week:** add an
+`AIFunctionsMetadataDrafter` against the `MetadataDrafter` Protocol already in
+`ai_metadata.py`, and make it the default. One class. It removes the only credential in the
+layer, moves cost onto `system.billing.usage`, keeps Claude as the model, and depends on
+nothing else in this document. Everything below is larger and slower.
+
+1. **Delete ~70% of the AI metadata layer's scope.** PII detection, freshness and volume
    anomaly intelligence, and baseline description generation are now GA platform features.
    Building them is a straight loss. This retires scope from #61 and #62 before they are
    built — the cheapest kind of win.
@@ -1050,16 +1217,21 @@ Six recommendations, in order of consequence:
    single most damaging thing available in this architecture, and also the easiest to do
    by accident under demo pressure.
 
-5. **Build zero agents in phase one.** A watermarked SQL statement calling `ai_query` on a
-   schedule is not an agent. Three agents become correct when the platform is agentic;
-   ten never do.
+5. **Build zero *runtime* agents in phase one, and govern them with the model you already
+   have.** This is not about the ten SDLC agents on `dev`, which build the repository and
+   are well governed — it is about agents that would execute as service principals inside
+   Databricks. A watermarked SQL statement calling `ai_query` is not one of those. Three
+   become correct when the platform is agentic; ten never do. When they arrive, extend
+   `agent_governance.md`'s tiers rather than inventing a second model: a governed-tag write
+   is Tier 2, and that answers the identity question this review raised (§ 6.0).
 
 6. **The critical path is not AI at all.** It runs through the CHANGELOG backfill, #159's
-   lifecycle policy, #112's provisioning, and — above all — **#162, the Bronze→Silver
-   contract**. Nothing in the business-facing vision is reachable while the medallion is
-   one layer deep. #162 is currently filed as a Phase 2 decision; it is the gate on the
-   entire consumption plane, and it should be treated as the most valuable open item in
-   the repository.
+   lifecycle policy, #112's provisioning, and — above all — **Silver transformation code**.
+   Nothing in the business-facing vision is reachable while the medallion is one layer deep
+   in executable code. #162 settled *what* Silver will be handed and #163 settled *what to
+   build versus buy*; both are done. What remains unbuilt is the layer itself, and it is
+   the gate on the entire consumption plane — the most valuable open item in the
+   repository, and the one thing on this list that is data modelling rather than AI.
 
 ### The one-sentence version
 
