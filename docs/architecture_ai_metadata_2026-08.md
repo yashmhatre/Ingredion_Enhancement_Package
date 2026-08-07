@@ -692,6 +692,7 @@ The direct answer to "which parts should be native." Verified August 2026.
 | Freshness + completeness anomalies | **DQ Monitoring anomaly detection** — per-table commit-time model, metastore-wide dashboard | Most of #61, #62 | **GA — verified** |
 | Baseline descriptions | **UC AI-generated comments** | Custom description prompt | **GA — verified** |
 | LLM inference | **AI Functions** — `ai_query`, `ai_gen`, `ai_classify` on FM APIs | External OpenAI / Azure OpenAI | **GA — verified.** Needs DBR 18.2+, and **not available on Pro or Classic SQL warehouses** |
+| A *specific* frontier model | **Databricks-hosted Claude** (Opus / Sonnet / Haiku families) via FM APIs, with prompt caching; Anthropic Messages API compatibility layer for SDK-native code | An Anthropic API key, or an individual's Claude subscription | **GA — verified** (Messages API Beta as of 2026-06). See § 10.6 |
 | Business semantic layer | **UC Metric Views** — measures separated from dimensions, queryable from SQL, notebooks, dashboards, Genie | A hand-built gold semantic model | **GA + open sourced — verified** |
 | Business Q&A | **Genie Agents** (formerly Genie Spaces), with trusted assets and instructions | Custom chat app | **GA — verified** |
 | Programmatic Genie | **Genie Conversation API** + Management API for CI/CD | — | **GA — verified** |
@@ -804,6 +805,62 @@ cost more than the entire ingestion platform.
 Controls, before the first business user is onboarded: a right-sized dedicated warehouse
 with aggressive auto-stop, per-space warehouse assignment, and a `system.billing.usage`
 dashboard broken out by warehouse. This belongs in the phase plan, not in a post-mortem.
+
+### 10.6 "Can we use an existing Claude or ChatGPT subscription instead of buying credits?"
+
+A reasonable question, asked often enough to answer here rather than in a thread. The
+answer is **no for the pipeline, and unnecessary — because the thing it is reaching for is
+already available a better way.**
+
+**Why a consumer subscription cannot back a production job.** A Claude Pro/Max subscription
+covers claude.ai on web, desktop and mobile, plus Claude Code, against one shared usage
+pool. Programmatic API access is a separate product billed via prepaid usage credits. There
+is no key a subscription issues that a Databricks job could authenticate with.
+
+**The terms question is the weaker objection. The architectural one is disqualifying on its
+own:**
+
+| | Consequence |
+|---|---|
+| The credential is a **person**, not a service principal | The platform stops when they leave, rotate a password, or exhaust their limit |
+| Cannot be granted to the metadata service principal (§ 3, P2) | The identity model in § 6.3 becomes unimplementable |
+| No `system.billing.usage` attribution | The cost is invisible to every FinOps control the platform has |
+| No Unity Catalog audit of the call | A governance layer whose own actions are unauditable |
+| Interactive rate limits, not batch limits | Designed for a human typing, not 50 tables on a schedule |
+
+Every objection in § 10.3 applies, and the first row makes it worse than an external API
+key rather than better: at least a key can be owned by a service.
+
+**Separate development from runtime.** These sound alike and are not:
+
+| | Subscription appropriate? |
+|---|---|
+| **Development** — designing this architecture, writing the pipeline, reviewing code | ✅ Yes. This is what Claude Code on a Pro/Max plan is for |
+| **Runtime** — a scheduled job describing 50 tables every night | ❌ No. Use AI Functions |
+
+**What the question is actually reaching for is available, and better.** The underlying want
+— *use a frontier model without a second vendor account, a second key and a second invoice*
+— is exactly what the native path already delivers. Databricks hosts Claude models
+(Opus, Sonnet and Haiku families) directly in Foundation Model APIs, callable from
+`ai_query` in SQL:
+
+- No Anthropic account, no API key — **no secret exists to leak**, which was § 10.3's
+  strongest argument, now strengthened rather than traded away
+- Billed as Databricks DBUs on the existing invoice, attributed in `system.billing.usage`
+  under `MODEL_SERVING` / `BATCH_INFERENCE`
+- Prompt caching supported
+- An Anthropic Messages API compatibility layer for SDK-native code, if `ai_query` is ever
+  too coarse
+
+So the choice is not *Claude or Databricks*. It is **Claude on Databricks**, which satisfies
+the cost instinct behind the question and the governance requirement at the same time.
+
+**Model selection for this workload.** Inputs are schema, statistics, audit history and
+lineage — never data rows (§ 5). Output is a paragraph. Haiku is more than adequate for
+descriptions and summaries; Sonnet is worth it for drift explanation and root-cause
+narration, where the reasoning is the product. At ~20K tokens/day the difference between
+them is noise against compute (§ 10.1), so **choose on output quality, not on price** —
+and revisit only if the estate grows by an order of magnitude.
 
 ---
 
@@ -979,7 +1036,9 @@ Six recommendations, in order of consequence:
 2. **Use AI Functions, not Genie and not an external API, for generation.** `ai_query` and
    `ai_gen` are in-boundary, UC-governed, cost-attributed in `system.billing.usage`, and
    need no secret. At ~20K tokens/day, token price is not a decision variable; governance
-   is, and governance says stay inside the boundary.
+   is, and governance says stay inside the boundary. This does **not** mean giving up a
+   frontier model: Databricks hosts Claude in Foundation Model APIs, so the choice is
+   *Claude on Databricks*, not *Claude or Databricks* (§ 10.6).
 
 3. **Move the AI output destination from a private table to Unity Catalog, through a human
    review gate.** `_ai_metadata` as designed is a shadow catalog. Reborn as
@@ -1027,6 +1086,10 @@ Platform capabilities verified August 2026:
 - [Data quality monitoring — anomaly detection](https://docs.databricks.com/aws/en/lakehouse-monitoring/data-quality-monitoring)
 - [Enrich data using AI Functions](https://docs.databricks.com/aws/en/large-language-models/ai-functions)
 - [`ai_query` function](https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_query)
+- [Databricks-hosted foundation models available in Foundation Model APIs](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models)
+- [Query model services with the Anthropic Messages API](https://docs.databricks.com/aws/en/generative-ai/foundation-models/anthropic-messages)
+- [Claude subscriptions vs. API billing — Anthropic help centre](https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console)
+- [Use Claude Code with your Pro or Max plan](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan)
 - [Unity Catalog metric views](https://docs.databricks.com/aws/en/uc-semantics/metric-views)
 - [GA and open sourcing of Unity Catalog Business Semantics](https://www.databricks.com/blog/redefining-semantics-data-layer-future-bi-and-ai)
 - [Use the Genie Agents API](https://docs.databricks.com/aws/en/genie-agents/conversation-api)
