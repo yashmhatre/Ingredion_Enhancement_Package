@@ -35,9 +35,8 @@ under "Business case intake."
 **Raised by:** business stakeholder(s), relayed by Yash, 2026-08-06 — specific
 business owner(s) not yet named; capture when known.
 
-**Status:** Under review — genuinely large scope, partially overlapping with
-existing decisions, needs decomposition and confirmation before issues are
-filed.
+**Status:** Approved → issues filed — see "Decisions — 2026-08-07" and
+"Issues filed" below.
 
 ### Problem, as stated
 
@@ -101,15 +100,84 @@ fixes), stated as a single ask. Before any GitHub issue gets filed:
    — each with its own acceptance criteria, not one issue trying to hold a
    platform.
 
-### Open questions for the business owner(s)
+### Decisions — 2026-08-07
+
+Yash (Project Lead) made the three decisions the Recommendation section
+above asked for. Recorded here with reasoning, per this repo's
+decision-recording culture (`docs/buy_vs_build_2026-08.md`'s pattern).
+
+**1. "Suggest fixes" = autonomous remediation, not advisory-only.**
+Yash chose autonomous remediation: the AI layer may act on some class of
+detected issue, not merely draft a suggestion for a person to apply. **This
+directly reverses `bronze_layer/docs/architecture.md`'s stated principle**
+for the AI-assisted metadata lane — *"it never sits in the write path and
+never gates an ingestion decision... If a future proposal would have an AI
+model decide whether a row is accepted, that's a different, bigger decision
+this document does not make — see `docs/business_requirements.md` BR-001
+for a live instance of that question being asked."* That conflict was
+stated to Yash explicitly, in those terms, before this decision was made —
+it is being recorded, not re-litigated, here. Its weight is reflected in
+how the resulting issues are structured: #206 (the AI epic) requires a
+blocking design + risk decision record (#207) — covering blast radius,
+rollback, a human-in-the-loop kill switch, which fix classes are eligible,
+and audit requirements — with an explicit amendment to `architecture.md`,
+before any autonomous-execution implementation work (#209) may start. #209
+is marked blocked on #207 in both issues.
+
+**2. Executive dashboard: #62 stays as-is; a new, separate issue for the
+business-facing dashboard.** #62 remains the ops/data-quality dashboard on
+Lakeview + Databricks SQL alerts, exactly as verdicted in
+`docs/buy_vs_build_2026-08.md` — that verdict is not reopened. Ask #7's
+business-facing executive dashboard with AI-generated summaries is filed
+separately as #211, with the BI tool (Power BI / Tableau / Lakeview) left
+as an explicit open question inside that issue, and gated on Gold existing
+(Gold has no build plan anywhere in this repo today — see "Issues filed"
+below).
+
+**3. Scope for this round of filing = genuinely-new capabilities + one
+Silver-layer epic that wraps already-scattered work.** Filed: Genie Spaces
+(#210), the AI-assisted monitoring + autonomous remediation layer (#206,
+wrapping #207/#208/#209), the executive dashboard (#211), and an MLflow
+spike (#212) — all genuinely new. Also filed: a Silver-layer epic (#205)
+that takes the three already-open issues covering Silver (#109, #162,
+#163) as children rather than restating them. Not re-filed: Asset Bundles
+(#3, already built), the already-shipped portion of metadata-driven
+ingestion (#1), and control-table-driven dynamic config (already an open
+`bronze_layer/docs/architecture.md` backlog item — "What's left" table,
+item 4 — not yet a numbered issue, but explicitly not new scope). #58,
+#61, and #62 are referenced from the filed issues rather than duplicated.
+
+### Issues filed
+
+- **#213** — BR-001 parent tracking issue (checklist of everything below)
+  - **#205** — Silver-layer epic → children **#109**, **#162**, **#163**
+    (existing issues, linked as sub-issues, not restated)
+  - **#206** — AI-assisted pipeline monitoring + autonomous remediation
+    layer → children:
+    - **#207** — Design + risk decision record for autonomous remediation
+      (blocking gate)
+    - **#208** — Async AI metadata job (advisory only; not gated on #207)
+    - **#209** — Autonomous remediation executor (blocked on #207)
+  - **#210** — Genie Spaces (blocked on Gold — no issue/roadmap entry
+    exists for Gold today)
+  - **#211** — Executive dashboard with AI-generated summaries (blocked on
+    Gold; BI tool an open question inside the issue; separate from #62)
+  - **#212** — MLflow spike
+
+### Open questions for the business owner(s) — still unanswered
+
+None of these were answered before this round of filing. They are carried
+forward rather than invented, and they gate real work inside the issues
+above (in particular #210 and #211, which cannot be fully scoped without
+answers to the first two and the third respectively):
 
 - Which plant(s)/system(s) first? "Plant 5 production drop" in the example
   question implies specific source systems not yet named anywhere in this
-  repo's config.
+  repo's config. **Still unanswered.**
 - What's the quantified business impact (time saved, incidents avoided,
   revenue/cost) — not stated in the raw ask, and shouldn't be assumed or
-  invented here.
+  invented here. **Still unanswered.**
 - Who are the intended Genie Spaces users, and what's their current
   reporting workaround today? That's the actual baseline this platform
-  would be measured against.
-- Timeline/urgency — not stated.
+  would be measured against. **Still unanswered.**
+- Timeline/urgency — not stated. **Still unanswered.**
