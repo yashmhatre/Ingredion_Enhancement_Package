@@ -7,6 +7,12 @@
 # one-line PR here, after the corresponding release has already been
 # reviewed and tagged in the private repo.
 #
+# `version` is the release tag; `sha` is the commit that tag resolved
+# to when it was reviewed. Both are checked on every fetch, because a
+# tag is a movable name and this repo's plan does not offer tag
+# protection rulesets. Bump both together, in the same PR.
+#
 # See docs/private_agent_architecture.md for the full model.
 
 version=v1.2.0
+sha=85bb2e52522550fb5d0ac75fd8205b68f1ec313e

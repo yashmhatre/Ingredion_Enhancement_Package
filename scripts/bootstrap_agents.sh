@@ -30,10 +30,24 @@ if [[ ! -f "$LOCKFILE" ]]; then
   exit 1
 fi
 
-# agents.lock format: one line, e.g. `version=v1.0.0`
-VERSION="$(grep -E '^version=' "$LOCKFILE" | cut -d= -f2)"
+# agents.lock format: a version= line and a sha= line, e.g.
+#   version=v1.0.0
+#   sha=521ef53e23ee7d831e9686e2b26f3245298c5da3
+VERSION="$(grep -E '^version=' "$LOCKFILE" | cut -d= -f2 || true)"
 if [[ -z "$VERSION" ]]; then
   echo "error: could not read a version= line from $LOCKFILE." >&2
+  exit 1
+fi
+
+# A tag is still just a name, and a name can be force-moved. `sha=` pins the
+# commit that name resolved to when it was reviewed, so a moved tag is caught
+# below instead of being installed silently. GitHub tag-protection rulesets
+# are unavailable on this private repo's plan, which makes this check the only
+# thing standing between a moved tag and every developer's .claude/agents/.
+EXPECTED_SHA="$(grep -E '^sha=' "$LOCKFILE" | cut -d= -f2 || true)"
+if [[ -z "$EXPECTED_SHA" ]]; then
+  echo "error: could not read a sha= line from $LOCKFILE." >&2
+  echo "       Every version= must be pinned to the commit it resolved to." >&2
   exit 1
 fi
 
@@ -73,6 +87,15 @@ if ! git -C "$TMP_DIR" -c http.extraheader="AUTHORIZATION: basic ${AUTH_B64}"   
   exit 1
 fi
 git -C "$TMP_DIR" checkout -q "refs/tags/${VERSION}"
+
+ACTUAL_SHA="$(git -C "$TMP_DIR" rev-parse "refs/tags/${VERSION}^{commit}")"
+if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
+  echo "error: tag ${VERSION} resolves to ${ACTUAL_SHA}," >&2
+  echo "       but ${LOCKFILE} pins ${EXPECTED_SHA}." >&2
+  echo "       The tag has been moved since it was pinned. Refusing to install." >&2
+  echo "       If the move was intentional, update sha= in ${LOCKFILE} via PR." >&2
+  exit 1
+fi
 
 mkdir -p "$DEST_DIR"
 # Wipe everything except this bootstrap script's own explanatory README,
