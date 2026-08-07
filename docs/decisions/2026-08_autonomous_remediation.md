@@ -4,10 +4,17 @@ The blocking deliverable for **#207**, which gates **#209** (the autonomous
 remediation executor). Records the bounds on a decision that has already been
 made, not the decision itself.
 
-**Status: draft. Requires Yash's explicit, named sign-off before #209 may
-start.** #207 is Tier 2 under `docs/agent_governance.md` — this document
-authorizes an autonomous agent to write to production data, which is not a
-thing `principal-data-engineer` may sign off on its own authority.
+**Status: signed off by Yash (Project Lead) on 2026-08-07**, by merging
+PR #223 — the `architecture.md` amendment that cites this record as the
+authoritative statement of the exception's bounds. The sign-off covers this
+record and that amendment together, as #207 required.
+
+#207 is Tier 2 under `docs/agent_governance.md` — this document authorizes an
+autonomous agent to write to production data, which is not a thing
+`principal-data-engineer` may sign off on its own authority. **What the
+sign-off does and does not authorize:** it approves the bounds written here.
+It does **not** promote any fix class. §3's eligible set remains empty, and
+every future promotion needs its own Tier 2 sign-off under §3's gate.
 
 ## What this document is, and what it is not
 
@@ -560,9 +567,10 @@ and it sets the urgency"* — so the blocking part of this dependency is small.
 
 **Unblocked by this record:**
 
-- **#218** — the `architecture.md` amendment can be drafted directly from §1,
-  §2 and §7. It should quote the exception's bounds rather than paraphrase
-  them, so the two documents cannot drift.
+- **#218** — **done.** The `architecture.md` amendment merged in PR #223,
+  drawn from §1, §2 and §7. It quotes the exception's bounds rather than
+  paraphrasing them, so the two documents cannot drift — a bound changed here
+  must be changed there in the same PR.
 - **#208** — unaffected and never was affected. The async AI metadata job is
   advisory and is explicitly not gated on #207. It should proceed.
 
