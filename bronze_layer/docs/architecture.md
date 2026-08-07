@@ -10,7 +10,9 @@ for readability.
 **Companion docs:** `docs/overview.md` for a plain-language summary of the
 same architecture aimed at non-engineers; `docs/roadmap.md` for what order
 this gets built in and why; `docs/bronze_silver_contract.md` for exactly
-what Bronze hands Silver.
+what Bronze hands Silver;
+`docs/decisions/2026-08_autonomous_remediation.md` for the bounds on the
+one approved exception to the rule governing the AI lane, below.
 
 ## At a glance
 
@@ -25,7 +27,7 @@ flowchart LR
     end
     B --> AT[(_ingestion_audit)]
     B --> SR[(_schema_registry)]
-    subgraph Async, decoupled — advisory only
+    subgraph "Async, decoupled — advisory only (see the amended rule)"
         AT --> AI[AI metadata job]
         SR --> AI
         AI --> AM[(_ai_metadata)]
@@ -37,15 +39,93 @@ Two lanes, deliberately isolated from each other:
 | Lane | What it does | Character |
 | --- | --- | --- |
 | **Deterministic ingestion** | Discover files → read → quality gate → write Delta, with lineage and audit columns on every row | Synchronous, config-driven, no AI, no external calls |
-| **AI-assisted metadata** | A separate scheduled job reads the audit trail and schema registry, drafts PII flags / drift summaries / descriptions | Asynchronous, advisory-only, human-reviewed before anything it writes affects the catalog |
+| **AI-assisted metadata** | A separate scheduled job reads the audit trail and schema registry, drafts PII flags / drift summaries / descriptions | Asynchronous, advisory-only, human-reviewed before anything it writes affects the catalog — plus one bounded write-path exception, amended below, whose eligible set is currently empty |
 
-**The one rule that governs the second lane:** it never sits in the write
-path and never gates an ingestion decision. Acceptance, rejection, and
-quarantine are decided exclusively by `quality.py`, deterministically. If a
-future proposal would have an AI model decide whether a row is accepted,
-that's a different, bigger decision this document does not make — see
-`docs/business_requirements.md` BR-001 for a live instance of that question
-being asked.
+**The one rule that governs the second lane — amended 2026-08-07.** As
+originally written, and still true of everything except one clause:
+
+> **The one rule that governs the second lane:** it never sits in the write
+> path and never gates an ingestion decision. Acceptance, rejection, and
+> quarantine are decided exclusively by `quality.py`, deterministically. If
+> a future proposal would have an AI model decide whether a row is
+> accepted, that's a different, bigger decision this document does not make
+> — see `docs/business_requirements.md` BR-001 for a live instance of that
+> question being asked.
+
+That question got asked, and it got answered. On 2026-08-07 Yash (Project
+Lead) decided that BR-001's *"AI agents ... suggest fixes"* means autonomous
+remediation rather than advisory-only. The reasoning — and the fact that
+this conflict was stated to him in exactly these terms before the decision
+was made — is recorded in `docs/business_requirements.md` ("Decisions —
+2026-08-07"). **"Never sits in the write path" is therefore superseded, with
+conditions. Nothing else in the paragraph above is.** In particular, the
+"different, bigger decision" it anticipated — an AI deciding whether a row
+is accepted — remains unmade, and is now an explicit prohibition rather
+than an open question.
+
+The conditions are not restated here, because a bound maintained in two
+documents drifts. They live in
+`docs/decisions/2026-08_autonomous_remediation.md`, which is the
+authoritative statement of how far this exception reaches and is **draft
+pending Yash's explicit, named sign-off** — no autonomous-execution work
+may start before that. What follows quotes it.
+
+**The eligible set is empty, and that is the finding, not a placeholder.**
+The record's §3 verdict, from the evidence gathered for it: *"There is
+therefore **no fix class today that is both mechanically fixable and an
+actual remediation**. The intersection is empty, and the eligible set is
+its intersection."* A class enters only through §3's seven-condition
+promotion gate — *"**None. The eligible set starts empty**, and a class
+earns entry through the promotion gate in §3 — a gate whose first use is a
+Tier 2 sign-off, not an engineering judgement call."* So nothing in this
+package remediates autonomously today, and nothing will until a specific
+class has been promoted by name.
+
+**What a promoted class may reach is a ceiling, not a default.** §2 bounds
+the outer surface — `_ai_metadata`, file placement within a source dir's own
+`quarantine_files/`, retry-state entries under `_state/`, and a named
+allowlist of `IngestionConfig` fields whose worst case is a re-run — and is
+explicit that reaching it is not automatic: *"Only the ceiling in §2, and
+only the subset of it that a promoted class names. Nothing is in scope by
+virtue of not being forbidden."*
+
+**The quality gate's verdict did not move, and the separation is
+load-bearing.** §2's NEVER list, item 2: *"Yash's decision reverses 'the AI
+never sits in the write path.' It does **not** make the AI the arbiter of
+whether a row is acceptable. These are separable, and separating them
+explicitly is load-bearing, because conflating them is precisely how a
+bounded exception silently becomes an unbounded one."* Acceptance,
+rejection and quarantine remain `quality.py`'s alone, deterministically,
+exactly as the superseded paragraph says. Also on that NEVER list, and so
+outside this exception entirely: `_ingestion_audit` and `_schema_registry`
+(both **Fact**, below), business column values in a bronze row, any delete
+against any table, any Tier 2 or Tier 3 action under
+`docs/agent_governance.md`, any config field that redirects where data is
+read from or written to, the safety mechanisms themselves, and anything
+outside the bronze layer.
+
+**None of the machinery this exception depends on exists yet.** The kill
+switch (§4) and the rollback path (§5) each carry the same verdict — *"Does
+not exist and must be built."* — and the remediation record (§6) must
+**fail closed**, deliberately inverting this codebase's convention for
+advisory surfaces: *"the audit trail must never fail the ingestion it
+observes; the remediation record must always fail the action it
+authorizes."* The record's own one-sentence summary is the honest state of
+this exception today: *"autonomous remediation currently has nothing safe to
+do and none of the machinery it would need to do it safely, so #209's
+realistic first deliverable is the safety harness shipped with an empty
+eligible set."*
+
+**Why this is amended as an exception with an edge, rather than rewritten
+into a rule that permits writing.** Restating the lane as "the AI may write,
+within bounds" was the tidier option and it was rejected: a reader arriving
+later would see a principle that had eroded, with no way to tell it had been
+deliberately overridden, by whom, or on what terms — and the terms are the
+entire content of what was approved. The decision record makes the same
+argument about itself, *"An exception with no stated edge is not an
+exception — it is a repeal that nobody wrote down"*, and its §7 states the
+relationship to this document in one line: *"this record is the documented
+**exception** to its one rule, of stated shape, not a repeal."*
 
 ---
 
@@ -58,7 +138,8 @@ being asked.
 | Run-level audit trail + schema registry | **Shipped** |
 | Multi-format ingestion (CSV/XML/Parquet) | **Designed below, not built** |
 | Schema registry as AI-layer input | **Shipped** (registry); AI layer **not built** |
-| AI-assisted metadata layer | **Designed below, not built** — gated on schema registry, which is done, so this can start |
+| AI-assisted metadata layer (advisory) | **Designed below, not built** — gated on schema registry, which is done, so this can start. Unaffected by the write-path exception, and explicitly not gated on it |
+| Autonomous remediation (the write-path exception) | **Not built, and blocked.** `docs/decisions/2026-08_autonomous_remediation.md` is draft pending the Project Lead's named sign-off; its eligible fix-class set is empty, and the kill switch, rollback path and fail-closed remediation record it requires do not exist |
 | Silver layer | **Not built** — see `docs/bronze_silver_contract.md` for what it will be handed |
 
 ## Multi-format ingestion
@@ -108,6 +189,24 @@ The AI layer answers "what does that change probably mean, and should
 someone care?" — commentary built on top of the registry's output, never a
 replacement for it.
 
+**The write-path exception does not move any table across this split.**
+`_ai_metadata` stays **Advisory**, and nothing in the write path reads it —
+the exception permits a promoted fix class to *write* `_ai_metadata`, since
+it sits on §2's ceiling; it does not make anything downstream treat what it
+finds there as **Fact**. `_ingestion_audit` and `_schema_registry` stay
+**Fact** and are on the NEVER list, for the reason the decision record gives:
+*"If the remediator can rewrite facts, the audit trail stops being evidence
+of what happened and becomes evidence of what something decided should have
+happened."* A remediation is recorded somewhere else again — §6 rejects
+extending `AUDIT_SCHEMA` and reusing `_ingestion_audit` (one row per
+*ingestion* run, and a writer that *"never raises, by design and by
+contract"*), and gives the remediation record its own home because it is
+*"a record of an **action taken**, and it needs its own home."* That table
+is future work, not a fourth member of this split, and when it is built it
+must be joinable to `_ingestion_audit` by run identity — without that, *"a
+person debugging bad data has no way to discover that anything other than
+ingestion ever wrote to that table."*
+
 ## How the AI layer runs
 
 **A standalone, scheduled Databricks job** — nothing else. It reads recent
@@ -134,6 +233,35 @@ malformed AI output is discarded rather than written, because a bad row in
 **Cost is bounded by design** — zero AI cost per ingestion run, one
 scheduled job amortizing cluster startup across every table it touches,
 and only tables with genuinely new activity get reprocessed.
+
+**This section describes the advisory job, and only it.** The remediation
+lane approved on 2026-08-07 is a second thing, not a new mode of this one,
+and three of the properties above invert for it — which is the clearest
+statement available of how much of this design a write-capable AI lane
+cannot reuse.
+
+Its failure convention inverts. A failed advisory call logs and skips that
+table because its failure costs an observation; every remediation
+prerequisite **fails closed** because its failure costs a write, and the
+decision record is deliberate about the collision — *"`_write_audit_row`'s
+never-raise contract now has an exception in the same codebase, and the two
+conventions sit one module apart."* The next person to find them should not
+"fix" the fail-closed path into consistency with the fail-open one.
+
+Its control channel inverts. This job's behaviour, like every job here, is
+fixed at the moment it starts; the kill switch is required to be *"reachable
+without a deploy"* and *"effective mid-flight, between actions"*, which is
+why §5 of the decision record names "What's left" item 4 below — control-
+table driven dynamic config, **not started** — as a prerequisite for it.
+
+Its isolation from ingestion becomes a guarantee to be built rather than a
+property of being decoupled. Pulling the kill switch *"does not stop
+ingestion"*: deterministic ingestion continues with remediation disabled,
+because *"if pulling the switch also stops data landing, operators will
+hesitate at the exact moment hesitation is most expensive."* That is the
+two-lane isolation at the top of this document, restated for a lane that can
+write. None of it exists, and none of it may be started before the decision
+record is signed off.
 
 ## Explicitly out of scope: `flatten_mode`
 
@@ -164,7 +292,7 @@ source fidelity. The working `flattener.py` and its tests are archived at
 
 1. **Schema registry** — cheapest, unblocks the most (AI drift summaries need schema history to exist first). **Done.**
 2. **Multi-format ingestion** — independent of the AI layer, can run in parallel with it.
-3. **AI metadata layer** — depends on the audit trail (done) and schema registry (done) as its inputs. Can start now.
+3. **AI metadata layer** — depends on the audit trail (done) and schema registry (done) as its inputs. Can start now; this is the advisory layer and is not gated on the write-path exception.
 
 **What Bronze owes Silver**, from `docs/bronze_silver_contract.md`, in dependency order:
 
