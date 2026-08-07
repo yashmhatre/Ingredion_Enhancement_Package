@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 scripts/hooks/block_orchestrator_writes.py"
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/block_orchestrator_writes.py\""
           }
         ]
       }
