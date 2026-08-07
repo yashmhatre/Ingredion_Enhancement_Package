@@ -53,9 +53,26 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 # classic — must be sent as Basic auth, username `x-access-token`.
 AUTH_B64="$(printf 'x-access-token:%s' "${AGENT_CONFIG_TOKEN}" | base64 | tr -d '\n')"
 
-git -c http.extraheader="AUTHORIZATION: basic ${AUTH_B64}" \
-  clone --depth 1 --branch "$VERSION" \
-  "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" "$TMP_DIR" >/dev/null
+# Fetch the release by its *tag* ref, explicitly.
+#
+# `clone --branch "$VERSION"` accepts a branch of that name just as happily
+# as a tag, and a branch is mutable: someone pushing to a `v1.2.0` branch
+# would silently change the agent definitions this script installs, with no
+# agents.lock bump, no PR in this repo, and nothing in any audit trail.
+# That defeats the one property agents.lock exists to provide.
+#
+# Naming refs/tags/ explicitly makes that impossible. A branch can never
+# satisfy this refspec, and if the tag is missing the fetch fails loudly
+# rather than falling back to something that merely shares its name.
+git init -q "$TMP_DIR"
+if ! git -C "$TMP_DIR" -c http.extraheader="AUTHORIZATION: basic ${AUTH_B64}"   fetch -q --depth 1   "https://github.com/${REPO_OWNER}/${REPO_NAME}.git"   "refs/tags/${VERSION}:refs/tags/${VERSION}" 2>/dev/null; then
+  echo "error: no tag ${VERSION} in ${REPO_OWNER}/${REPO_NAME}." >&2
+  echo "       Releases are pinned by tag, not by branch - a branch of the" >&2
+  echo "       same name will not be used. Tag the release in the private" >&2
+  echo "       repo first, then re-run." >&2
+  exit 1
+fi
+git -C "$TMP_DIR" checkout -q "refs/tags/${VERSION}"
 
 mkdir -p "$DEST_DIR"
 # Wipe everything except this bootstrap script's own explanatory README,
