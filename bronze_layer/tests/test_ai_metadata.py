@@ -502,3 +502,121 @@ def test_missing_audit_table_is_not_a_migration_failure(spark):
     summary = run_ai_metadata_job(spark, cfg, _FakeDrafter())
 
     assert summary["processed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# AIFunctionsMetadataDrafter (D1 / Amendment 1 of the AI-Genie decision record)
+#
+# `ai_query` is a Databricks Runtime function and does not exist in OSS Spark,
+# so the call itself cannot be executed here - the same constraint
+# catalog_metadata.py cites for UC tags. What IS testable locally, and is where
+# the bugs would be, is the statement this builds and how it binds the prompt.
+# ---------------------------------------------------------------------------
+
+
+class _CapturingSpark:
+    """Records the SQL and args it was handed, and returns a canned draft."""
+
+    def __init__(self, draft="{}"):
+        self.draft = draft
+        self.sql_seen = None
+        self.args_seen = None
+
+    def sql(self, sql, args=None):
+        self.sql_seen = sql
+        self.args_seen = args
+        return self
+
+    def collect(self):
+        return [{"draft": self.draft}]
+
+
+def test_ai_functions_drafter_pins_the_batch_capable_endpoint():
+    """Claude 5 endpoints are READY but reject batch inference - if this
+    constant drifts to one, every scheduled run fails at runtime."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    assert AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT == "databricks-claude-opus-4-8"
+    assert "opus-5" not in AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+    assert "sonnet-5" not in AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+
+
+def test_ai_functions_drafter_binds_the_prompt_instead_of_interpolating_it():
+    """The single most important property here. `_build_prompt` output carries
+    apostrophes and newlines as a matter of course; interpolated into SQL that
+    is both a quoting bug and an injection surface."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark(draft='{"table_description": "ok"}')
+    nasty = "O'Brien's table\n-- DROP TABLE x; /* ' */"
+
+    out = AIFunctionsMetadataDrafter(spark).draft(nasty)
+
+    assert out == '{"table_description": "ok"}'
+    # The prompt must travel as a bound value, never inside the statement.
+    assert nasty not in spark.sql_seen
+    assert "O'Brien" not in spark.sql_seen
+    assert spark.args_seen["prompt"] == nasty
+    assert spark.args_seen["endpoint"] == "databricks-claude-opus-4-8"
+    assert ":prompt" in spark.sql_seen and ":endpoint" in spark.sql_seen
+
+
+def test_ai_functions_drafter_omits_model_parameters_by_default():
+    """The two-arg ai_query form is the one verified working in-workspace;
+    modelParameters is unverified and must stay opt-in."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark()
+    AIFunctionsMetadataDrafter(spark).draft("hello")
+
+    assert "modelParameters" not in spark.sql_seen
+    assert "named_struct" not in spark.sql_seen
+
+
+def test_ai_functions_drafter_adds_model_parameters_only_when_asked():
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark()
+    AIFunctionsMetadataDrafter(spark, max_tokens=4096).draft("hello")
+
+    assert "named_struct('max_tokens', 4096)" in spark.sql_seen
+
+
+def test_ai_functions_drafter_rejects_a_non_integer_max_tokens():
+    """max_tokens is interpolated, not bound - int() in __init__ is the only
+    thing keeping that safe, so it must actually reject rubbish."""
+    import pytest
+
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    with pytest.raises(ValueError):
+        AIFunctionsMetadataDrafter(_CapturingSpark(), max_tokens="4096; DROP TABLE x")
+
+
+def test_ai_functions_drafter_returns_empty_string_for_a_null_result():
+    """ai_query can return NULL; _parse_draft must get a str, not None."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark(draft=None)
+    assert AIFunctionsMetadataDrafter(spark).draft("hello") == ""
+
+
+def test_job_config_defaults_model_id_to_the_ai_functions_endpoint():
+    """Rows record what produced them; the default drafter is AI Functions."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    cfg = AIMetadataJobConfig(
+        audit_table="default.audit",
+        registry_table="default.reg",
+        ai_metadata_table="default.ai",
+    )
+    assert cfg.model_id == AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+
+
+def test_the_two_drafters_run_different_models_on_purpose():
+    """Guards the asymmetry documented in both class docstrings: the Anthropic
+    path reaches Claude 5 directly, the AI Functions path cannot. Someone
+    'aligning' these would break the deployed job."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter, AnthropicMetadataDrafter
+
+    assert AnthropicMetadataDrafter.DEFAULT_MODEL != AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
