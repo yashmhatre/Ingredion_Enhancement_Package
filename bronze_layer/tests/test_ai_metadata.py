@@ -389,3 +389,116 @@ def test_job_config_rejects_non_positive_lookback_hours():
             ai_metadata_table="default.ai",
             lookback_hours=0,
         )
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed check on the CHANGELOG 0.5.0 `table` -> `table_name` migration
+# (#231). These build the legacy table shape by DDL and then let Delta's
+# mergeSchema append produce the half-migrated state exactly the way a real
+# upgrade does, rather than hand-constructing the broken result.
+# ---------------------------------------------------------------------------
+
+# The pre-0.5.0 shape, as observed on a real table created by 0.4.x
+# (ingredion_en.bronze._ingestion_audit, dropped 2026-08-08).
+_LEGACY_AUDIT_DDL = (
+    "run_id STRING, `table` STRING, status STRING, row_count BIGINT, "
+    "quarantined_row_count BIGINT, started_at TIMESTAMP, finished_at TIMESTAMP, "
+    "error_message STRING, source_path STRING, failure_stage STRING, "
+    "schema_fingerprint STRING, schema_changed BOOLEAN"
+)
+
+
+def _seed_legacy_audit(spark, table, table_name="bronze.orders"):
+    """Create a pre-0.5.0 audit table with one row and no `table_name`."""
+    spark.sql(f"CREATE TABLE {table} ({_LEGACY_AUDIT_DDL}) USING DELTA")
+    spark.sql(
+        f"INSERT INTO {table} VALUES ('run-legacy', '{table_name}', 'success', 10, 0, "
+        f"current_timestamp(), current_timestamp(), NULL, 'file:///dummy', NULL, NULL, false)"
+    )
+
+
+def test_pre_0_5_0_audit_table_without_table_name_fails_closed(spark):
+    import pytest
+
+    from bronze_ingest.ai_metadata import AuditMigrationIncompleteError
+
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+
+    with pytest.raises(AuditMigrationIncompleteError) as excinfo:
+        run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    assert "table_name" in str(excinfo.value)
+    assert "0.5.0" in str(excinfo.value)
+
+
+def test_half_migrated_audit_table_fails_closed(spark):
+    """The exact CHANGELOG 0.5.0 hazard: legacy rows, then a mergeSchema
+    append adds `table_name`, leaving every pre-upgrade row NULL."""
+    import pytest
+
+    from bronze_ingest.ai_metadata import AuditMigrationIncompleteError
+
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    # A post-upgrade run: same writer, mergeSchema on, new column appears.
+    _seed_audit(spark, cfg.audit_table, "bronze.orders", run_id="run-new")
+
+    columns = set(spark.read.table(cfg.audit_table).columns)
+    assert {"table", "table_name"} <= columns, "expected the two-column split"
+
+    with pytest.raises(AuditMigrationIncompleteError) as excinfo:
+        run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    message = str(excinfo.value)
+    assert "1 row(s)" in message
+    assert "UPDATE" in message
+    # The remediation hint must name THIS table and leave no placeholder
+    # behind. _BACKFILL_SQL_HINT and _HINT_PLACEHOLDER are separate literals,
+    # so a mismatch between them would silently emit an un-substituted hint
+    # telling the operator to run UPDATE against "<audit_table>".
+    assert cfg.audit_table in message
+    assert "<audit_table>" not in message
+
+
+def test_migration_check_runs_before_any_model_call(spark):
+    """A truncated read must cost zero tokens - the check is a precondition,
+    not something discovered partway through drafting."""
+    import pytest
+
+    from bronze_ingest.ai_metadata import AuditMigrationIncompleteError
+
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    _seed_audit(spark, cfg.audit_table, "bronze.orders", run_id="run-new")
+    drafter = _FakeDrafter()
+
+    with pytest.raises(AuditMigrationIncompleteError):
+        run_ai_metadata_job(spark, cfg, drafter)
+
+    assert drafter.calls == []
+
+
+def test_fully_migrated_audit_table_passes_the_check(spark):
+    """Both columns present but every `table_name` populated - a backfilled
+    environment must not be blocked just because the legacy column survives."""
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    _seed_audit(spark, cfg.audit_table, "bronze.orders", run_id="run-new")
+    spark.sql(f"UPDATE {cfg.audit_table} SET table_name = `table` WHERE table_name IS NULL")
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+
+    summary = run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    assert summary["processed"] == 1
+
+
+def test_missing_audit_table_is_not_a_migration_failure(spark):
+    """Nothing written yet is not the same as half of something written."""
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+
+    summary = run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    assert summary["processed"] == 1
