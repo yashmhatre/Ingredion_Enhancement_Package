@@ -42,11 +42,11 @@ It does **not** reopen:
 | # | Decision | Status |
 |---|---|---|
 | **D1** | AI generation runs on **Databricks AI Functions** with a Databricks-hosted Claude model, not an external SDK + PAT | Decided — **gate passed 2026-08-08; see Amendment 1**, which pins `databricks-claude-opus-4-8` |
-| **D2** | Scope superseded by native platform features is **marked superseded and frozen, not closed**, until each feature is verified available in this workspace | Decided |
+| **D2** | Scope superseded by native platform features is **marked superseded and frozen, not closed**, until each feature is verified available in this workspace | Decided — **confirmed by Amendment 2**; items 3, 5 and 6 failed verification, so the freeze holds |
 | **D3** | **Genie is a consumption surface and stays at the top of the stack.** It is never pointed at Bronze, quarantine, or the audit tables. Enforced by grants, not by guidance | Decided |
 | **D4** | **Gold gets its own epic, filed now, started later.** It is the unnamed gate under #210, #211 and the whole consumption plane | Decided |
 | **D5** | **Zero runtime agents in phase one.** When they arrive, they are governed by extending `agent_governance.md`, not by a second model | Ratified |
-| **D6** | **KPI definitions are human-authored Metric Views.** AI may draft candidates and explain existing ones. It may not define one | Ratified — hard line |
+| **D6** | **KPI definitions are human-authored Metric Views.** AI may draft candidates and explain existing ones. It may not define one | Ratified — hard line. **Amendment 2**: `metric_views` is not bundle-deployable at CLI v1.9.0, so the *mechanism* changes, not the rule |
 | **D7** | The AI layer's output surface is **Unity Catalog, through a human review gate**. `_ai_metadata` is demoted to a proposals-and-review table | Ratified |
 | **D8** | Adopt the current Databricks nouns in all new writing: **Genie Agents**, **Declarative Automation Bundles**, **Data Quality Monitoring**, **Lakeflow Declarative Pipelines** | Ratified |
 
@@ -205,11 +205,11 @@ Runs during #112/Phase 3 provisioning, against the real workspace. Owner:
 |---|---|---|---|
 | 1 | AI Functions (`ai_query`) available on the warehouse in use | **D1** | ✅ **PASS** 2026-08-08 — see Amendment 1 |
 | 2 | A Claude model is served through Foundation Model APIs **and callable from `ai_query`** | **D1** | ⚠️ **PASS with constraint** — only `opus-4-8`; see Amendment 1 |
-| 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 | Untested |
-| 4 | UC AI-generated comments are available | Description scope in #208 | Untested |
-| 5 | DQ Monitoring anomaly detection is available, and what its dashboard actually covers | #61, #62 | Untested |
-| 6 | Governed tags + ABAC column masks are available | #64 | Untested |
-| 7 | Bundle support for the resource types this implies, at the CLI version in use | Deployment of all of it | Untested |
+| 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 | ❌ **FAIL** 2026-08-08 — see Amendment 2 |
+| 4 | UC AI-generated comments are available | Description scope in #208 | ❓ **INCONCLUSIVE** — no API surface; UI-only |
+| 5 | DQ Monitoring **anomaly detection** is available, and what its dashboard actually covers | #61, #62 | ❌ **FAIL** — legacy monitoring works, anomaly detection does not |
+| 6 | Governed tags + ABAC column masks are available | #64 | ⚠️ **SPLIT** — tags ✅, ABAC ❌ |
+| 7 | Bundle support for the resource types this implies, at the CLI version in use | Deployment of all of it | ⚠️ **PASS with a gap** — no `metric_views` |
 
 Anything that fails becomes an amendment to this record, not a silent workaround.
 
@@ -230,6 +230,70 @@ verified by invoking it, not by reading a field or a docs page.**
 **Items 3–6 are metastore/UC features, and per #231 only `ingredion_dev` has anything
 deployed** — `ingredion_stg` and `ingredion_prd` contain zero tables. Anything verified there
 now is verified for dev only.
+
+### Amendment 2 — 2026-08-08: items 3–7, and D2 was right
+
+**Status: proposed. Needs the Project Lead's sign-off by merge.**
+
+Run live against `adb-7405607398572130` / `ingredion_en`. Read-only — nothing was enabled or
+configured, since enabling classification or creating tag policies is a Tier 2 governance
+change. Full evidence on **#229**.
+
+**The headline: the review's GA claims do not hold in this workspace, and the Databricks CLI
+itself says so.** It labels Data Classification **Beta** and Data Quality Monitoring **Public
+Preview** — not GA. **D2 is vindicated.** Closing #61, #62 and #208's halves on the review's
+say-so would have deleted working scope in exchange for features this workspace does not have.
+The freeze holds.
+
+**Item 3 — UC Data Classification: FAIL.** The catalog-config API returns
+`ENDPOINT_NOT_FOUND` — *"No API found for..."*, which is different from "no config exists yet".
+**But the classification tag vocabulary is fully present** (item 6): the taxonomy this feature
+assigns exists at the metastore, while the scanning and auto-tagging configuration API is not
+reachable. Tags can be applied by something; just not by an automatic classifier.
+→ **#208's PII-detection half stays frozen.**
+
+**Item 4 — UC AI-generated comments: INCONCLUSIVE.** No API surface to probe; it is a Catalog
+Explorer UI feature, so an absent API is not evidence of an absent feature. The underlying
+inference is confirmed working — `ai_gen`, `ai_classify` and `ai_analyze_sentiment` all
+execute on this warehouse. **Settleable in one minute in the UI**, and it is the only checklist
+item still genuinely open.
+
+**Item 5 — DQ Monitoring: FAIL for the part that matters.** Two APIs, and the distinction is
+the whole answer. The **legacy** Lakehouse Monitoring endpoint works — it resolved real
+metastore and table IDs and correctly reported no monitor configured. The **new** Data Quality
+Monitoring API, which the CLI describes as managing *"both Data Profiling and Anomaly
+Detection"*, returns `ENDPOINT_NOT_FOUND`. So profiling-style monitoring is available and the
+anomaly detection credited with superseding #61 is not.
+→ **#61 and #62 stay frozen, and #61 should not be assumed dead.**
+
+**Item 6 — governed tags PASS, ABAC FAIL, and the split is consequential.** 70 governed tag
+policies exist, including the complete built-in classification taxonomy (`class.us_ssn`,
+`class.credit_card`, `class.health_data`, `class.biometric_data`, `class.genetic_data`, GDPR
+Article 9 special categories, per-country identifiers) plus `system.certification_status`. The
+`entity-tag-assignments` API works and returns empty — nothing tagged yet. **The ABAC policies
+API returns `ENDPOINT_NOT_FOUND`.**
+
+The architecture rests on *detect natively, then enforce with ABAC column masks keyed on the
+governed tag*. **The tag half exists; the enforcement half does not.** A tag written today is a
+label, not an access control — which cuts a way worth naming: **D5's rule that a governed-tag
+write is a Tier 2 access-control write is not yet true here**, because no policy can consume
+the tag. D5 stays as written, because it will become true the moment ABAC lands and nobody
+should have to notice the transition.
+→ **#64 should split** along that line: tag application is unblocked, ABAC masking is not.
+
+**Item 7 — bundle PASS with a gap that lands on D6.** `databricks bundle validate -t dev`
+returns `Validation OK!`. CLI v1.9.0 supports 32 resource types including `genie_spaces`,
+`quality_monitors` and `sql_warehouses` — the last being the dedicated, right-sized warehouse
+this record's follow-ups want provisioned before any business user is onboarded.
+
+**`metric_views` is not a bundle resource type.** See the amendment to D6 below.
+
+**What is NOT amended:** D2 itself — this run confirms it rather than changing it. The frozen
+set is unchanged. No issue closes on the strength of this.
+
+**Re-probe periodically.** Three of these are Beta or Public Preview and regional rollout is
+ongoing, so this is a point-in-time reading rather than a permanent verdict. Every check is a
+one-line command, recorded on #229 so the next run is a copy-paste.
 
 ---
 
@@ -347,7 +411,7 @@ it is added to `docs/agent_governance.md` as part of this record's change set.
 
 ---
 
-## D6, D7, D8 — ratified without amendment
+## D6, D7, D8 — ratified; D6 amended on mechanism only
 
 **D6 — KPI definitions are human-authored.** A KPI definition is a contract between the
 platform and the business; the entire value of a semantic layer is that the definition is
@@ -355,6 +419,29 @@ stable, reviewed and version-controlled. AI may draft *candidate* definitions fr
 history and may *explain* an existing metric in business language. The definition itself is
 a human-authored UC Metric View, reviewed, and deployed through the bundle. **This is a hard
 line, not a default.**
+
+> **Amendment 2 — 2026-08-08: "deployed through the bundle" does not work yet.**
+>
+> **Status: proposed, with Amendment 2 above.**
+>
+> `metric_views` is **not among the 32 bundle resource types** supported by Databricks CLI
+> v1.9.0 (verified: `databricks bundle schema`; `genie_spaces`, `quality_monitors` and
+> `sql_warehouses` *are* supported). So a Metric View cannot currently be deployed the way
+> this decision describes.
+>
+> **The rule is unchanged; the mechanism needs replacing.** D6 exists to make a KPI definition
+> stable, reviewed and version-controlled, and the bundle was the means, not the point. Until
+> `metric_views` is a bundle resource, the same property has to come from somewhere else —
+> most plausibly the Metric View DDL held in this repo and applied by a bundle-deployed job,
+> so the definition is still reviewed in a PR and still deploys from version control.
+>
+> **What must not happen** is a Metric View authored by hand in the UI because the bundle
+> would not take it. That loses review and version control in one step, which is the entire
+> reason D6 is a hard line — and it is the easy thing to do under delivery pressure.
+>
+> **#228 must not assume bundle deployment**, and this is the first thing to re-check when the
+> CLI is upgraded: if `metric_views` appears, this amendment is superseded and D6's original
+> mechanism stands unchanged.
 
 **D7 — the output surface is Unity Catalog, through a review gate.** `_ai_metadata` as
 designed is a shadow catalog: AI output in a private Delta table that nothing reads governs
@@ -480,7 +567,13 @@ superseded rather than edited.
 1. ~~**Sign-off on this record**~~ — given 2026-08-08 via PR #230.
 2. **Sign-off on Amendment 1** (the `opus-4-8` pin), by merge. It changes which model the
    platform runs, which is a commitment the record's original D1 did not make.
-3. ~~**The CHANGELOG backfill (#231)**~~ — audited 2026-08-08: **no environment needs it.**
+3. **Sign-off on Amendment 2** (verification items 3–7), by merge. It confirms D2 rather than
+   changing it, and amends D6's deployment mechanism. **Three follow-ups it implies, each
+   needing a decision rather than just a merge:** #64 should split along the tags-work /
+   ABAC-does-not line; #228 must not assume bundle-deployed Metric Views; and **checklist
+   item 4 needs one minute in Catalog Explorer** — it is the only item still genuinely open,
+   and there is no API to settle it from a terminal.
+4. ~~**The CHANGELOG backfill (#231)**~~ — audited 2026-08-08: **no environment needs it.**
    `ingredion_dev` was created after 0.5.0 and never had the two-column state; `ingredion_stg`
    and `ingredion_prd` contain zero tables. **Two things still need a decision:** the
    disposition of `ingredion_en.bronze._ingestion_audit` — a pre-0.5.0 table outside the
@@ -488,11 +581,11 @@ superseded rather than edited.
    read-side assertion ships with #208. Also worth correcting wherever it is repeated: the
    premise that *production runs pre-0.5.0 code* is false. **There is no production
    deployment.**
-4. **BR-002** (AI-assisted Silver transformation) is sitting as ~173 uncommitted lines on
+5. **BR-002** (AI-assisted Silver transformation) is sitting as ~173 uncommitted lines on
    `dev`, outside any branch or PR, with its open questions unanswered. It proposes AI inside
    a layer that does not exist. It should be branched and PR'd, and its scope re-read against
    D6's hard line before it is worked.
-5. **The #159-ahead-of-#209 re-sequence**, flagged in `2026-08_autonomous_remediation.md`
+6. **The #159-ahead-of-#209 re-sequence**, flagged in `2026-08_autonomous_remediation.md`
    § 8 and independently promoted by this record. Two documents now agree; it needs a word.
 
 ---
