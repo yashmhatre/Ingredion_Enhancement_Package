@@ -102,8 +102,24 @@ class MetadataDrafter(Protocol):
 
 class AnthropicMetadataDrafter:
     """
-    The one concrete `MetadataDrafter`, backed by the official Anthropic
-    SDK (`anthropic` package).
+    The **local-development escape hatch**, backed by the official Anthropic
+    SDK (`anthropic` package). `AIFunctionsMetadataDrafter` is the default for
+    anything deployed - see D1 of
+    `docs/decisions/2026-08_ai_genie_architecture.md`.
+
+    Retained rather than deleted, deliberately: it needs no Spark session and
+    no workspace, so it is the only drafter that can be pointed at a real
+    model from a laptop. That is also why it keeps a Claude 5 model while the
+    AI Functions path cannot - it calls Anthropic directly, where the Claude 5
+    family is available, and is not subject to the batch-inference constraint
+    documented on `AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT`.
+
+    **The two drafters therefore run different models on purpose.** A draft
+    produced locally and one produced in-platform are not from the same model,
+    which is worth remembering before comparing their output.
+
+    Requires a credential; that is the cost of using it, and the reason it is
+    not the default.
 
     The `anthropic` import is deliberately lazy - inside `__init__`, not at
     module level - so importing `ai_metadata` (and therefore running
@@ -111,7 +127,9 @@ class AnthropicMetadataDrafter:
     instantiating this class does.
     """
 
-    #: No date suffix - this id is pinned exactly, per #208.
+    #: No date suffix - this id is pinned exactly, per #208. Unrelated to
+    #: AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT, which is pinned for a
+    #: different reason; do not "align" the two.
     DEFAULT_MODEL = "claude-opus-5"
 
     def __init__(
@@ -147,6 +165,70 @@ class AnthropicMetadataDrafter:
         )
 
 
+class AIFunctionsMetadataDrafter:
+    """
+    The default `MetadataDrafter`: Databricks AI Functions (`ai_query`) over a
+    Databricks-hosted Claude model, per D1 of
+    `docs/decisions/2026-08_ai_genie_architecture.md`.
+
+    Chosen over `AnthropicMetadataDrafter` on governance, not cost - at
+    ~20K tokens/day token price is noise. What this buys:
+
+    * **No credential exists.** The Anthropic path needs a PAT in the
+      environment; #115 (secret scopes) has not shipped and is blocked on
+      #112. The strongest control is the secret that does not exist.
+    * Spend lands in `system.billing.usage` under `MODEL_SERVING` /
+      `BATCH_INFERENCE`, beside every other line, instead of a second invoice.
+    * The call is auditable in Unity Catalog.
+
+    Needs no network access of its own and no SDK - it is a SQL function
+    call on the session Spark already has.
+    """
+
+    #: Pinned deliberately. **Do not "upgrade" this to a Claude 5 endpoint.**
+    #: Verified against workspace adb-7405607398572130 on 2026-08-08: the
+    #: `databricks-claude-opus-5` and `databricks-claude-sonnet-5` endpoints
+    #: are served and READY, but `ai_query` against either returns
+    #: `PERMISSION_DENIED: Endpoint ... is not supported for batch inference`.
+    #: The error names the endpoint, not the principal - a capability limit,
+    #: not an entitlement one. Changing this to a Claude 5 id turns a working
+    #: scheduled job into a runtime failure. See Amendment 1 of the decision
+    #: record; re-probe with `SELECT ai_query('databricks-claude-opus-5','ok')`
+    #: before assuming the constraint still holds.
+    DEFAULT_ENDPOINT = "databricks-claude-opus-4-8"
+
+    def __init__(self, spark, endpoint: str = DEFAULT_ENDPOINT, max_tokens: Optional[int] = None):
+        self._spark = spark
+        self._endpoint = endpoint
+        # Optional, and off by default *because it is unverified*. The two-arg
+        # ai_query form was confirmed working in this workspace; passing
+        # modelParameters was not. Opt in only after checking it against the
+        # target runtime - a malformed named_struct fails the whole statement,
+        # and this job would then log a model failure rather than a SQL one.
+        self._max_tokens = int(max_tokens) if max_tokens is not None else None
+
+    def draft(self, prompt: str) -> str:
+        # Parameter markers, never f-strings. The prompt is assembled from
+        # table names, schema JSON and audit rows - `_build_prompt` output is
+        # not a literal, it contains apostrophes and newlines routinely, and
+        # interpolating it into SQL would be both a quoting bug and an
+        # injection surface. `args` binds it as a value.
+        #
+        # max_tokens is interpolated rather than bound because a parameter
+        # marker is not accepted inside named_struct's field list; int() in
+        # __init__ is what makes that safe.
+        if self._max_tokens is None:
+            sql = "SELECT ai_query(:endpoint, :prompt) AS draft"
+        else:
+            sql = (
+                "SELECT ai_query(:endpoint, :prompt, "
+                f"modelParameters => named_struct('max_tokens', {self._max_tokens})) AS draft"
+            )
+
+        row = self._spark.sql(sql, args={"endpoint": self._endpoint, "prompt": prompt}).collect()[0]
+        return row["draft"] or ""
+
+
 @dataclass
 class AIMetadataJobConfig:
     """
@@ -168,7 +250,13 @@ class AIMetadataJobConfig:
     # How far back into _ingestion_audit counts as "recent activity" when
     # looking for candidate tables to reprocess.
     lookback_hours: float = 24.0
-    model_id: str = AnthropicMetadataDrafter.DEFAULT_MODEL
+    # Recorded on every drafted row so advisory output can always be traced to
+    # what produced it. Defaults to the AI Functions endpoint because that is
+    # now the default drafter (D1). A caller using AnthropicMetadataDrafter for
+    # local development should pass its model explicitly - the two drafters
+    # legitimately run different models (see AIFunctionsMetadataDrafter), and a
+    # row claiming the wrong one is worse than no row.
+    model_id: str = AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
 
     def __post_init__(self):
         for field_name in ("audit_table", "registry_table", "ai_metadata_table"):
