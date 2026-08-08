@@ -42,7 +42,7 @@ It does **not** reopen:
 | # | Decision | Status |
 |---|---|---|
 | **D1** | AI generation runs on **Databricks AI Functions** with a Databricks-hosted Claude model, not an external SDK + PAT | Decided — **gate passed 2026-08-08; see Amendment 1**, which pins `databricks-claude-opus-4-8` |
-| **D2** | Scope superseded by native platform features is **marked superseded and frozen, not closed**, until each feature is verified available in this workspace | Decided — **confirmed by Amendment 2**; items 3, 5 and 6 failed verification, so the freeze holds |
+| **D2** | Scope superseded by native platform features is **marked superseded and frozen, not closed**, until each feature is verified available in this workspace | Decided — freeze **still holds** per Amendment 3, but because nothing is *configured or demonstrated*, not because the platform lacks it |
 | **D3** | **Genie is a consumption surface and stays at the top of the stack.** It is never pointed at Bronze, quarantine, or the audit tables. Enforced by grants, not by guidance | Decided |
 | **D4** | **Gold gets its own epic, filed now, started later.** It is the unnamed gate under #210, #211 and the whole consumption plane | Decided |
 | **D5** | **Zero runtime agents in phase one.** When they arrive, they are governed by extending `agent_governance.md`, not by a second model | Ratified |
@@ -205,10 +205,10 @@ Runs during #112/Phase 3 provisioning, against the real workspace. Owner:
 |---|---|---|---|
 | 1 | AI Functions (`ai_query`) available on the warehouse in use | **D1** | ✅ **PASS** 2026-08-08 — see Amendment 1 |
 | 2 | A Claude model is served through Foundation Model APIs **and callable from `ai_query`** | **D1** | ⚠️ **PASS with constraint** — only `opus-4-8`; see Amendment 1 |
-| 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 | ❌ **FAIL** 2026-08-08 — see Amendment 2 |
+| 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 | ⚠️ **AVAILABLE, unconfigured** — Amendment 3 (Amendment 2's FAIL was wrong) |
 | 4 | UC AI-generated comments are available | Description scope in #208 | ❓ **INCONCLUSIVE** — no API surface; UI-only |
-| 5 | DQ Monitoring **anomaly detection** is available, and what its dashboard actually covers | #61, #62 | ❌ **FAIL** — legacy monitoring works, anomaly detection does not |
-| 6 | Governed tags + ABAC column masks are available | #64 | ⚠️ **SPLIT** — tags ✅, ABAC ❌ |
+| 5 | DQ Monitoring **anomaly detection** is available, and what its dashboard actually covers | #61, #62 | ⚠️ **PARTIALLY AVAILABLE** — endpoint routes and validates; unproven end to end (Amendment 3) |
+| 6 | Governed tags + ABAC column masks are available | #64 | ✅ **PASS** — tags ✅ **and ABAC ✅** (Amendment 3; Amendment 2's ABAC FAIL was wrong) |
 | 7 | Bundle support for the resource types this implies, at the CLI version in use | Deployment of all of it | ⚠️ **PASS with a gap** — no `metric_views` |
 
 Anything that fails becomes an amendment to this record, not a silent workaround.
@@ -294,6 +294,80 @@ set is unchanged. No issue closes on the strength of this.
 **Re-probe periodically.** Three of these are Beta or Public Preview and regional rollout is
 ongoing, so this is a point-in-time reading rather than a permanent verdict. Every check is a
 one-line command, recorded on #229 so the next run is a copy-paste.
+
+### Amendment 3 — 2026-08-08: Amendment 2's items 3, 5 and 6 were wrong
+
+**Status: proposed. Needs the Project Lead's sign-off by merge.**
+
+**Amendment 2 reported items 3, 5 and 6 as FAIL on the basis of a flawed method, and all three
+are wrong.** Correcting them here rather than editing Amendment 2, per this record's rule.
+
+**What went wrong.** Amendment 2's probes were `curl` calls against **URL paths I guessed**.
+Several were not the paths the Databricks client actually uses, so they returned
+`ENDPOINT_NOT_FOUND` — which I read as "the feature is absent" when it meant "that URL is not
+a thing". The correct method is `databricks <command> --debug`, which prints the real request
+path. Running that changed three verdicts.
+
+This is the failure the checklist itself warns against, one level in: *"a capability is
+verified by invoking it, not by reading a field or a docs page"* — and a probe I constructed
+myself is closer to a docs page than to an invocation. **The rule now reads: invoke it through
+the real client, and confirm the path.**
+
+| Item | Amendment 2 | Corrected |
+|---|---|---|
+| 3 UC Data Classification | ❌ FAIL — API absent | ⚠️ **Available, unconfigured** |
+| 5 DQ Monitoring | ❌ FAIL — anomaly API absent | ⚠️ **Partially available** |
+| 6 ABAC | ❌ FAIL — API absent | ✅ **AVAILABLE** |
+
+**Item 6 — ABAC is available.** Real path is
+`/api/2.1/unity-catalog/policies/{securable_type}/{full_name}` — **path parameters, not the
+query string I probed.** `databricks policies list-policies CATALOG ingredion_en` returns
+**HTTP 200** and `[]`: the API works, no policies are defined yet.
+
+> **This is the governance-relevant correction.** Amendment 2 stated that **D5's rule — a
+> governed-tag write is a Tier 2 access-control write — was "forward-looking rather than
+> operative here", because nothing could consume a tag. That is false.** ABAC is available, so
+> a governed tag *can* carry a policy, and a tag write *can* silently change access.
+> **D5 is operative now**, and review risk 10 ("governed-tag write becomes an access-control
+> write — severe, silent privilege change") is live rather than deferred. Anyone who read
+> Amendment 2 and concluded tagging was safe should re-read this.
+
+**Item 3 — Data Classification is available and enabled, just unconfigured.** The workspace
+setting `dataclassificationws` reads `effective_boolean_val: true` — *"classify and review
+sensitive data across your entire catalog, powered by agents"*. The client's real path is
+`/api/data-classification/v1/{catalog}`, which returns a **bare 404 with an empty body** for
+`ingredion_en` — materially different from the structured `ENDPOINT_NOT_FOUND` my wrong paths
+produced. Read together: the feature is on and **no classification config exists for this
+catalog yet**. Creating one is a Tier 2 governance action.
+
+*Confidence: high that the feature is enabled, moderate that the bare 404 means "no config"
+rather than "not routed". It is settled by creating a config, which needs sign-off — so it
+stays unconfirmed rather than assumed.*
+
+**Item 5 — DQ Monitoring is partially available.** `/api/data-quality/v1/monitors/{type}/{id}`
+**routes and validates input**: it rejected `TABLE` with *"Unsupported object_type: TABLE. Only
+'table' and 'schema' are supported"*, then rejected a table name with *"UUID string too
+large"*, i.e. it wants a monitor ID. That is a live endpoint. `list-monitor` separately fails
+with *"Could not handle RPC class ...ListMonitorRequest"* — one RPC unrouted, not the API
+missing. With no monitors defined, end-to-end behaviour is still unproven.
+
+### What this changes, and what it does not
+
+**D2's freeze still holds, for a weaker but sufficient reason.** Not *"the replacements do not
+exist"* — they largely do — but *"nothing is configured, and no replacement has been
+demonstrated working end to end on this data."* #61, #62 and #208's frozen halves stay frozen.
+**The gap to closing them is now configuration and a demonstration, not platform availability**,
+which makes them genuinely actionable in a way Amendment 2 implied they were not.
+
+**#238 was filed on a false premise** — "blocked: ABAC API not routed". It is not blocked.
+Corrected on the issue.
+
+**#64's split still stands**, on scope grounds: applying tags and enforcing policies remain
+separate work with separate risk. Only the *"one is unavailable"* justification was wrong.
+
+**Item 4 remains genuinely unresolved.** There is no workspace setting for AI-generated
+comments — 190 setting keys were enumerated and none matches — and no API surface. It is a
+Catalog Explorer UI feature and still needs a human to look.
 
 ---
 
@@ -570,10 +644,10 @@ superseded rather than edited.
 3. **Sign-off on Amendment 2** (verification items 3–7), by merge. It confirms D2 rather than
    changing it, and amends D6's deployment mechanism. **Three follow-ups it implies:**
    - ~~#64 should split along the tags-work / ABAC-does-not line~~ — **done 2026-08-08.** #64
-     keeps tag application and is **no longer blocked on availability**; ABAC enforcement is
-     now **#238**, blocked on the platform. Until #238 closes, **D5's rule that a governed-tag
-     write is a Tier 2 access-control write is forward-looking rather than operative here** —
-     no policy can consume a tag yet. D5 stays as written; #238 is what makes it true.
+     keeps tag application; ABAC enforcement is **#238**. **Corrected by Amendment 3:** #238 is
+     **not** blocked — the ABAC API is available. And **D5 is operative now**, not
+     forward-looking: a governed tag can carry a policy, so a tag write can silently change
+     access. Review risk 10 is live.
    - **#228 must not assume bundle-deployed Metric Views.**
    - **Checklist item 4 needs one minute in Catalog Explorer** — the only verification item
      still genuinely open, and there is no API to settle it from a terminal.
