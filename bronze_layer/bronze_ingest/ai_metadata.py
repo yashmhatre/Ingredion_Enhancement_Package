@@ -27,6 +27,7 @@ docs/buy_vs_build_2026-08.md, #64).
 """
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Protocol
@@ -440,6 +441,28 @@ def _build_prompt(table_name: str, registry_row, audit_row, previous_draft) -> s
     )
 
 
+#: Chat models routinely wrap a JSON answer in a markdown code fence even when
+#: the prompt asks for JSON only. Measured, not guessed: the first real run of
+#: this job against Databricks-hosted Claude discarded 9 of 15 drafts, and the
+#: raw responses were well-formed JSON inside ```json ... ``` - 1090 characters,
+#: so not truncation. `search` rather than `match` because a model sometimes
+#: adds a sentence of preamble before the fence.
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n?\s*```", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_code_fence(raw_text: str) -> str:
+    """The contents of the first markdown code fence, or the input unchanged.
+
+    Unwrapping a transport wrapper is not the same as being lenient about
+    content: everything `_parse_draft` rejects below is still rejected, and a
+    fence containing prose rather than JSON still fails there.
+    """
+    if not isinstance(raw_text, str):
+        return raw_text
+    match = _CODE_FENCE_RE.search(raw_text)
+    return match.group(1) if match else raw_text
+
+
 def _parse_draft(raw_text: str) -> Optional[Dict[str, Any]]:
     """
     Parses the model's raw response into the fields `_ai_metadata` expects.
@@ -451,10 +474,16 @@ def _parse_draft(raw_text: str) -> Optional[Dict[str, Any]]:
     unparseable JSON, a non-object response, or a response carrying none of
     the expected content all fail here rather than producing a mostly-NULL
     row that looks like a real draft.
+
+    A markdown code fence around the JSON is stripped first - see
+    `_strip_code_fence`. That is a wrapper, not content, and treating it as
+    malformed threw away 60% of a real run's drafts.
     """
     try:
-        parsed = json.loads(raw_text)
+        parsed = json.loads(_strip_code_fence(raw_text))
     except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
         return None
     if not isinstance(parsed, dict):
         return None
