@@ -620,3 +620,63 @@ def test_the_two_drafters_run_different_models_on_purpose():
     from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter, AnthropicMetadataDrafter
 
     assert AnthropicMetadataDrafter.DEFAULT_MODEL != AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+
+
+# ---------------------------------------------------------------------------
+# Markdown code fences around the JSON.
+#
+# Not hypothetical. The first real run of this job against Databricks-hosted
+# Claude (2026-08-08, dev) drafted 6 tables and discarded 9 as malformed. The
+# discarded responses were well-formed JSON wrapped in ```json ... ``` - 1090
+# characters, so not truncation. 60% of a real run thrown away by a wrapper.
+# ---------------------------------------------------------------------------
+
+_FENCED = """```json
+{"table_description": "Orders placed by customers.",
+ "column_descriptions": {"id": "Order id."},
+ "schema_drift_summary": null,
+ "pii_flags": ["email"]}
+```"""
+
+
+def test_parse_draft_accepts_json_wrapped_in_a_json_code_fence():
+    parsed = _parse_draft(_FENCED)
+    assert parsed is not None, "fenced JSON was discarded - this is the 9-of-15 bug"
+    assert parsed["table_description"] == "Orders placed by customers."
+    assert parsed["pii_flags_json"] == '["email"]'
+
+
+def test_parse_draft_accepts_a_bare_code_fence():
+    raw = '```\n{"table_description": "A table."}\n```'
+    parsed = _parse_draft(raw)
+    assert parsed is not None
+    assert parsed["table_description"] == "A table."
+
+
+def test_parse_draft_accepts_a_fence_after_preamble_text():
+    """Models sometimes add a sentence before the fence."""
+    raw = 'Here is the metadata you asked for:\n\n```json\n{"table_description": "A table."}\n```'
+    parsed = _parse_draft(raw)
+    assert parsed is not None
+    assert parsed["table_description"] == "A table."
+
+
+def test_parse_draft_still_accepts_unfenced_json():
+    """The fix must not regress the path that already worked - 6 of 15
+    responses in that run were unfenced."""
+    parsed = _parse_draft('{"table_description": "A table."}')
+    assert parsed is not None
+    assert parsed["table_description"] == "A table."
+
+
+def test_parse_draft_still_rejects_prose_inside_a_fence():
+    """Unwrapping a fence is not the same as being lenient about content."""
+    assert _parse_draft("```\nI could not determine a description.\n```") is None
+
+
+def test_parse_draft_still_rejects_a_fenced_json_array():
+    assert _parse_draft('```json\n["not", "an", "object"]\n```') is None
+
+
+def test_parse_draft_still_rejects_a_fenced_object_with_no_expected_keys():
+    assert _parse_draft('```json\n{"unrelated": "value"}\n```') is None
