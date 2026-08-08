@@ -1,11 +1,14 @@
 # AI, Genie and the metadata layer — architecture decision record, August 2026
 
 **Date:** 2026-08-08
-**Status: draft — pending named sign-off by the Project Lead.** Tier 2 under
-`docs/agent_governance.md`: it changes the target architecture and commits the platform to a
-governed-tag and service-principal model. Following the precedent set by
-`2026-08_autonomous_remediation.md`, sign-off is given by the Project Lead merging this
-record, and is recorded here by name and date when given.
+**Status: signed off by Yash (Project Lead) on 2026-08-08**, by merging PR #230 into `dev`.
+Tier 2 under `docs/agent_governance.md`: it changes the target architecture and commits the
+platform to a governed-tag and service-principal model. Sign-off was given by merge, following
+the precedent set by `2026-08_autonomous_remediation.md` and PR #223.
+
+**All eight verdicts below are now binding**, not proposed. They are amended by writing the
+amendment into this record — in particular, anything the #229 verification checklist
+disproves becomes an amendment here rather than a silent workaround.
 
 **Decisions D1, D2 and D3-timing below were made by Yash (Project Lead) in session on
 2026-08-08.** The rest of this record derives from them or ratifies existing analysis; it is
