@@ -41,7 +41,7 @@ It does **not** reopen:
 
 | # | Decision | Status |
 |---|---|---|
-| **D1** | AI generation runs on **Databricks AI Functions** with a Databricks-hosted Claude model, not an external SDK + PAT — **gated on workspace verification** | Decided |
+| **D1** | AI generation runs on **Databricks AI Functions** with a Databricks-hosted Claude model, not an external SDK + PAT | Decided — **gate passed 2026-08-08; see Amendment 1**, which pins `databricks-claude-opus-4-8` |
 | **D2** | Scope superseded by native platform features is **marked superseded and frozen, not closed**, until each feature is verified available in this workspace | Decided |
 | **D3** | **Genie is a consumption surface and stays at the top of the stack.** It is never pointed at Bronze, quarantine, or the audit tables. Enforced by grants, not by guidance | Decided |
 | **D4** | **Gold gets its own epic, filed now, started later.** It is the unnamed gate under #210, #211 and the whole consumption plane | Decided |
@@ -89,6 +89,74 @@ has been checked against this workspace.
 shipped `AnthropicMetadataDrafter` remains the default, and #208 does not add more surface
 on top of it (see "What is frozen").
 
+### Amendment 1 — 2026-08-08: the gate passes, and the model changes generation
+
+**Status: proposed. Needs the Project Lead's sign-off by merge, same as the record itself.**
+
+Checklist items 1 and 2 were verified live against warehouse `40d23e52f75f292b` in
+`adb-7405607398572130`. Evidence and the full probe matrix are on **#229**.
+
+**Item 1 — passes.** `ai_query` resolves and executes on this warehouse. The review's *"not
+available on Pro or Classic SQL warehouses"* does not disqualify it: the Warehouses API
+represents a Serverless warehouse as `warehouse_type: PRO` **plus**
+`enable_serverless_compute: true`, which is exactly what this warehouse reports. The wording in
+the checklist conflated a *tier* with a *compute type* and is corrected below.
+
+**Item 2 — passes, with a constraint the record did not anticipate.** Three Claude endpoints
+are served and `READY` — `databricks-claude-opus-4-8`, `databricks-claude-opus-5`,
+`databricks-claude-sonnet-5`. **Only `opus-4-8` is callable from `ai_query`.** Both Claude 5
+endpoints return `PERMISSION_DENIED: Endpoint ... is not supported for batch inference`. The
+error names the endpoint, not the principal — a capability limit, not an entitlement one.
+
+**What this disproves.** Nothing in D1's reasoning. One clause in its consequences: point 4,
+*"It stays Claude"*, was written to mean the migration changed transport and not model.
+`ai_metadata.py:115` sets `DEFAULT_MODEL = "claude-opus-5"`, so adopting AI Functions is now a
+**model-generation change as well as a transport change**. It is still Claude. It is not the
+same Claude.
+
+**The amended decision.** D1 stands. The AI Functions path pins
+**`databricks-claude-opus-4-8`**, named explicitly rather than left to a default that the
+transport cannot call.
+
+**Why that and not the alternatives:**
+
+| Option | Gets | Costs |
+|---|---|---|
+| **AI Functions on `opus-4-8`** ← chosen | No credential, `system.billing.usage` attribution, UC-audited, in-boundary | An older Claude generation than the code runs today |
+| Keep the SDK on `opus-5` | Current model generation | Keeps a PAT — the single thing D1 existed to remove |
+| Wait for batch support | Both, eventually | Blocks D1 on a roadmap nobody here controls |
+
+The governance gain is the larger term, and the workload is not close to the quality ceiling.
+Per review § 10.6, this layer's inputs are schema, statistics, audit history and lineage —
+**never data rows** — and its output is a paragraph; the review judged Haiku adequate for
+descriptions and Sonnet worth it for drift explanation. Opus 4.8 sits comfortably above the bar
+this workload actually sets. Choosing on output quality rather than price, as § 10.6 directs,
+does not favour holding a credential to reach Opus 5 for this.
+
+**Consequences for the implementation:**
+
+1. `AIFunctionsMetadataDrafter` pins `databricks-claude-opus-4-8` as a named constant, **with a
+   comment recording why** — otherwise the next person "upgrades" it to `opus-5` and gets a
+   runtime `PERMISSION_DENIED` on a scheduled job.
+2. `AnthropicMetadataDrafter.DEFAULT_MODEL` stays `claude-opus-5`. It is the local-development
+   escape hatch and reaches Anthropic directly, where the Claude 5 family is available. **The
+   two drafters legitimately run different models**, and that asymmetry is deliberate rather
+   than an oversight — say so in the code.
+3. This is a difference worth surfacing in any output comparison: a proposal drafted locally
+   and one drafted in-platform are not from the same model.
+
+**Re-probe before treating the model choice as settled.** Batch-inference support is
+platform-side and may change. It is one query:
+
+```sql
+SELECT ai_query('databricks-claude-opus-5', 'ok');
+```
+
+If it starts succeeding, this amendment is superseded by a second one, not silently reverted.
+
+**Not amended:** D1's reasoning, the retention of `AnthropicMetadataDrafter`, the freeze on
+#208's other halves (still gated on checklist items 3–4, untested), or any of D2–D8.
+
 ---
 
 ## D2 — Superseded scope is frozen, not closed
@@ -133,17 +201,35 @@ once the rest is deleted.
 Runs during #112/Phase 3 provisioning, against the real workspace. Owner:
 `platform-engineer`, drafted for Project Lead sign-off where a Tier 2 action is implied.
 
-| # | Verify | Gates |
-|---|---|---|
-| 1 | AI Functions (`ai_query`) available — DBR 18.2+, **and a serverless SQL warehouse**, since Pro/Classic are excluded | **D1** |
-| 2 | A Claude model is served through Foundation Model APIs in this workspace and region | **D1** |
-| 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 |
-| 4 | UC AI-generated comments are available | Description scope in #208 |
-| 5 | DQ Monitoring anomaly detection is available, and what its dashboard actually covers | #61, #62 |
-| 6 | Governed tags + ABAC column masks are available | #64 |
-| 7 | Bundle support for the resource types this implies, at the CLI version in use | Deployment of all of it |
+| # | Verify | Gates | Status |
+|---|---|---|---|
+| 1 | AI Functions (`ai_query`) available on the warehouse in use | **D1** | ✅ **PASS** 2026-08-08 — see Amendment 1 |
+| 2 | A Claude model is served through Foundation Model APIs **and callable from `ai_query`** | **D1** | ⚠️ **PASS with constraint** — only `opus-4-8`; see Amendment 1 |
+| 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 | Untested |
+| 4 | UC AI-generated comments are available | Description scope in #208 | Untested |
+| 5 | DQ Monitoring anomaly detection is available, and what its dashboard actually covers | #61, #62 | Untested |
+| 6 | Governed tags + ABAC column masks are available | #64 | Untested |
+| 7 | Bundle support for the resource types this implies, at the CLI version in use | Deployment of all of it | Untested |
 
 Anything that fails becomes an amendment to this record, not a silent workaround.
+
+**Two corrections to this checklist, both from the 2026-08-08 run:**
+
+- **Item 1 was mis-specified.** It said "*a serverless SQL warehouse, since Pro/Classic are
+  excluded*", which reads `warehouse_type` as the thing to check. It is not: the Warehouses API
+  encodes Serverless as `warehouse_type: PRO` **plus** `enable_serverless_compute: true`. Read
+  literally, the original wording would have failed a warehouse that in fact works. **Probe the
+  behaviour, don't infer it from the field.**
+- **Item 2 was too weak.** "Is served through Foundation Model APIs" is satisfied by an endpoint
+  that `ai_query` cannot call — which is exactly what the Claude 5 endpoints turned out to be.
+  Amended to require it be *callable from `ai_query`*.
+
+Both are the same lesson, and it is the reason this checklist exists: **a capability is
+verified by invoking it, not by reading a field or a docs page.**
+
+**Items 3–6 are metastore/UC features, and per #231 only `ingredion_dev` has anything
+deployed** — `ingredion_stg` and `ingredion_prd` contain zero tables. Anything verified there
+now is verified for dev only.
 
 ---
 
@@ -331,15 +417,33 @@ deploying" — and still sat unexecuted long enough to become a blocker for four
 
 **Frozen pending the verification checklist:**
 
-- #208's **PII-detection** and **description-drafting** halves — candidates for deletion
-- #61 (volume anomaly detection) — mostly superseded if DQ Monitoring is available
+- #208's **PII-detection** half — checklist item 3 untested
+- #208's **description-drafting** half — checklist item 4 untested
+- #61 (volume anomaly detection) — mostly superseded if DQ Monitoring is available (item 5)
 - #62 (ops dashboard) — re-scope to what DQ Monitoring's dashboard does *not* cover, namely
-  this framework's quarantine and replay metrics
+  this framework's quarantine and replay metrics (item 5)
 - Any further build on `AnthropicMetadataDrafter`
+
+**Thawed 2026-08-08 by Amendment 1:**
+
+- **The drafter swap.** Checklist items 1 and 2 pass, so `AIFunctionsMetadataDrafter` is
+  unblocked and is the first Phase 5 item. It pins `databricks-claude-opus-4-8` — see
+  Amendment 1 for why the model is named rather than defaulted. Owner: `data-engineer`.
+- **#208's job YAML and notebook entrypoint** are no longer held back for being "more surface
+  on the SDK+PAT path", since the path they land on is now the AI Functions one. Owners:
+  `platform-engineer` (`bronze_layer/resources/ai_metadata_job.yml` — no `databricks.yml` edit
+  needed, line 46 already globs `resources/*.yml`) and `qa-engineer` (the notebook, with
+  `tests/test_notebooks.py` coverage — both known live production defects in this repo shipped
+  through untested notebooks).
+
+**Still true regardless:** the job must not read `_ingestion_audit` without the fail-closed
+`table_name IS NULL` assertion (#231). The audit found no environment needs the backfill, but
+a pre-0.5.0 audit table still exists in this catalog outside the bundle's targets, so the
+class is open even though today's instance is not.
 
 **Proceeds now, unblocked by anything here:**
 
-- The **verification checklist** itself — `platform-engineer`, during #112
+- The **remaining verification checklist items 3–7** — `platform-engineer`, during #112
 - The **CHANGELOG backfill (#231)** — `platform-engineer` drafts and audits per environment,
   `devops-lead` presents, Project Lead signs before any staging/prod write. The cheapest
   unblock available: small, mechanical, and it gates four issues
@@ -373,14 +477,22 @@ superseded rather than edited.
 
 ## Open — needs the Project Lead
 
-1. **Sign-off on this record**, by merge, per the #207 precedent.
-2. **The CHANGELOG backfill (#231)** — Tier 2/3, now tracked, blocking four issues. Needs a
-   named sign-off before it runs against staging or prod.
-3. **BR-002** (AI-assisted Silver transformation) is sitting as ~173 uncommitted lines on
+1. ~~**Sign-off on this record**~~ — given 2026-08-08 via PR #230.
+2. **Sign-off on Amendment 1** (the `opus-4-8` pin), by merge. It changes which model the
+   platform runs, which is a commitment the record's original D1 did not make.
+3. ~~**The CHANGELOG backfill (#231)**~~ — audited 2026-08-08: **no environment needs it.**
+   `ingredion_dev` was created after 0.5.0 and never had the two-column state; `ingredion_stg`
+   and `ingredion_prd` contain zero tables. **Two things still need a decision:** the
+   disposition of `ingredion_en.bronze._ingestion_audit` — a pre-0.5.0 table outside the
+   bundle's targets, harmless until something writes to it — and whether the fail-closed
+   read-side assertion ships with #208. Also worth correcting wherever it is repeated: the
+   premise that *production runs pre-0.5.0 code* is false. **There is no production
+   deployment.**
+4. **BR-002** (AI-assisted Silver transformation) is sitting as ~173 uncommitted lines on
    `dev`, outside any branch or PR, with its open questions unanswered. It proposes AI inside
    a layer that does not exist. It should be branched and PR'd, and its scope re-read against
    D6's hard line before it is worked.
-4. **The #159-ahead-of-#209 re-sequence**, flagged in `2026-08_autonomous_remediation.md`
+5. **The #159-ahead-of-#209 re-sequence**, flagged in `2026-08_autonomous_remediation.md`
    § 8 and independently promoted by this record. Two documents now agree; it needs a word.
 
 ---
