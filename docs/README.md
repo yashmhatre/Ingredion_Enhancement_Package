@@ -27,6 +27,22 @@ documents disagree, the owner below wins over the other.
 | Plain-language project summary for non-engineers | `docs/overview.md` | The business-facing counterpart to `bronze_layer/README.md` / `bronze_layer/docs/architecture.md` — same architecture, no jargon. Points readers back to the technical docs for implementation detail rather than duplicating it. |
 | Business case intake — what's been asked for, and how it reconciles against what's already built/decided | `docs/business_requirements.md` | Owned by the `business-analyst` subagent. Every case gets a status (Proposed / Under review / Approved → issues filed / Deferred / Rejected) and a reconciliation section before anything becomes an issue. |
 
+## Decision records — binding once signed off
+
+`docs/decisions/` holds architectural decisions that carry a **named Project Lead
+sign-off** under `docs/agent_governance.md`'s Tier 2. They are neither living documents
+nor archive: a decision stays in force until a later record supersedes it, and it is
+amended by writing the amendment into it rather than by rewriting the reasoning.
+
+The distinction from a point-in-time record matters. A review *argues*; a decision record
+*binds*. Where the two disagree, the decision record wins, and the review is the citation
+for why.
+
+| Document | What it decides | Status |
+| --- | --- | --- |
+| `docs/decisions/2026-08_autonomous_remediation.md` | Whether the AI layer may write to the pipeline, and under what bounds — blast radius, the NEVER-touch list, kill switch, rollback, audit. The eligible fix-class set starts **empty**; every promotion into it needs its own Tier 2 sign-off. | **Signed off** by Yash, 2026-08-07 |
+| `docs/decisions/2026-08_ai_genie_architecture.md` | Where AI generation runs (AI Functions over an external SDK + PAT), what custom scope is superseded by native platform features and on what verification gate, where Genie sits and what it may reference, how many runtime agents to build, and that KPI definitions are human-authored. Disposition of `docs/architecture_ai_metadata_2026-08.md`. | **Draft — pending named sign-off** |
+
 ## Point-in-time records — not maintained
 
 These are kept because they record what was verified, when, and why —
@@ -37,7 +53,7 @@ saying so. Do not update them to match new behaviour; supersede them.
 | --- | --- |
 | `docs/archive/current_behavior.md` | Audit of the package against the README's claims, for #6. At least one section is explicitly superseded (first-load merge, changed by #46). |
 | `docs/archive/architecture_review_2026-07.md` | Whole-repository review of `dev` @ `ceeda69`, 2026-07-29. Its findings became issues #145–#164; those issues, not this document, track their state. |
-| `docs/architecture_ai_metadata_2026-08.md` | Review of the AI/metadata half of the target architecture against Databricks native AI services (Data Classification, Data Quality Monitoring, AI Functions, Metric Views, Genie Agents), 2026-08-07. First written against `main`, then **revised against `dev`** — its § 2.1 carries a correction, because the first pass declared four things missing that exist on `dev`. **A proposal, not an accepted design** — `bronze_layer/docs/architecture.md` still owns the AI-layer design until this is adopted. Its § 11 lists exactly what would change there if it is. |
+| `docs/architecture_ai_metadata_2026-08.md` | Review of the AI/metadata half of the target architecture against Databricks native AI services (Data Classification, Data Quality Monitoring, AI Functions, Metric Views, Genie Agents), 2026-08-07. First written against `main`, then **revised against `dev`** — its § 2.1 carries a correction, because the first pass declared four things missing that exist on `dev`. **A proposal, not an accepted design.** Its disposition is `docs/decisions/2026-08_ai_genie_architecture.md`, which accepts most of it and amends the scope-deletion recommendation; read the decision record for what is binding, and this document for the reasoning behind it. |
 | `bronze_layer/docs/archive/testing_json_reader.md` | Manual ADLS validation of `json_reader.py`. Requires a live cluster; not part of the pytest suite. |
 | `bronze_layer/docs/archive/testing_end_to_end_deployment.md` | A real deployment run. Names the catalog as it was at the time (`ingredion_en_dev`), which was later renamed to `ingredion_en` — the run is the record, the names are not current. |
 
