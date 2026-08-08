@@ -189,6 +189,79 @@ def _resolve_schema_ref(table_name: str) -> Optional[str]:
     return ".".join(parts[:-1]) if len(parts) > 1 else None
 
 
+class AuditMigrationIncompleteError(RuntimeError):
+    """
+    Raised when `_ingestion_audit` is mid-migration and reading it would
+    silently return a partial answer. See `_assert_audit_migration_complete`.
+    """
+
+
+# The remediation hint quoted back to the operator, verbatim from
+# CHANGELOG 0.5.0. Held as a constant with a placeholder rather than built
+# by f-string so it reads as what it is - a documentation string - and not
+# as query construction. Nothing here is ever executed.
+_HINT_PLACEHOLDER = "<audit_table>"
+_BACKFILL_SQL_HINT = "UPDATE <audit_table> SET table_name = table WHERE table_name IS NULL;"
+
+
+def _assert_audit_migration_complete(spark, audit_table: str) -> None:
+    """
+    Fail the job, loudly, if `_ingestion_audit` cannot be read completely.
+
+    CHANGELOG 0.5.0 renamed this table's `table` column to `table_name`.
+    The audit writer appends with `mergeSchema: true`, so on a table created
+    before that release **the write succeeds and nothing fails** - Delta
+    relaxes the old column's NOT NULL constraint rather than rejecting the
+    row. The table ends up with two columns meaning the same thing, each
+    populated for half the runs, and a manual backfill is required per
+    environment.
+
+    This job reads `_ingestion_audit` as its primary input, so on a
+    half-migrated table every query returns a plausible, complete-looking
+    answer covering only half the runs - and the job's entire output is
+    derived from a silently truncated read. That is the #146 failure shape
+    one abstraction level up: not a crash, a confident wrong answer.
+
+    **This is the one place in this module that raises.** Everything else
+    here degrades per-table and keeps going, deliberately (see
+    `run_ai_metadata_job`). This check is different in kind: it is a
+    precondition on the input, not a problem with one table's draft, and a
+    truncated read cannot be detected downstream or recovered from by
+    skipping something. Failing the run is the only honest outcome, and a
+    warning would be worse than useless - it would be a warning nobody reads
+    attached to output that looks fine.
+
+    Deliberately not bypassable. "Fail closed" with an override flag is
+    just "fail open" with extra steps, and the fix - one UPDATE, documented
+    in CHANGELOG 0.5.0 - is cheaper than the flag.
+
+    No-ops when the table does not exist yet: a job running before any
+    ingestion has nothing to read, which is not the same as reading half of
+    something.
+    """
+    if not spark.catalog.tableExists(audit_table):
+        return
+
+    columns = set(spark.read.table(audit_table).columns)
+
+    if "table_name" not in columns:
+        raise AuditMigrationIncompleteError(
+            f"{audit_table} has no `table_name` column, so it predates CHANGELOG 0.5.0 "
+            f"and cannot be read by this job. Upgrade the environment, let one run write "
+            f"a post-0.5.0 row, then run the backfill from CHANGELOG 0.5.0 "
+            f'("Read this before deploying", item 1).'
+        )
+
+    stale_rows = spark.read.table(audit_table).filter(col("table_name").isNull()).count()
+    if stale_rows:
+        raise AuditMigrationIncompleteError(
+            f"{audit_table} has {stale_rows} row(s) with `table_name IS NULL` - the "
+            f"CHANGELOG 0.5.0 backfill has not been run in this environment. Reading it "
+            f"now would silently cover only the runs written after the upgrade. Run:\n"
+            f"    {_BACKFILL_SQL_HINT.replace(_HINT_PLACEHOLDER, audit_table)}"
+        )
+
+
 def _recent_runs_by_table(spark, audit_table: str, since: datetime) -> Dict[str, Any]:
     """
     Latest `_ingestion_audit` row per table_name with `started_at >= since`.
@@ -382,7 +455,16 @@ def run_ai_metadata_job(
     first bad response, and a skipped table is picked up again by the next
     scheduled run once it still shows as changed. Returns a summary dict
     the caller (or a test) can use instead of parsing log lines.
+
+    **One exception, and it is deliberate:** raises
+    `AuditMigrationIncompleteError` before doing any work if
+    `job_config.audit_table` is mid-migration from CHANGELOG 0.5.0. That is
+    a precondition on the input rather than a per-table problem - a
+    truncated read produces output that looks complete and is not, so there
+    is nothing to skip and nothing downstream that could notice.
     """
+    _assert_audit_migration_complete(spark, job_config.audit_table)
+
     since = datetime.now(timezone.utc) - timedelta(hours=job_config.lookback_hours)
     registry_rows = _registry_rows(spark, job_config.registry_table)
     recent_audit = _recent_runs_by_table(spark, job_config.audit_table, since)
