@@ -311,10 +311,16 @@ metadata layer reading it before that backfill returns a plausible, complete-loo
 covering half the runs — the #146 failure shape, one abstraction level up.
 
 It is an `UPDATE` against higher environments, so it is **Tier 2/3 and needs named sign-off.**
-Nobody has scheduled it. It blocks #208, #61 and #62.
+Tracked as **#231**, filed 2026-08-08 — it had gone a full release as a CHANGELOG step with no
+owner. It blocks #208, #61, #62 and #229.
 
 **Mitigation regardless:** the intelligence job asserts on startup that no
-`table_name IS NULL` rows exist, and fails closed if any do.
+`table_name IS NULL` rows exist, and fails closed if any do. The backfill closes today's gap;
+the assertion closes the class.
+
+**A process note worth carrying:** a migration step in a CHANGELOG is documentation, not a
+work item. This one was documented correctly and prominently — item 1 under "read this before
+deploying" — and still sat unexecuted long enough to become a blocker for four issues.
 
 ---
 
@@ -331,8 +337,9 @@ Nobody has scheduled it. It blocks #208, #61 and #62.
 **Proceeds now, unblocked by anything here:**
 
 - The **verification checklist** itself — `platform-engineer`, during #112
-- The **CHANGELOG backfill** — `platform-engineer` drafts, `devops-lead` presents, Project
-  Lead signs
+- The **CHANGELOG backfill (#231)** — `platform-engineer` drafts and audits per environment,
+  `devops-lead` presents, Project Lead signs before any staging/prod write. The cheapest
+  unblock available: small, mechanical, and it gates four issues
 - **#159** measurement half — promoted to blocking by both this record and the decision
   record's § 8; it is the hot read path of a job that will run daily forever
 - **#209's safety harness** — kill switch, rollback, fail-closed remediation record,
@@ -364,7 +371,8 @@ superseded rather than edited.
 ## Open — needs the Project Lead
 
 1. **Sign-off on this record**, by merge, per the #207 precedent.
-2. **The CHANGELOG backfill** — Tier 2/3, unscheduled, blocking three issues.
+2. **The CHANGELOG backfill (#231)** — Tier 2/3, now tracked, blocking four issues. Needs a
+   named sign-off before it runs against staging or prod.
 3. **BR-002** (AI-assisted Silver transformation) is sitting as ~173 uncommitted lines on
    `dev`, outside any branch or PR, with its open questions unanswered. It proposes AI inside
    a layer that does not exist. It should be branched and PR'd, and its scope re-read against
