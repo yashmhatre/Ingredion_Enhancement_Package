@@ -568,11 +568,15 @@ superseded rather than edited.
 2. **Sign-off on Amendment 1** (the `opus-4-8` pin), by merge. It changes which model the
    platform runs, which is a commitment the record's original D1 did not make.
 3. **Sign-off on Amendment 2** (verification items 3–7), by merge. It confirms D2 rather than
-   changing it, and amends D6's deployment mechanism. **Three follow-ups it implies, each
-   needing a decision rather than just a merge:** #64 should split along the tags-work /
-   ABAC-does-not line; #228 must not assume bundle-deployed Metric Views; and **checklist
-   item 4 needs one minute in Catalog Explorer** — it is the only item still genuinely open,
-   and there is no API to settle it from a terminal.
+   changing it, and amends D6's deployment mechanism. **Three follow-ups it implies:**
+   - ~~#64 should split along the tags-work / ABAC-does-not line~~ — **done 2026-08-08.** #64
+     keeps tag application and is **no longer blocked on availability**; ABAC enforcement is
+     now **#238**, blocked on the platform. Until #238 closes, **D5's rule that a governed-tag
+     write is a Tier 2 access-control write is forward-looking rather than operative here** —
+     no policy can consume a tag yet. D5 stays as written; #238 is what makes it true.
+   - **#228 must not assume bundle-deployed Metric Views.**
+   - **Checklist item 4 needs one minute in Catalog Explorer** — the only verification item
+     still genuinely open, and there is no API to settle it from a terminal.
 4. ~~**The CHANGELOG backfill (#231)**~~ — audited 2026-08-08: **no environment needs it.**
    `ingredion_dev` was created after 0.5.0 and never had the two-column state; `ingredion_stg`
    and `ingredion_prd` contain zero tables. **Two things still need a decision:** the
