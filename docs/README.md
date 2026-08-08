@@ -41,7 +41,7 @@ for why.
 | Document | What it decides | Status |
 | --- | --- | --- |
 | `docs/decisions/2026-08_autonomous_remediation.md` | Whether the AI layer may write to the pipeline, and under what bounds — blast radius, the NEVER-touch list, kill switch, rollback, audit. The eligible fix-class set starts **empty**; every promotion into it needs its own Tier 2 sign-off. | **Signed off** by Yash, 2026-08-07 |
-| `docs/decisions/2026-08_ai_genie_architecture.md` | Where AI generation runs (AI Functions over an external SDK + PAT), what custom scope is superseded by native platform features and on what verification gate, where Genie sits and what it may reference, how many runtime agents to build, and that KPI definitions are human-authored. Disposition of `docs/architecture_ai_metadata_2026-08.md`. | **Draft — pending named sign-off** |
+| `docs/decisions/2026-08_ai_genie_architecture.md` | Where AI generation runs (AI Functions over an external SDK + PAT), what custom scope is superseded by native platform features and on what verification gate, where Genie sits and what it may reference, how many runtime agents to build, and that KPI definitions are human-authored. Disposition of `docs/architecture_ai_metadata_2026-08.md`. | **Signed off** by Yash, 2026-08-08 |
 
 ## Point-in-time records — not maintained
 

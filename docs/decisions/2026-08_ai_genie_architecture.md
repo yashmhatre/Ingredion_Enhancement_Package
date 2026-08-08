@@ -1,11 +1,14 @@
 # AI, Genie and the metadata layer — architecture decision record, August 2026
 
 **Date:** 2026-08-08
-**Status: draft — pending named sign-off by the Project Lead.** Tier 2 under
-`docs/agent_governance.md`: it changes the target architecture and commits the platform to a
-governed-tag and service-principal model. Following the precedent set by
-`2026-08_autonomous_remediation.md`, sign-off is given by the Project Lead merging this
-record, and is recorded here by name and date when given.
+**Status: signed off by Yash (Project Lead) on 2026-08-08**, by merging PR #230 into `dev`.
+Tier 2 under `docs/agent_governance.md`: it changes the target architecture and commits the
+platform to a governed-tag and service-principal model. Sign-off was given by merge, following
+the precedent set by `2026-08_autonomous_remediation.md` and PR #223.
+
+**All eight verdicts below are now binding**, not proposed. They are amended by writing the
+amendment into this record — in particular, anything the #229 verification checklist
+disproves becomes an amendment here rather than a silent workaround.
 
 **Decisions D1, D2 and D3-timing below were made by Yash (Project Lead) in session on
 2026-08-08.** The rest of this record derives from them or ratifies existing analysis; it is
@@ -311,10 +314,16 @@ metadata layer reading it before that backfill returns a plausible, complete-loo
 covering half the runs — the #146 failure shape, one abstraction level up.
 
 It is an `UPDATE` against higher environments, so it is **Tier 2/3 and needs named sign-off.**
-Nobody has scheduled it. It blocks #208, #61 and #62.
+Tracked as **#231**, filed 2026-08-08 — it had gone a full release as a CHANGELOG step with no
+owner. It blocks #208, #61, #62 and #229.
 
 **Mitigation regardless:** the intelligence job asserts on startup that no
-`table_name IS NULL` rows exist, and fails closed if any do.
+`table_name IS NULL` rows exist, and fails closed if any do. The backfill closes today's gap;
+the assertion closes the class.
+
+**A process note worth carrying:** a migration step in a CHANGELOG is documentation, not a
+work item. This one was documented correctly and prominently — item 1 under "read this before
+deploying" — and still sat unexecuted long enough to become a blocker for four issues.
 
 ---
 
@@ -331,8 +340,9 @@ Nobody has scheduled it. It blocks #208, #61 and #62.
 **Proceeds now, unblocked by anything here:**
 
 - The **verification checklist** itself — `platform-engineer`, during #112
-- The **CHANGELOG backfill** — `platform-engineer` drafts, `devops-lead` presents, Project
-  Lead signs
+- The **CHANGELOG backfill (#231)** — `platform-engineer` drafts and audits per environment,
+  `devops-lead` presents, Project Lead signs before any staging/prod write. The cheapest
+  unblock available: small, mechanical, and it gates four issues
 - **#159** measurement half — promoted to blocking by both this record and the decision
   record's § 8; it is the hot read path of a job that will run daily forever
 - **#209's safety harness** — kill switch, rollback, fail-closed remediation record,
@@ -364,7 +374,8 @@ superseded rather than edited.
 ## Open — needs the Project Lead
 
 1. **Sign-off on this record**, by merge, per the #207 precedent.
-2. **The CHANGELOG backfill** — Tier 2/3, unscheduled, blocking three issues.
+2. **The CHANGELOG backfill (#231)** — Tier 2/3, now tracked, blocking four issues. Needs a
+   named sign-off before it runs against staging or prod.
 3. **BR-002** (AI-assisted Silver transformation) is sitting as ~173 uncommitted lines on
    `dev`, outside any branch or PR, with its open questions unanswered. It proposes AI inside
    a layer that does not exist. It should be branched and PR'd, and its scope re-read against
