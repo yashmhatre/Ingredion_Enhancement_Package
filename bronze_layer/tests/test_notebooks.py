@@ -499,3 +499,174 @@ def test_run_ingestion_builds_config_from_widgets(run_notebook):
     assert seen["config"].table == "t"
     assert seen["config"].schema_name == "sch"
     assert "row_count" in run.exit_value
+
+
+# ---------------------------------------------------------------------------
+# run_ai_metadata.py - the advisory lane's entrypoint (#208)
+#
+# The drafter is never constructed against a real endpoint here: the notebook
+# builds AIFunctionsMetadataDrafter, which only stores the session and the
+# endpoint name, and run_ai_metadata_job itself is faked. So these exercise
+# the notebook's own logic - name qualification, schema pinning, and the
+# failure semantics - with no network and no ai_query.
+# ---------------------------------------------------------------------------
+
+AI_WIDGETS = {
+    "catalog": "cat",
+    "schema_name": "sch",
+    "audit_schema_name": "sch",
+    "registry_schema_name": "sch",
+    "ai_metadata_table_name": "_ai_metadata",
+    "lookback_hours": "24",
+    "model_id": "databricks-claude-opus-4-8",
+    "run_id": "123-456",
+}
+
+
+def _fake_ai_job(summary):
+    """Stand-in for run_ai_metadata_job that returns a fixed summary and
+    records the config it was handed."""
+    calls = []
+
+    def _call(spark, job_config, drafter):
+        calls.append({"job_config": job_config, "drafter": drafter})
+        return summary
+
+    _call.calls = calls
+    return _call
+
+
+def _run_ai(run_notebook, summary, widgets=None):
+    from bronze_ingest import ai_metadata
+
+    fake = _fake_ai_job(summary)
+    w = dict(AI_WIDGETS)
+    w.update(widgets or {})
+    run = run_notebook(
+        "run_ai_metadata",
+        widgets=w,
+        patches=[(ai_metadata, "run_ai_metadata_job", fake)],
+    )
+    return run, fake
+
+
+def test_ai_notebook_qualifies_every_table_against_the_configured_catalog(run_notebook):
+    """The job must read the tables the pipeline actually wrote - a bare table
+    name would resolve against whatever the session default happens to be."""
+    run, fake = _run_ai(
+        run_notebook,
+        {"processed": 1, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
+    )
+    cfg = fake.calls[0]["job_config"]
+    assert cfg.audit_table == "cat.sch._ingestion_audit"
+    assert cfg.registry_table == "cat.sch._schema_registry"
+    assert cfg.ai_metadata_table == "cat.sch._ai_metadata"
+
+
+def test_ai_notebook_pins_audit_and_registry_to_their_own_schemas(run_notebook):
+    """All three environments share one catalog. Reading another environment's
+    audit trail would draft metadata about tables this one does not own."""
+    run, fake = _run_ai(
+        run_notebook,
+        {"processed": 1, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
+        widgets={"audit_schema_name": "audit_sch", "registry_schema_name": "reg_sch"},
+    )
+    cfg = fake.calls[0]["job_config"]
+    assert cfg.audit_table == "cat.audit_sch._ingestion_audit"
+    assert cfg.registry_table == "cat.reg_sch._schema_registry"
+    # Output still lands beside the data it describes.
+    assert cfg.ai_metadata_table == "cat.sch._ai_metadata"
+
+
+def test_ai_notebook_blank_audit_schema_falls_back_to_schema_name(run_notebook):
+    run, fake = _run_ai(
+        run_notebook,
+        {"processed": 1, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
+        widgets={"audit_schema_name": "", "registry_schema_name": ""},
+    )
+    cfg = fake.calls[0]["job_config"]
+    assert cfg.audit_table == "cat.sch._ingestion_audit"
+    assert cfg.registry_table == "cat.sch._schema_registry"
+
+
+def test_ai_notebook_blank_model_id_falls_back_to_the_pinned_endpoint(run_notebook):
+    """Interactive runs supply no model_id; it must not become empty string."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    run, fake = _run_ai(
+        run_notebook,
+        {"processed": 1, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
+        widgets={"model_id": ""},
+    )
+    assert fake.calls[0]["job_config"].model_id == AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+
+
+def test_ai_notebook_succeeds_when_some_tables_were_drafted(run_notebook):
+    run, _ = _run_ai(
+        run_notebook,
+        {"processed": 3, "skipped_unchanged": 5, "skipped_failed": 0, "skipped_malformed": 0},
+    )
+    assert run.exit_value.startswith("SUCCESS")
+    assert "3 table(s) drafted" in run.exit_value
+
+
+def test_ai_notebook_does_not_fail_the_task_for_a_few_model_failures(run_notebook):
+    """A per-table model failure self-heals: the table still shows as changed
+    and the next run picks it up. Failing here would page someone for a
+    transient hiccup."""
+    run, _ = _run_ai(
+        run_notebook,
+        {"processed": 2, "skipped_unchanged": 1, "skipped_failed": 1, "skipped_malformed": 1},
+    )
+    assert run.exit_value.startswith("SUCCESS")
+    assert "1 model failure(s)" in run.exit_value
+    assert "1 malformed" in run.exit_value
+
+
+def test_ai_notebook_fails_when_every_candidate_failed(run_notebook):
+    """Nothing drafted and everything failed is structural - a wrong endpoint,
+    a missing grant, ai_query unavailable. Those do not self-heal, and a job
+    that 'succeeds' nightly while writing nothing is the silent no-op this
+    repo keeps finding."""
+    run, _ = _run_ai(
+        run_notebook,
+        {"processed": 0, "skipped_unchanged": 0, "skipped_failed": 4, "skipped_malformed": 0},
+    )
+    assert run.exit_value.startswith("FAILED")
+    assert "every candidate failed" in run.exit_value
+    # The message must name the endpoint - that is the first thing to check.
+    assert "databricks-claude-opus-4-8" in run.exit_value
+
+
+def test_ai_notebook_treats_no_candidates_as_success(run_notebook):
+    """Nothing ingested in the lookback window is a non-event, not a failure."""
+    run, _ = _run_ai(
+        run_notebook,
+        {"processed": 0, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
+    )
+    assert run.exit_value.startswith("SUCCESS")
+    assert "no candidate tables" in run.exit_value
+
+
+def test_ai_notebook_summary_uses_an_explicit_schema(run_notebook):
+    """Same #144 lesson as the ingestion notebook: an inferred schema over a
+    dict changes shape with its contents, and an empty one cannot infer at
+    all."""
+    run, _ = _run_ai(
+        run_notebook,
+        {"processed": 0, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
+    )
+    assert run.spark.created, "notebook built no summary DataFrame"
+    _rows, schema = run.spark.created[0]
+    assert schema == "outcome STRING, tables INT"
+
+
+def test_ai_notebook_rejects_a_non_numeric_lookback(run_notebook):
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="lookback_hours"):
+        _run_ai(
+            run_notebook,
+            {"processed": 0, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
+            widgets={"lookback_hours": "soon"},
+        )
