@@ -49,6 +49,10 @@ def test_reprocess_quarantine_no_table_is_noop(spark):
         "table": cfg.full_table_name,
         "replayed_row_count": 0,
         "still_quarantined_row_count": 0,
+        # Present on every return path (#159 item 4), so a caller can read
+        # them without checking which path produced the result.
+        "skipped_exhausted_row_count": 0,
+        "attempts_recorded": 0,
         "replay_batch_id": None,
     }
 
@@ -373,3 +377,122 @@ def test_max_rows_none_lifts_the_guard(spark):
     )
     result = reprocess_quarantine(spark, relaxed, max_rows=None)
     assert result["replayed_row_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Replay attempt counter — the quarantine exit path (#159 item 4)
+# ---------------------------------------------------------------------------
+
+
+def _quarantine_rows(spark, cfg):
+    return spark.read.table(cfg.resolved_quarantine_table).collect()
+
+
+def test_new_quarantine_rows_start_at_zero_attempts(spark):
+    """Re-ingesting the same bad row is not a failed attempt to FIX it, so
+    only replay ever moves this number."""
+    table = f"replay_attempts_new_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["name"], fail_on_quality_error=False)
+
+    _quarantine(spark, spark.createDataFrame([(1, None)], "id INT, name STRING"), cfg)
+
+    rows = _quarantine_rows(spark, cfg)
+    assert len(rows) == 1
+    assert rows[0]["_replay_attempts"] == 0
+
+
+def test_a_failed_replay_increments_the_attempt_counter(spark):
+    """The whole point of item 4: telling 'not yet fixed' from 'never going to
+    be' with data rather than with age."""
+    table = f"replay_attempts_inc_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["name"], fail_on_quality_error=False)
+    _quarantine(spark, spark.createDataFrame([(1, None)], "id INT, name STRING"), cfg)
+
+    first = reprocess_quarantine(spark, _cfg(table, required_columns=["name"]))
+    assert first["still_quarantined_row_count"] == 1
+    # Both, deliberately: the reported number and the persisted one. The first
+    # version of this reported 1 while the counter on disk stayed 0, because it
+    # counted the ids handed to the MERGE rather than what the MERGE updated.
+    assert first["attempts_recorded"] == 1
+    assert _quarantine_rows(spark, cfg)[0]["_replay_attempts"] == 1
+
+    reprocess_quarantine(spark, _cfg(table, required_columns=["name"]))
+    assert _quarantine_rows(spark, cfg)[0]["_replay_attempts"] == 2
+
+
+def test_a_promoted_row_is_deleted_rather_than_counted(spark):
+    """A row that passes leaves quarantine entirely, so there is nothing left
+    to count attempts against."""
+    table = f"replay_attempts_promo_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["name", "email"], fail_on_quality_error=False)
+    _quarantine(
+        spark,
+        spark.createDataFrame([(1, None, "a@x.com")], "id INT, name STRING, email STRING"),
+        cfg,
+    )
+
+    result = reprocess_quarantine(spark, _cfg(table, required_columns=["email"]))
+
+    assert result["replayed_row_count"] == 1
+    assert result["attempts_recorded"] == 0
+    assert _quarantine_rows(spark, cfg) == []
+
+
+def test_exhausted_rows_are_skipped_but_never_deleted(spark):
+    """Skipped, not deleted. Deletion is irreversible and a row that failed
+    twice may still pass after a genuine source fix - the counter exists to
+    stop rescanning hopeless rows, not to throw them away."""
+    table = f"replay_attempts_exhaust_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["name"], fail_on_quality_error=False)
+    _quarantine(spark, spark.createDataFrame([(1, None)], "id INT, name STRING"), cfg)
+
+    strict = _cfg(table, required_columns=["name"], max_replay_attempts=1)
+    first = reprocess_quarantine(spark, strict)
+    assert first["attempts_recorded"] == 1
+
+    second = reprocess_quarantine(spark, strict)
+
+    assert second["skipped_exhausted_row_count"] == 1
+    assert second["still_quarantined_row_count"] == 0, "it was never offered to the gate"
+    assert second["attempts_recorded"] == 0, "a skipped row is not a new attempt"
+    # Still there, and its counter did not move.
+    remaining = _quarantine_rows(spark, cfg)
+    assert len(remaining) == 1
+    assert remaining[0]["_replay_attempts"] == 1
+
+
+def test_the_limit_can_be_overridden_per_call_to_sweep_exhausted_rows_back_in(spark):
+    """max_replay_attempts=None means 'ignore the limit', which is why the
+    parameter needs a sentinel default rather than None."""
+    table = f"replay_attempts_sweep_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["name", "email"], fail_on_quality_error=False)
+    _quarantine(
+        spark,
+        spark.createDataFrame([(1, None, "a@x.com")], "id INT, name STRING, email STRING"),
+        cfg,
+    )
+    strict = _cfg(table, required_columns=["name", "email"], max_replay_attempts=1)
+    reprocess_quarantine(spark, strict)
+    assert reprocess_quarantine(spark, strict)["skipped_exhausted_row_count"] == 1
+
+    relaxed = _cfg(table, required_columns=["email"], max_replay_attempts=1)
+    swept = reprocess_quarantine(spark, relaxed, max_replay_attempts=None)
+
+    assert swept["skipped_exhausted_row_count"] == 0
+    assert swept["replayed_row_count"] == 1, "the previously-exhausted row now passes"
+
+
+def test_replay_attempts_never_lands_on_the_bronze_table(spark):
+    """Quarantine bookkeeping, not data - the same rule _occurrence_count and
+    _first_quarantined_at already follow."""
+    table = f"replay_attempts_bronze_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, required_columns=["name", "email"], fail_on_quality_error=False)
+    _quarantine(
+        spark,
+        spark.createDataFrame([(1, None, "a@x.com")], "id INT, name STRING, email STRING"),
+        cfg,
+    )
+
+    reprocess_quarantine(spark, _cfg(table, required_columns=["email"]))
+
+    assert "_replay_attempts" not in spark.read.table(_table(table)).columns

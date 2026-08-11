@@ -223,6 +223,12 @@ def enforce_quality(df, config: IngestionConfig):
 _QUARANTINE_META_COLUMNS = {
     "_occurrence_count": "BIGINT",
     "_first_quarantined_at": "TIMESTAMP",
+    # How many times replay has tried this row and it still failed the gate
+    # (#159 item 4). The point is to tell "not yet fixed" from "never going to
+    # be" with DATA rather than with age: a row quarantined 90 days ago whose
+    # upstream fix landed yesterday is not hopeless, and an age-based TTL
+    # cannot see the difference.
+    "_replay_attempts": "BIGINT",
 }
 
 
@@ -357,6 +363,10 @@ def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
         # written on insert - the matched branch below leaves it alone, which
         # is what makes it "first".
         .withColumn("_first_quarantined_at", current_timestamp())
+        # Starts at 0 and is only ever incremented by replay - never by
+        # re-quarantining. Re-ingesting the same bad row is not a failed
+        # attempt to fix it.
+        .withColumn("_replay_attempts", lit(0).cast("bigint"))
     )
 
     # Atomic create-if-not-exists rather than a tableExists() check followed
