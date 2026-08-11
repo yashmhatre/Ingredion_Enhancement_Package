@@ -590,3 +590,127 @@ def test_resolve_batch_id_generates_a_distinct_value_when_unset():
     cfg = _cfg("t")
     first = resolve_batch_id(cfg)
     assert first and first.endswith("Z")
+
+
+# ---------------------------------------------------------------------------
+# Change Data Feed (#58)
+# ---------------------------------------------------------------------------
+
+
+def test_cdf_is_enabled_on_a_table_that_configures_nothing(spark):
+    """The default has to reach tables nobody configured, which is exactly the
+    case that used to skip the property path entirely: before #58 the writer
+    returned early unless cluster_by/cluster_by_auto/table_properties were
+    set, so a plain append table got no Delta properties at all."""
+    table = f"bw_cdf_default_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append")
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+    assert props.get("delta.logRetentionDuration") == "interval 30 days"
+    assert props.get("delta.deletedFileRetentionDuration") == "interval 30 days"
+
+
+def test_second_run_against_an_already_configured_table_issues_no_ddl(spark, caplog):
+    """#58's acceptance criterion. The writer logs a warning naming the
+    changed properties whenever it issues the ALTER, so silence on the second
+    run is the observable for 'no DDL' - and it is what keeps CDF from
+    re-ALTERing the table on every single ingestion."""
+    table = f"bw_cdf_idempotent_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    caplog.clear()
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg)
+
+    assert "Table properties changed" not in caplog.text
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+
+
+def test_existing_table_without_cdf_is_upgraded_without_rewriting_data(spark):
+    """Tables created before this shipped must gain CDF on the next run, and
+    keep their rows - the upgrade is an ALTER, not a rewrite."""
+    table = f"bw_cdf_upgrade_{uuid.uuid4().hex[:8]}"
+    off = _cfg(table, write_mode="append", enable_change_data_feed=False)
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), off)
+    _, before = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in before
+
+    on = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), on)
+
+    _, after = _layout(spark, table)
+    assert after.get("delta.enableChangeDataFeed") == "true"
+    assert spark.read.table(_table(table)).count() == 2, "the upgrade must not drop rows"
+
+
+def test_explicitly_disabling_cdf_is_respected_end_to_end(spark):
+    table = f"bw_cdf_off_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", enable_change_data_feed=False)
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in props
+
+
+def test_raw_table_property_beats_the_cdf_default_end_to_end(spark):
+    """Precedence is decided in config; this pins that the writer honours it
+    rather than re-adding the default further down."""
+    table = f"bw_cdf_override_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="append",
+        table_properties={"delta.enableChangeDataFeed": "false"},
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "false"
+
+
+def test_overwrite_mode_gets_no_cdf_by_default(spark):
+    """docs/bronze_silver_contract.md 2: overwrite emits the whole table as
+    deletes then inserts every run, so the feed carries no incremental
+    information. Silence resolves to off rather than raising, so existing
+    overwrite configs keep working."""
+    table = f"bw_cdf_overwrite_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="overwrite")
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in props
+
+
+def test_a_refused_merge_creates_no_table_even_though_cdf_wants_one(spark):
+    """The regression #58 introduced and CI caught.
+
+    _ensure_liquid_clustering_and_properties creates the table when it has
+    something to apply. Before CDF was on by default it usually had nothing,
+    returned early, and a merge refused for a bad key left no table behind.
+    With CDF always on it always has something to apply - so unless the
+    refusals run FIRST, a run that is about to be rejected leaves an empty
+    table sitting in the catalog.
+
+    test_merge_refuses_null_merge_keys already asserts the no-table property
+    and is what failed. This one exists to say why, so the ordering in
+    _write_core is not 'simplified' back later."""
+    table = f"bw_cdf_refusal_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        retry_attempts=1,
+    )
+    assert cfg.resolved_table_properties, "precondition: CDF gives this config properties to apply"
+
+    with pytest.raises(NullMergeKeyError):
+        write_bronze(spark, spark.createDataFrame([(1, "a"), (None, "b")], ["id", "name"]), cfg)
+
+    assert not spark.catalog.tableExists(_table(table))

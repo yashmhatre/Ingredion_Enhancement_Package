@@ -121,3 +121,54 @@ def row_content_hash(df, columns=None):
     """
     cols = list(df.columns) if columns is None else list(columns)
     return sha2(to_json(struct(*[col(f"`{c}`") for c in cols])), 256)
+
+
+def describe_table_properties(spark, full_name: str) -> dict:
+    """
+    Current Delta TBLPROPERTIES for `full_name`, or {} if the table does not
+    exist or DESCRIBE DETAIL is unavailable on this engine.
+
+    Never raises: property introspection failing must not fail an ingestion
+    run, and "absent" is a usable answer - the caller then applies everything,
+    which is correct for a table that does not exist yet.
+    """
+    try:
+        row = spark.sql(f"DESCRIBE DETAIL {full_name}").select("properties").collect()[0]
+        return row["properties"] or {}
+    except Exception:  # noqa: BLE001 - see docstring; absent state is the answer
+        return {}
+
+
+def apply_table_properties(spark, full_name: str, desired, current=None) -> dict:
+    """
+    Sets only the TBLPROPERTIES that differ from what the table already has,
+    and returns the ones it changed ({} when there was nothing to do).
+
+    Lives here rather than in `bronze_writer` because `quality.write_quarantine`
+    needs it too, and this module exists precisely so those two do not import
+    each other.
+
+    Diffing rather than unconditionally issuing the ALTER is what makes a
+    second run against an already-configured table a no-op at the DDL level
+    (#58's acceptance criterion). `current` is a parameter rather than always
+    re-read so `_ensure_liquid_clustering_and_properties`, which has already
+    paid for a DESCRIBE DETAIL, does not pay for a second one.
+
+    Both key and value are escaped (#154): `table_properties` is free-form
+    Dict[str, str] straight from YAML, and unescaped values broke the
+    statement on an apostrophe and could append arbitrary DDL to it. Keys are
+    additionally validated per dot-separated part at config load, since they
+    are dotted by convention (delta.enableChangeDataFeed).
+    """
+    if not desired:
+        return {}
+    if current is None:
+        current = describe_table_properties(spark, full_name)
+
+    changed = {k: v for k, v in desired.items() if current.get(k) != v}
+    if not changed:
+        return {}
+
+    clause = ", ".join(f"'{quote_literal(k)}' = '{quote_literal(v)}'" for k, v in changed.items())
+    spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({clause})")
+    return changed

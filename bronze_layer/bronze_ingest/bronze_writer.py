@@ -5,7 +5,7 @@ schema evolution.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
@@ -14,7 +14,7 @@ from .config import IngestionConfig
 from .errors import DuplicateMergeKeyError, NullMergeKeyError
 from .logging_utils import logger
 from .retry import with_retry
-from .sql_utils import quote_literal, row_content_hash
+from .sql_utils import apply_table_properties, row_content_hash
 
 
 def resolve_batch_id(config: IngestionConfig) -> str:
@@ -230,7 +230,15 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
     branch in _write_core calls this again immediately after its write to
     restore it, rather than relying on it surviving the write.
     """
-    if not (config.cluster_by or config.cluster_by_auto or config.table_properties):
+    # resolved_table_properties, not table_properties: it carries the CDF
+    # defaults (#58) as well as the user's dict. One consequence worth naming
+    # - with CDF on by default this set is never empty, so the early return
+    # below no longer fires for a table that configures no layout at all.
+    # That is the intended behaviour change: CDF has to reach every table the
+    # package creates, including ones nobody configured.
+    desired_props = config.resolved_table_properties
+
+    if not (config.cluster_by or config.cluster_by_auto or desired_props):
         return
 
     from delta.tables import DeltaTable
@@ -241,7 +249,7 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
             creator = creator.clusterBy(*config.cluster_by)
         elif config.partition_by:
             creator = creator.partitionedBy(*config.partition_by)
-        for key, value in (config.table_properties or {}).items():
+        for key, value in desired_props.items():
             creator = creator.property(key, value)
         creator.execute()
 
@@ -269,21 +277,12 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
                 exc,
             )
 
-    changed_props = {
-        k: v for k, v in (config.table_properties or {}).items() if current_props.get(k) != v
-    }
+    # current_props is already in hand from the DESCRIBE DETAIL above, so it
+    # is passed in rather than letting the helper re-read it. Escaping and the
+    # diff-before-ALTER live in the helper now, shared with the quarantine
+    # write (#58) - see sql_utils.apply_table_properties.
+    changed_props = apply_table_properties(spark, full_name, desired_props, current_props)
     if changed_props:
-        # Both sides escaped (#154). `table_properties` is a free-form
-        # Dict[str, str] straight from YAML, and both key and value landed in
-        # single-quoted SQL literals raw: a value containing an apostrophe
-        # broke the statement, and a crafted one appended arbitrary DDL to it.
-        # The keys are additionally validated at config load, per
-        # dot-separated part, since they are dotted by convention
-        # (delta.enableChangeDataFeed).
-        props_clause = ", ".join(
-            f"'{quote_literal(k)}' = '{quote_literal(v)}'" for k, v in changed_props.items()
-        )
-        spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
 
 
@@ -330,6 +329,34 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 
     full_name = config.full_table_name
+
+    # Merge preparation and its refusals run BEFORE anything can create the
+    # table, and the ordering is load-bearing in two ways (both caught by
+    # pre-existing tests when #58 made the layout step unconditional):
+    #
+    # 1. _ensure_liquid_clustering_and_properties creates the table when it
+    #    has something to apply. Until #58 it usually had nothing, so it
+    #    returned early and a config-error merge left no table behind -
+    #    test_merge_refuses_null_merge_keys asserts exactly that. With CDF on
+    #    by default it always has something to apply, so a run that is about
+    #    to be refused would otherwise leave an empty table behind.
+    # 2. Under the content-hash strategy (#84) _prepare_merge_keys ADDS a
+    #    column. Creating the table from the pre-hash schema and then merging
+    #    the post-hash DataFrame into it is a schema mismatch.
+    #
+    # So: resolve the keys, refuse if they are unusable, and only then let
+    # anything touch the catalog.
+    merge_key_columns: List[str] = []
+    if config.write_mode == "merge":
+        df, merge_key_columns = _prepare_merge_keys(df, config)
+        _assert_no_null_merge_keys(df, merge_key_columns)
+        # resolved_, not the raw field: it defaults to None so config load can
+        # tell an explicit choice from silence, and None is falsy (#54).
+        if config.resolved_dedupe_before_merge:
+            df = _dedupe_for_merge(df, config, merge_key_columns)
+        else:
+            _assert_no_duplicate_merge_keys(df, merge_key_columns)
+
     _ensure_liquid_clustering_and_properties(spark, df, config, full_name)
 
     writer = df.write.format("delta")
@@ -361,21 +388,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     elif config.write_mode == "merge":
         from delta.tables import DeltaTable
 
-        # Resolves which strategy is active (natural merge_keys vs. the
-        # content-hash key, #84) and, for the hash strategy, computes the
-        # hash column onto df. Everything below operates on
-        # merge_key_columns generically and doesn't need to know which
-        # strategy produced it.
-        df, merge_key_columns = _prepare_merge_keys(df, config)
-
-        _assert_no_null_merge_keys(df, merge_key_columns)
-
-        # resolved_, not the raw field: it defaults to None so config load can
-        # tell an explicit choice from silence, and None is falsy (#54).
-        if config.resolved_dedupe_before_merge:
-            df = _dedupe_for_merge(df, config, merge_key_columns)
-        else:
-            _assert_no_duplicate_merge_keys(df, merge_key_columns)
+        # df and merge_key_columns were both resolved above, before anything
+        # could create the table - see the comment there for why that ordering
+        # matters. merge_key_columns is non-empty here by construction.
 
         # Atomic create-if-not-exists instead of a check-then-act on table
         # existence - two concurrent first-runs against the same

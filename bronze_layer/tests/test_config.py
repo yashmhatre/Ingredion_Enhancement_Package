@@ -551,3 +551,133 @@ def test_from_dict_stays_lenient_about_unknown_keys():
     know yet. The strictness belongs where a human just typed the key."""
     cfg = IngestionConfig.from_dict({"source_path": "x", "table": "t", "some_future_field": 1})
     assert cfg.table == "t"
+
+
+# ---------------------------------------------------------------------------
+# Change Data Feed (#58)
+# ---------------------------------------------------------------------------
+
+
+def test_cdf_is_on_by_default_with_a_retention_floor():
+    """The default is the point of #58: CDF only captures changes from the
+    moment it is enabled, so anything ingested before someone opts in is
+    history no Silver consumer can read incrementally. Retention ships with
+    it because a feed whose files are vacuumed away is a guarantee that looks
+    real and is not."""
+    props = _cfg().resolved_table_properties
+
+    assert props["delta.enableChangeDataFeed"] == "true"
+    assert props["delta.logRetentionDuration"] == "interval 30 days"
+    # Both keys, from one number. Delta bounds readable change data by the
+    # SHORTER of the two, and deletedFileRetentionDuration defaults to 7 days
+    # - so setting only logRetentionDuration would advertise 30 and deliver 7.
+    assert props["delta.deletedFileRetentionDuration"] == "interval 30 days"
+
+
+def test_retention_days_drives_both_retention_keys():
+    props = _cfg(change_data_feed_retention_days=90).resolved_table_properties
+
+    assert props["delta.logRetentionDuration"] == "interval 90 days"
+    assert props["delta.deletedFileRetentionDuration"] == "interval 90 days"
+
+
+def test_disabling_cdf_removes_all_three_keys_but_keeps_user_properties():
+    props = _cfg(
+        enable_change_data_feed=False,
+        table_properties={"delta.appendOnly": "true"},
+    ).resolved_table_properties
+
+    assert "delta.enableChangeDataFeed" not in props
+    assert "delta.logRetentionDuration" not in props
+    assert "delta.deletedFileRetentionDuration" not in props
+    assert props == {"delta.appendOnly": "true"}
+
+
+def test_explicit_table_properties_win_over_the_cdf_defaults():
+    """The precedence #58 asked to have decided rather than left to whichever
+    code path runs last. Someone writing the raw property has said something
+    more specific than the boolean default."""
+    props = _cfg(
+        table_properties={
+            "delta.enableChangeDataFeed": "false",
+            "delta.deletedFileRetentionDuration": "interval 7 days",
+        }
+    ).resolved_table_properties
+
+    assert props["delta.enableChangeDataFeed"] == "false"
+    assert props["delta.deletedFileRetentionDuration"] == "interval 7 days"
+    # Untouched keys still come from the defaults.
+    assert props["delta.logRetentionDuration"] == "interval 30 days"
+
+
+def test_resolved_table_properties_does_not_alias_the_config_dict():
+    """Callers diff and mutate this; handing out the stored dict would let a
+    caller edit config by accident."""
+    cfg = _cfg(table_properties={"delta.appendOnly": "true"})
+
+    first = cfg.resolved_table_properties
+    first["delta.enableChangeDataFeed"] = "tampered"
+    first.pop("delta.appendOnly")
+
+    assert cfg.table_properties == {"delta.appendOnly": "true"}
+    assert cfg.resolved_table_properties["delta.enableChangeDataFeed"] == "true"
+
+
+@pytest.mark.parametrize("bad_days", [0, -1])
+def test_zero_or_negative_retention_raises_when_cdf_is_on(bad_days):
+    """ "interval 0 days" is a feed that is switched on and immediately
+    discards its own history - enabled and empty is the precise
+    looks-real-and-is-not failure this issue exists to prevent."""
+    with pytest.raises(ValueError, match="change_data_feed_retention_days"):
+        _cfg(change_data_feed_retention_days=bad_days)
+
+
+def test_retention_value_is_not_policed_when_cdf_is_off():
+    """No feed, no window to get wrong - refusing here would be validation
+    theatre over a field with no effect."""
+    cfg = _cfg(enable_change_data_feed=False, change_data_feed_retention_days=0)
+
+    assert cfg.resolved_table_properties == {}
+
+
+def test_overwrite_defaults_cdf_off_rather_than_failing():
+    """bronze_silver_contract.md 2 puts overwrite-mode tables out of contract
+    for incremental reads: CDF there emits the whole table as deletes then
+    inserts every run. Silence resolves to off, so every existing overwrite
+    config keeps loading - a plain default of True would have made the
+    refusal below unreachable by breaking them all at load."""
+    cfg = _cfg(write_mode="overwrite")
+
+    assert cfg.enable_change_data_feed is None
+    assert cfg.resolved_enable_change_data_feed is False
+    assert cfg.resolved_table_properties == {}
+
+
+def test_explicitly_asking_for_cdf_on_overwrite_is_refused():
+    """The enforcement the contract asked for when #58 landed. Without it the
+    restriction is violated by someone configuring a table reasonably and
+    having no way to know."""
+    with pytest.raises(ValueError, match="overwrite"):
+        _cfg(write_mode="overwrite", enable_change_data_feed=True)
+
+
+@pytest.mark.parametrize("mode", ["append", "merge"])
+def test_silence_means_cdf_on_for_every_other_write_mode(mode):
+    extra = {"merge_keys": ["id"], "required_columns": ["id"]} if mode == "merge" else {}
+    cfg = _cfg(write_mode=mode, **extra)
+
+    assert cfg.resolved_enable_change_data_feed is True
+    assert cfg.resolved_table_properties["delta.enableChangeDataFeed"] == "true"
+
+
+def test_raw_property_remains_the_escape_hatch_on_overwrite():
+    """The flag is refused with overwrite; the raw property is not. Someone
+    writing the Delta property by hand has read the contract and decided -
+    that is the documented I-know-what-I-am-doing path, and keeping it open is
+    what makes the flag-level refusal a guardrail rather than a wall."""
+    cfg = _cfg(
+        write_mode="overwrite",
+        table_properties={"delta.enableChangeDataFeed": "true"},
+    )
+
+    assert cfg.resolved_table_properties["delta.enableChangeDataFeed"] == "true"

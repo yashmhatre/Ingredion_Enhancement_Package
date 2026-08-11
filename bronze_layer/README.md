@@ -423,8 +423,86 @@ Unity-Catalog-managed tables) is an account/metastore-level setting,
 enabled once by a workspace admin - this package doesn't try to manage
 it, only documents it as the recommended companion to `cluster_by_auto`.
 There's currently no table-lifecycle management (`OPTIMIZE`, `VACUUM`,
-retention policies) in this package beyond what `table_properties` and
-predictive optimization already cover.
+retention policies) in this package beyond what `table_properties`, the CDF
+retention floor below, and predictive optimization already cover.
+
+## Change Data Feed (#58)
+
+**On by default, on every table this package creates — bronze *and*
+quarantine.**
+
+```python
+enable_change_data_feed: bool = True       # delta.enableChangeDataFeed
+change_data_feed_retention_days: int = 30  # the CDF window, see below
+```
+
+CDF captures changes only from the moment it is enabled. Anything ingested
+before it is switched on is history that no downstream consumer can ever read
+incrementally — which is why this defaults to on rather than waiting for a
+consumer to ask for it.
+
+### The Silver-side read pattern
+
+`docs/bronze_silver_contract.md` §1 decides Silver reads Bronze incrementally
+via CDF, which is what makes this an obligation on Bronze:
+
+```python
+(spark.readStream.format("delta")
+    .option("readChangeFeed", "true")
+    .option("startingVersion", <last committed version>)
+    .table("<catalog>.<schema>.orders_raw"))
+```
+
+### Retention: the number, and why it is a number rather than a default
+
+Delta bounds readable change data by **both** the commit log
+(`delta.logRetentionDuration`, default 30 days) and the underlying files
+(`delta.deletedFileRetentionDuration`, default 7 days). **The real window is
+the shorter of the two** — so leaving the defaults alone advertises 30 days of
+feed and delivers 7. Both are set from `change_data_feed_retention_days` so
+they cannot silently disagree.
+
+**30 days is a floor chosen to be written down, not a measured figure.** Silver
+does not exist yet (#205), so there is no consumer lag to measure against.
+Revisit it when there is a real consumer.
+
+**A `VACUUM ... RETAIN n HOURS` shorter than this overrides the property and
+silently shortens the window.** Table-lifecycle scheduling is #159; if you add
+one, it must respect this floor, or the feed is enabled and its history is
+being deleted underneath it.
+
+### `overwrite` mode is out of contract for incremental consumers
+
+Under `write_mode: "overwrite"` CDF emits the **entire table** as removals
+plus insertions on every run, because that is what the write does. A consumer
+built for incremental reads will see a full-table churn per batch. Either the
+consumer is built to expect that, or overwrite-mode tables are out of contract
+for incremental reads — this package does not paper over the difference.
+
+### What is deliberately excluded
+
+The **audit** (`_ingestion_audit`) and **schema registry**
+(`_schema_registry`) tables do not get CDF. They are this package's own
+metadata, nothing consumes them incrementally, and their file growth is #159's
+concern rather than a feed's.
+
+### Turning it off, and precedence
+
+Set `enable_change_data_feed: false`, or set the raw property directly.
+**An explicit `table_properties` entry always wins over the flag** — writing
+`table_properties: {"delta.enableChangeDataFeed": "false"}` is more specific
+than the default, so it is honoured:
+
+```yaml
+enable_change_data_feed: true
+table_properties:
+  delta.enableChangeDataFeed: "false"   # this wins
+```
+
+Existing tables are upgraded in place on the next run via `ALTER TABLE ... SET
+TBLPROPERTIES`, diffed against `DESCRIBE DETAIL` first — so no data is
+rewritten, and a second run against an already-configured table issues no DDL
+at all.
 
 ## Catalog documentation (table/column comments)
 
