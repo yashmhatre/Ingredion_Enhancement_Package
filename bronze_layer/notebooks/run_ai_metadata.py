@@ -150,8 +150,15 @@ logger.info(
 # on this warehouse. Those do not self-heal, and staying silent would leave a
 # job that "succeeds" nightly while writing nothing at all - which is exactly
 # the silent-no-op this repo keeps finding. That case fails the task.
+#
+# `raise`, NOT dbutils.notebook.exit("FAILED: ...") (#247). exit() returns a
+# STRING to the caller and always exits 0, so the Jobs UI marked this run
+# Succeeded no matter what the string said - the comment above was describing
+# an intent the mechanism never delivered, and every alert and retry keyed on
+# task failure stayed inert. An uncaught exception is the only thing that
+# marks a notebook task Failed.
 if processed == 0 and (failed or malformed):
-    dbutils.notebook.exit(
+    raise RuntimeError(
         f"FAILED: every candidate failed - {failed} model failure(s), "
         f"{malformed} malformed. Check the endpoint name ({job_config.model_id}) "
         "and that ai_query is available on this compute."

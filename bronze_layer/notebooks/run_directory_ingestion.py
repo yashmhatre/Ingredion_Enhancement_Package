@@ -170,8 +170,15 @@ logger.info(
 # folder with no JSON in it) is deliberately not a failure: there is no bad
 # data and nothing for a human to fix, so failing the task on it would fire
 # alerts for a non-event and bury genuine failures in the same run.
+#
+# `raise`, NOT dbutils.notebook.exit("FAILED: ...") (#247). exit() hands a
+# STRING back to the caller and always exits 0, so "alerting/retries kick in"
+# above was never true: the Jobs UI marked a run with failed units Succeeded,
+# and nothing keyed on task failure fired. Only an uncaught exception marks a
+# notebook task Failed. The summary table above has already been displayed, so
+# the per-unit detail is still in the run output either way.
 if failed:
-    dbutils.notebook.exit(
+    raise RuntimeError(
         f"FAILED: {len(failed)}/{len(results)} unit(s) failed: {[f['file'] for f in failed]}"
     )
 

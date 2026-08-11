@@ -85,18 +85,30 @@ def test_empty_results_exits_success_without_raising(run_notebook):
 
 
 def test_failed_unit_fails_the_task(run_notebook):
+    """
+    #247. This test previously asserted only that the exit STRING started with
+    "FAILED" - which it did, while the task itself reported Succeeded, because
+    `dbutils.notebook.exit()` exits 0 whatever string it is handed. The test
+    name claimed something the assertion never checked and the code never did.
+
+    So the assertion is now the one that matters: the notebook must RAISE,
+    because an uncaught exception is the only thing that marks a notebook task
+    Failed on Databricks. `run_notebook` only swallows NotebookExit, so
+    anything else propagating here is a real task failure.
+    """
     results = [
         {"file": "a.json", "table": "a_bronze", "status": "success", "rows": 5},
         {"file": "b.json", "table": "b_bronze", "status": "failed", "error": "boom"},
     ]
-    run = run_notebook(
-        "run_directory_ingestion",
-        widgets=BASE_WIDGETS,
-        patches=[(bronze_ingest, "ingest_directory_to_bronze", _fake_ingest(results))],
-    )
+    with pytest.raises(RuntimeError) as excinfo:
+        run_notebook(
+            "run_directory_ingestion",
+            widgets=BASE_WIDGETS,
+            patches=[(bronze_ingest, "ingest_directory_to_bronze", _fake_ingest(results))],
+        )
 
-    assert run.exit_value.startswith("FAILED")
-    assert "b.json" in run.exit_value
+    assert str(excinfo.value).startswith("FAILED")
+    assert "b.json" in str(excinfo.value)
 
 
 def test_skipped_unit_does_not_fail_the_task(run_notebook):
@@ -151,6 +163,81 @@ def test_summary_uses_an_explicit_schema_and_no_pandas(run_notebook):
     assert rows[0] == ("a.json", "a_bronze", "success", 5, 0, "")
     assert rows[1][2] == "skipped" and rows[1][5] == "no JSON files"
     assert len(run.displayed) == 1
+
+
+def _exit_call_first_arg(node):
+    """
+    The first argument of a `dbutils.notebook.exit(...)` call, or None if this
+    node is not such a call. Matches on the attribute chain rather than on the
+    receiver's name, so a rebound alias is still caught.
+    """
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if not (isinstance(func, ast.Attribute) and func.attr == "exit"):
+        return None
+    if not (isinstance(func.value, ast.Attribute) and func.value.attr == "notebook"):
+        return None
+    return node.args[0] if node.args else None
+
+
+def _static_prefix(node):
+    """
+    The leading literal text of a str or f-string node, or "" if it does not
+    begin with literal text. `f"FAILED: {n} units"` yields "FAILED: " - enough
+    to classify the message without evaluating it.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr) and node.values:
+        first = node.values[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+    return ""
+
+
+def test_no_notebook_reports_failure_through_notebook_exit():
+    """
+    #247, and the reason this is a static scan rather than another per-notebook
+    behaviour test.
+
+    `dbutils.notebook.exit(value)` stops the notebook and hands `value` back to
+    the caller as a STRING. It always exits 0. A notebook that "reported"
+    failure that way was marked **Succeeded** in the Jobs UI, so every alert,
+    retry and downstream gate keyed on task failure stayed inert - the exact
+    silent no-op this repo keeps finding, sitting in the mechanism meant to
+    prevent it. Only an uncaught exception marks a notebook task Failed.
+
+    Three notebooks did this and were fixed. The failure is invisible in
+    review - the string says FAILED and the surrounding comment says it fails
+    the task - and it was equally invisible in tests, because the old
+    assertions checked the string rather than the outcome. So the class is
+    closed here instead: any new notebook reaching for the same pattern fails
+    this test with the reason attached, whether or not anyone writes it a
+    behaviour test.
+
+    Deliberately keyed on the message text, not on some registry of approved
+    exit calls: "the string says FAILED" is precisely the signal that the
+    author intended a failure, and intent plus `exit()` is always the bug.
+    """
+    offenders = []
+    for name in sorted(os.listdir(NOTEBOOK_DIR)):
+        if not name.endswith(".py"):
+            continue
+        source = open(os.path.join(NOTEBOOK_DIR, name), encoding="utf-8").read()
+        for node in ast.walk(ast.parse(source)):
+            arg = _exit_call_first_arg(node)
+            if arg is None:
+                continue
+            if _static_prefix(arg).lstrip().upper().startswith("FAIL"):
+                offenders.append(f"{name}:{node.lineno}")
+
+    assert offenders == [], (
+        f"{offenders} report failure via dbutils.notebook.exit(), which exits 0 and "
+        "marks the job run Succeeded no matter what the string says (#247). Raise an "
+        "exception instead - that is the only thing Databricks treats as a failed "
+        "notebook task. Keep dbutils.notebook.exit() for success paths."
+    )
 
 
 def test_no_notebook_imports_pandas():
@@ -627,15 +714,23 @@ def test_ai_notebook_fails_when_every_candidate_failed(run_notebook):
     """Nothing drafted and everything failed is structural - a wrong endpoint,
     a missing grant, ai_query unavailable. Those do not self-heal, and a job
     that 'succeeds' nightly while writing nothing is the silent no-op this
-    repo keeps finding."""
-    run, _ = _run_ai(
-        run_notebook,
-        {"processed": 0, "skipped_unchanged": 0, "skipped_failed": 4, "skipped_malformed": 0},
-    )
-    assert run.exit_value.startswith("FAILED")
-    assert "every candidate failed" in run.exit_value
+    repo keeps finding.
+
+    #247: this asserted the exit string only, so it passed while the job
+    reported Succeeded - the silent no-op it exists to prevent, inside the
+    test meant to prevent it. It now asserts the notebook RAISES, which is the
+    only thing that marks the task Failed."""
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_ai(
+            run_notebook,
+            {"processed": 0, "skipped_unchanged": 0, "skipped_failed": 4, "skipped_malformed": 0},
+        )
+
+    message = str(excinfo.value)
+    assert message.startswith("FAILED")
+    assert "every candidate failed" in message
     # The message must name the endpoint - that is the first thing to check.
-    assert "databricks-claude-opus-4-8" in run.exit_value
+    assert "databricks-claude-opus-4-8" in message
 
 
 def test_ai_notebook_treats_no_candidates_as_success(run_notebook):

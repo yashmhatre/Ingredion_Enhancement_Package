@@ -361,8 +361,14 @@ check("schema_hint_type_mismatch_nulls_and_rescues", _check_type_mismatch)
 display(spark.createDataFrame(results, schema="case STRING, status STRING, detail STRING"))
 
 failed = [r for r in results if r[1] != "PASS"]
+# `raise`, NOT dbutils.notebook.exit("FAILED: ...") (#247). exit() always
+# exits 0 whatever string it is given, so a validation run with failing cases
+# reported Succeeded - which is the worst place for this bug to sit, since the
+# entire point of this notebook is to tell you whether the reader is correct.
+# Only an uncaught exception marks the task Failed. The results table above is
+# displayed first, so every case's status is still visible in the run output.
 if failed:
-    dbutils.notebook.exit(
+    raise RuntimeError(
         f"FAILED: {len(failed)}/{len(results)} case(s) failed: {[r[0] for r in failed]}"
     )
 
