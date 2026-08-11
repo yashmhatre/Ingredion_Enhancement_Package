@@ -608,6 +608,38 @@ happens before the quarantine delete; if the delete itself then fails
 after a successful write, the log names the `_batch_id` to reconcile on
 rather than silently risking a duplicate promotion on the next replay.
 
+### Quarantine's exit path: `_replay_attempts` (#159)
+
+Rows leave quarantine only by passing the gate on a later replay. A genuinely
+malformed source record never will, so without something else it stays forever
+and every replay rescans it.
+
+`_replay_attempts` counts how many times replay has offered a row to the gate
+and it still failed. Set `max_replay_attempts` to stop offering rows past that
+count:
+
+```yaml
+max_replay_attempts: 3   # default: null, meaning no limit
+```
+
+**Exhausted rows are skipped, never deleted.** A row that failed three times
+may still pass after a genuine upstream fix, and deletion is irreversible — the
+counter exists to stop rescanning hopeless rows, not to throw them away. Sweep
+them back in whenever you want with an explicit override:
+
+```python
+reprocess_quarantine(spark, config, max_replay_attempts=None)
+```
+
+**Why a counter and not a TTL.** Age conflates "old" with "hopeless": a row
+quarantined 90 days ago whose upstream fix landed yesterday is not hopeless,
+and an age-based rule cannot see the difference. Attempts measure the thing
+that actually matters — how many times the current rules have been tried
+against this row.
+
+Only replay moves the number. Re-ingesting the same bad row is not a failed
+attempt to fix it, so re-quarantining leaves it alone.
+
 ### Replay is bounded, on purpose
 
 Replay is not a steady-state trickle. It is what an operator runs **after

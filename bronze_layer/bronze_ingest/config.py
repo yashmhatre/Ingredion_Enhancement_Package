@@ -119,6 +119,18 @@ class IngestionConfig:
     fail_on_quality_error: bool = True
     # e.g. "bronze.orders_raw_quarantine" - defaults to f"{table}_quarantine"
     quarantine_table: Optional[str] = None
+    # Replay stops offering a row after this many failed attempts (#159 item
+    # 4). None means "no limit", which is the pre-existing behaviour and stays
+    # the default: turning this on changes which rows a recovery tool
+    # considers, and that should be a choice rather than something that starts
+    # happening on upgrade.
+    #
+    # Exhausted rows are SKIPPED, never deleted. A row that has failed five
+    # times may still pass after a genuine source fix, and deletion is
+    # irreversible - the counter exists to stop rescanning hopeless rows, not
+    # to throw them away. `reprocess_quarantine(max_replay_attempts=...)` can
+    # override this per call to sweep them back in.
+    max_replay_attempts: Optional[int] = None
 
     # --- Reliability ---
     retry_attempts: int = 3

@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from pyspark.sql.functions import col, current_timestamp, lit
+from pyspark.sql.functions import coalesce, col, current_timestamp, lit
 
 from .audit import record_replay_run
 from .bronze_writer import write_bronze
@@ -30,6 +30,12 @@ from .quality import split_good_bad
 
 #: Default ceiling on a single replay, in rows.
 #:
+#: Distinguishes "caller said None" from "caller said nothing" for
+#: max_replay_attempts. None is a meaningful VALUE here - it means "ignore the
+#: limit and sweep exhausted rows back in" - so it cannot double as the
+#: default. Same #54 reasoning the config fields use.
+_UNSET = object()
+
 #: Not a performance limit - the delete is distributed now and would cope.
 #: It is a guard against the shape of the operation: replay is what an
 #: operator runs AFTER fixing an upstream source, against a quarantine table
@@ -64,12 +70,56 @@ def _merge_deleted_count(spark, table_name, merge_result):
     return None
 
 
+def _increment_replay_attempts(spark, quarantine_table: str, bad_df) -> int:
+    """
+    Bumps `_replay_attempts` for the rows that were offered to the gate and
+    still failed (#159 item 4). Returns how many were marked.
+
+    Never raises. This is bookkeeping about a recovery attempt, not the
+    recovery itself - a failure to record the attempt must not fail a replay
+    that otherwise promoted rows correctly. The cost of missing an increment is
+    that a hopeless row gets rescanned once more, which is exactly the state
+    everything was in before this existed.
+
+    Only rows that were actually TRIED are incremented. Rows skipped for being
+    exhausted are not re-counted, so the number stays a count of attempts made
+    rather than of replays run.
+    """
+    try:
+        from delta.tables import DeltaTable
+
+        bad_df.select("_quarantine_id").createOrReplaceTempView("_failed_replay_ids")
+        marked = spark.table("_failed_replay_ids").count()
+        if not marked:
+            return 0
+        (
+            DeltaTable.forName(spark, quarantine_table)
+            .alias("q")
+            .merge(
+                spark.table("_failed_replay_ids").alias("f"),
+                "q._quarantine_id = f._quarantine_id",
+            )
+            .whenMatchedUpdate(set={"_replay_attempts": "coalesce(q._replay_attempts, 0) + 1"})
+            .execute()
+        )
+        return marked
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        logger.warning(
+            "Could not record replay attempts for %s: %s. The rows remain quarantined; "
+            "they will simply be offered again on the next replay.",
+            quarantine_table,
+            exc,
+        )
+        return 0
+
+
 def reprocess_quarantine(
     spark,
     config: IngestionConfig,
     batch_id: Optional[str] = None,
     since=None,
     max_rows: Optional[int] = DEFAULT_MAX_REPLAY_ROWS,
+    max_replay_attempts: Any = _UNSET,  # Optional[int]; _UNSET means 'use config'
 ) -> Dict[str, Any]:
     """
     Re-runs quarantined rows through the CURRENT quality gate - the rule
@@ -104,6 +154,7 @@ def reprocess_quarantine(
             lift the guard for a replay whose size is deliberate.
 
     Returns {"table", "replayed_row_count", "still_quarantined_row_count",
+    "skipped_exhausted_row_count", "attempts_recorded",
     "replay_batch_id"}.
     """
     quarantine_table = config.resolved_quarantine_table
@@ -114,6 +165,11 @@ def reprocess_quarantine(
             "table": config.full_table_name,
             "replayed_row_count": 0,
             "still_quarantined_row_count": 0,
+            # No table, so nothing was skipped for being exhausted either. The
+            # key is present on every return path so a caller can read it
+            # without checking which path produced the result.
+            "skipped_exhausted_row_count": 0,
+            "attempts_recorded": 0,
             "replay_batch_id": None,
         }
 
@@ -122,6 +178,29 @@ def reprocess_quarantine(
         quarantined_df = quarantined_df.filter(col(f"`{config.audit_batch_id_col}`") == batch_id)
     if since is not None:
         quarantined_df = quarantined_df.filter(col(f"`{config.audit_ingest_ts_col}`") >= since)
+
+    # Rows replay has already tried and failed on, more than the configured
+    # number of times (#159 item 4). SKIPPED, not deleted: a row that failed
+    # five times may still pass after a genuine source fix, and deletion is
+    # irreversible. The counter exists to stop rescanning hopeless rows, not
+    # to throw them away - pass max_replay_attempts=None to sweep them back in.
+    attempt_limit = (
+        config.max_replay_attempts if max_replay_attempts is _UNSET else max_replay_attempts
+    )
+    exhausted_count = 0
+    if attempt_limit is not None and "_replay_attempts" in quarantined_df.columns:
+        attempts = coalesce(col("_replay_attempts"), lit(0))
+        exhausted_count = quarantined_df.filter(attempts >= lit(attempt_limit)).count()
+        quarantined_df = quarantined_df.filter(attempts < lit(attempt_limit))
+        if exhausted_count:
+            logger.warning(
+                "Replay for %s: skipping %d row(s) that have already failed %d or more "
+                "attempts. They are still quarantined, not deleted - re-run with "
+                "max_replay_attempts=None to include them.",
+                quarantine_table,
+                exhausted_count,
+                attempt_limit,
+            )
 
     # Drop quarantine-specific + stale audit columns so the current quality
     # gate re-derives everything fresh (_source_file is deliberately kept).
@@ -139,6 +218,9 @@ def reprocess_quarantine(
         config.audit_batch_id_col,
         "_occurrence_count",
         "_first_quarantined_at",
+        # Same reason as the two above: quarantine bookkeeping, not data. It
+        # would otherwise land as a column on the BRONZE table.
+        "_replay_attempts",
     )
     good_df, bad_df = split_good_bad(candidate_df, config)
 
@@ -176,10 +258,13 @@ def reprocess_quarantine(
             row_count=0,
             quarantined_row_count=still_bad_count,
         )
+        marked = _increment_replay_attempts(spark, quarantine_table, bad_df)
         return {
             "table": config.full_table_name,
             "replayed_row_count": 0,
             "still_quarantined_row_count": still_bad_count,
+            "skipped_exhausted_row_count": exhausted_count,
+            "attempts_recorded": marked,
             "replay_batch_id": replay_batch_id,
         }
 
@@ -267,10 +352,16 @@ def reprocess_quarantine(
         still_bad_count,
     )
 
+    # After the promotion and the delete: a row that still failed has now had
+    # one more attempt made on it, whether or not anything else was promoted.
+    marked = _increment_replay_attempts(spark, quarantine_table, bad_df)
+
     return {
         "table": table_name,
         "replayed_row_count": good_count,
         "still_quarantined_row_count": still_bad_count,
+        "skipped_exhausted_row_count": exhausted_count,
+        "attempts_recorded": marked,
         "replay_batch_id": replay_batch_id,
     }
 
