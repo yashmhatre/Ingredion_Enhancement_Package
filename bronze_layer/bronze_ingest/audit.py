@@ -159,7 +159,17 @@ def _batched_append(spark, schema_ref: str, table: str, rows: list) -> None:
     the ingestion run goes through `_append_audit_rows` instead.
     """
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
-    df = spark.createDataFrame(rows, schema=AUDIT_SCHEMA)
+    # coalesce(1) because one COMMIT is not one FILE, which is the whole point
+    # of #159. Spark writes one file per non-empty partition, so buffering 50
+    # audit rows into a single commit still produced one file per partition
+    # Spark happened to spread them across - CI caught this as 2 files for 3
+    # rows. Without this, buffering reduces commits and barely touches the file
+    # count it exists to reduce.
+    #
+    # Safe at this size by construction: a batch is bounded by the number of
+    # units in one directory run, each row is a handful of scalar fields, and
+    # the unbuffered path passes a single row (where coalesce is a no-op).
+    df = spark.createDataFrame(rows, schema=AUDIT_SCHEMA).coalesce(1)
     df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table)
 
 

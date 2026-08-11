@@ -371,6 +371,10 @@ def test_buffering_writes_many_rows_in_one_commit(spark, tmp_path):
     df = spark.read.table(cfg.resolved_audit_table)
     assert df.count() == 3
     assert sorted(r["row_count"] for r in df.collect()) == [0, 1, 2]
+    # One FILE, not merely one commit. CI caught the difference: Spark writes
+    # one file per non-empty partition, so the first version of this produced
+    # 2 files for 3 rows and reduced commits without reducing files - which is
+    # the metric #159 is about. _batched_append coalesces for that reason.
     assert _audit_files(spark, cfg.resolved_audit_table) == 1
 
 
