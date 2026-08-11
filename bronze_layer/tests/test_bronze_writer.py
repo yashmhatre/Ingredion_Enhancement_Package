@@ -181,7 +181,14 @@ def test_content_hash_merge_key_column_is_added_and_populated(spark):
     """#84: the hash strategy computes its own key column onto the
     DataFrame and persists it, named _content_hash_key by default."""
     table = f"bw_hash_col_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="merge", content_hash_columns=["id", "name"])
+    # dedupe_before_merge is orthogonal to this test - disable it so this
+    # test doesn't depend on audit columns being present (see #48 tests).
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_before_merge=False,
+    )
 
     write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
 
@@ -197,6 +204,7 @@ def test_content_hash_key_col_name_is_configurable(spark):
         write_mode="merge",
         content_hash_columns=["id", "name"],
         content_hash_key_col="_my_dedup_key",
+        dedupe_before_merge=False,
     )
 
     write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
@@ -207,16 +215,34 @@ def test_content_hash_key_col_name_is_configurable(spark):
 
 
 def test_content_hash_merge_dedupes_identical_rows_within_one_batch(spark):
-    """Two byte-identical rows in the same source batch hash to the same
-    key, so dedupe_before_merge (default True) collapses them the same way
-    it would collapse a duplicate natural merge key."""
-    table = f"bw_hash_dupe_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="merge", content_hash_columns=["id", "name"])
+    """Rows that are identical across the HASHED columns collide on the
+    computed key, so dedupe_before_merge (default True) collapses them the
+    same way it would collapse a duplicate natural merge key - and picks the
+    highest dedupe_order_by value, exactly as #48 specified for merge_keys.
 
-    df = spark.createDataFrame([(1, "a"), (1, "a"), (2, "b")], ["id", "name"])
+    `version` differs between the two rows and is deliberately NOT in
+    content_hash_columns, which also pins the other half of this: the hash
+    covers the named columns only, so a column outside the list can't stop
+    two rows from colliding. dedupe_order_by is explicit here because
+    write_bronze doesn't add audit columns, so the default order column
+    (_ingested_at) isn't on a raw DataFrame - see
+    test_merge_dedupe_missing_order_column_raises_clear_error."""
+    table = f"bw_hash_dupe_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_order_by="version",
+    )
+
+    df = spark.createDataFrame(
+        [(1, "a", 1), (1, "a", 2), (2, "b", 1)],
+        ["id", "name", "version"],
+    )
     write_bronze(spark, df, cfg)
 
-    assert spark.read.table(_table(table)).count() == 2
+    rows = {r["id"]: r["version"] for r in spark.read.table(_table(table)).collect()}
+    assert rows == {1: 2, 2: 1}
 
 
 def test_content_hash_merge_key_gives_idempotent_reingestion_not_upsert(spark):
