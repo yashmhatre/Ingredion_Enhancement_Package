@@ -131,6 +131,11 @@ def test_audit_schema_matches_documented_fields():
         "failure_stage",
         "schema_fingerprint",
         "schema_changed",
+        # WHAT changed, not just that it did (#256). Added deliberately, via
+        # the same mergeSchema path #149 and #156 used - an addition, not the
+        # rename that caused #231, so _assert_audit_migration_complete is
+        # unaffected and pre-existing rows correctly read NULL.
+        "schema_drift_json",
         "started_at",
         "finished_at",
         "error_message",

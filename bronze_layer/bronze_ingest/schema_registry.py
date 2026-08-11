@@ -153,6 +153,21 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
         )
 
 
+def _fields_by_name(schema_json: str) -> dict:
+    """
+    {column_name: type} from a registry `schema_json` value.
+
+    Reads the shape `_schema_json` actually writes - a JSON ARRAY of
+    {"name", "type"} objects - and not Spark's own `schema.json()`, which
+    wraps its fields in a {"fields": [...]} object. Writing this against the
+    wrong one of those two is not hypothetical: the first version of #256 did,
+    and because `describe_drift` swallows parse errors by design, it returned
+    None on every real drift while its unit tests - written against the same
+    wrong assumption - passed. CI's integration test caught it.
+    """
+    return {f["name"]: f.get("type") for f in json.loads(schema_json)}
+
+
 def describe_drift(old_schema_json: Optional[str], new_schema_json: str) -> Optional[str]:
     """
     A compact, queryable description of what changed between two registered
@@ -177,8 +192,8 @@ def describe_drift(old_schema_json: Optional[str], new_schema_json: str) -> Opti
     if not old_schema_json:
         return None
     try:
-        old_fields = {f["name"]: f.get("type") for f in json.loads(old_schema_json)["fields"]}
-        new_fields = {f["name"]: f.get("type") for f in json.loads(new_schema_json)["fields"]}
+        old_fields = _fields_by_name(old_schema_json)
+        new_fields = _fields_by_name(new_schema_json)
     except (ValueError, KeyError, TypeError):
         # Advisory metadata must never fail the run that produced it - the
         # same contract the rest of this module keeps.
