@@ -125,6 +125,24 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[Any, Any]:
         remove exactly the rows it re-promoted (#148).
     """
     if not config.required_columns and not config.unique_columns:
+        # A gate configured to check nothing looks exactly like a gate that
+        # passed (#250). Both produce zero bad rows, a clean audit row and a
+        # green run - and the deployed job resource ships
+        # `required_columns: ""`, so this is the DEFAULT state, not an edge
+        # case someone opted into.
+        #
+        # One line per run, deliberately not a raise: an unconfigured gate is a
+        # legitimate choice for a source with no known invariants, and failing
+        # would make bronze undeployable until someone invented rules. But it
+        # must not be SILENT, which is the difference this repo keeps finding
+        # between a check and a green light nobody looks at.
+        logger.warning(
+            "Quality gate for %s is checking nothing: required_columns and unique_columns "
+            "are both empty, so every row will pass and the quarantine table will stay "
+            "empty regardless of the data. Configure required_columns if this source has "
+            "columns that must be non-null (#250).",
+            config.full_table_name,
+        )
         return df, df.limit(0)
 
     missing = _missing_columns(df, config.required_columns) + _missing_columns(

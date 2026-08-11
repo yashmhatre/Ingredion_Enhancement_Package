@@ -599,3 +599,43 @@ def test_quarantine_respects_cdf_being_disabled(spark):
     write_quarantine(spark, bad, bad_count, cfg)
 
     assert "delta.enableChangeDataFeed" not in _quarantine_props(spark, cfg)
+
+
+# ---------------------------------------------------------------------------
+# An unconfigured gate must not be silent (#250)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_with_nothing_configured_warns_that_it_checks_nothing(spark, caplog):
+    """#250's actual harm. A gate configured to check nothing looks exactly
+    like a gate that passed: zero bad rows, a clean audit row, a green run.
+    The deployed job resource ships `required_columns: ""`, so this is the
+    DEFAULT state rather than something someone opted into."""
+    cfg = IngestionConfig(source_path="x", table="t")
+    assert not cfg.required_columns and not cfg.unique_columns
+
+    good, bad = split_good_bad(_df(spark), cfg)
+
+    assert bad.count() == 0
+    assert "checking nothing" in caplog.text
+    assert "t" in caplog.text, "the message must name the table, not just complain"
+
+
+def test_a_configured_gate_does_not_warn(spark, caplog):
+    """The warning has to stay rare enough to mean something - a gate doing
+    its job must not log it."""
+    cfg = IngestionConfig(source_path="x", table="t", required_columns=["name"])
+
+    split_good_bad(_df(spark), cfg)
+
+    assert "checking nothing" not in caplog.text
+
+
+def test_unique_columns_alone_is_a_configured_gate(spark, caplog):
+    """Either check counts. A source with no non-null invariant but a
+    uniqueness one is configured, not unconfigured."""
+    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["name"])
+
+    split_good_bad(_df(spark), cfg)
+
+    assert "checking nothing" not in caplog.text
