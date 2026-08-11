@@ -1,0 +1,97 @@
+# Table maintenance job — OPTIMIZE and VACUUM (#159 item 3).
+#
+# A SEPARATE job from ingestion, for the same reason the AI metadata job is:
+# ingestion is on the critical path and this is housekeeping. Appending it as a
+# task would make every ingestion run wait on compaction, and a compaction
+# failure would fail an ingestion that had already succeeded.
+#
+# Paths below are relative to THIS FILE's directory (bronze_layer/resources/),
+# not the bundle root - hence the leading `../`. Same constraint the other job
+# files document.
+#
+# ---------------------------------------------------------------------------
+# SCHEDULE IS PAUSED, DELIBERATELY.
+#
+# Deploying and unpausing this is a Tier 2 action under docs/agent_governance.md
+# and needs the Project Lead's sign-off. It is drafted here so the decision has
+# something concrete to approve, not so it starts running.
+#
+# Two things to settle before unpausing:
+#   1. The table list below is hand-maintained. It names what exists in dev
+#      today; a new bronze table does not add itself.
+#   2. VACUUM is irreversible past the retention horizon. The floor guard makes
+#      it safe with respect to CDF (#58) - it cannot make it undo-able.
+# ---------------------------------------------------------------------------
+
+resources:
+  jobs:
+    bronze_maintenance:
+      name: bronze_maintenance_${var.env_suffix}
+
+      # One at a time. Two concurrent VACUUMs over the same table race on file
+      # deletion, and OPTIMIZE rewrites files a concurrent VACUUM may expire.
+      max_concurrent_runs: 1
+
+      queue:
+        enabled: true
+
+      schedule:
+        # Weekly, off-hours. Compaction is not urgent - the measured growth is
+        # one small file per run (#274), so a week of accumulation is tens of
+        # files, not thousands.
+        quartz_cron_expression: "0 0 3 ? * SUN"
+        timezone_id: UTC
+        # See the header. Unpausing is the Tier 2 decision, not deploying the
+        # definition.
+        pause_status: PAUSED
+
+      # Serverless rejects a task-level `libraries:` field outright;
+      # dependencies are declared as a job-level environment that tasks bind to
+      # via environment_key. This workspace is serverless by design (see
+      # azure_setup.md Step 3) - same shape as the AI metadata job.
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              # The wheel built and uploaded by the root bundle's `artifacts:`
+              # block. No extra dependency is needed: maintenance issues plain
+              # OPTIMIZE/VACUUM SQL and reads table properties.
+              - ../dist/*.whl
+
+      email_notifications:
+        on_failure:
+          - ${var.notification_email}
+
+      tasks:
+        - task_key: maintain_bronze_tables
+          environment_key: default
+
+          # Housekeeping that failed is worth one retry - the usual cause is a
+          # concurrent write holding the table - but not more. A table that
+          # cannot be compacted twice in a row is a real problem and should
+          # surface as a failure rather than be retried into silence.
+          max_retries: 1
+          min_retry_interval_millis: 300000
+          retry_on_timeout: false
+
+          notebook_task:
+            notebook_path: ../notebooks/run_maintenance.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema_name: ${var.schema_name}
+              # Explicit, never discovered. This job's blast radius must not
+              # depend on what else happens to live in the schema - including
+              # tables this package did not create (`agentpoc` and `default`
+              # both sit outside the bundle model in this workspace).
+              tables: "_ingestion_audit,_schema_registry,_ai_metadata"
+              optimize: "true"
+              vacuum: "true"
+              # Blank = use each table's own delta.deletedFileRetentionDuration,
+              # which #58 set. That is the safe default and the reason this is
+              # not a number here: a second configured value could drift out of
+              # step with the floor the tables actually promise, and a VACUUM
+              # shorter than that floor silently expires CDF history. A value
+              # set here that is BELOW a table's floor is raised to the floor
+              # and reported, not honoured.
+              vacuum_retention_hours: ""
