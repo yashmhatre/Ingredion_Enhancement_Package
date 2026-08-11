@@ -410,6 +410,9 @@ def test_a_failed_replay_increments_the_attempt_counter(spark):
 
     first = reprocess_quarantine(spark, _cfg(table, required_columns=["name"]))
     assert first["still_quarantined_row_count"] == 1
+    # Both, deliberately: the reported number and the persisted one. The first
+    # version of this reported 1 while the counter on disk stayed 0, because it
+    # counted the ids handed to the MERGE rather than what the MERGE updated.
     assert first["attempts_recorded"] == 1
     assert _quarantine_rows(spark, cfg)[0]["_replay_attempts"] == 1
 

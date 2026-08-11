@@ -70,39 +70,72 @@ def _merge_deleted_count(spark, table_name, merge_result):
     return None
 
 
+def _merge_updated_count(spark, table_name, merge_result):
+    """Rows the MERGE actually updated, from Delta's own metrics.
+
+    Mirrors `_merge_deleted_count`. Reporting the INPUT count instead was a
+    real bug: the first version of `_increment_replay_attempts` returned how
+    many ids it handed to the MERGE, so `attempts_recorded` said 1 while the
+    counter on disk stayed 0. A number that reports intent rather than outcome
+    is the failure this repo keeps finding - it must come from what the write
+    did.
+    """
+    try:
+        if merge_result is not None and hasattr(merge_result, "collect"):
+            rows = merge_result.collect()
+            if rows and "num_updated_rows" in rows[0].asDict():
+                return int(rows[0]["num_updated_rows"])
+
+        from delta.tables import DeltaTable
+
+        history = DeltaTable.forName(spark, table_name).history(1).select("operationMetrics")
+        rows = history.collect()
+        if rows and rows[0][0]:
+            value = rows[0][0].get("numTargetRowsUpdated")
+            return int(value) if value is not None else None
+    except Exception as exc:  # noqa: BLE001 - a missing count must not fail a committed replay
+        logger.warning("Could not read the replay-attempt update count: %s", exc)
+    return None
+
+
 def _increment_replay_attempts(spark, quarantine_table: str, bad_df) -> int:
     """
     Bumps `_replay_attempts` for the rows that were offered to the gate and
-    still failed (#159 item 4). Returns how many were marked.
+    still failed (#159 item 4). Returns how many rows the MERGE actually
+    updated - not how many were offered to it.
 
     Never raises. This is bookkeeping about a recovery attempt, not the
-    recovery itself - a failure to record the attempt must not fail a replay
-    that otherwise promoted rows correctly. The cost of missing an increment is
+    recovery itself, and a failure to record the attempt must not fail a replay
+    that otherwise promoted rows correctly. The cost of a missed increment is
     that a hopeless row gets rescanned once more, which is exactly the state
     everything was in before this existed.
 
+    `localCheckpoint` is load-bearing, not an optimisation. `bad_df` is derived
+    lazily from the quarantine table, so without truncating that lineage the
+    MERGE's source reads the very table it is writing to - and Delta resolved
+    that to zero updates while reporting success. Materialising the ids first
+    makes the source independent of the target.
+
     Only rows that were actually TRIED are incremented. Rows skipped for being
-    exhausted are not re-counted, so the number stays a count of attempts made
+    exhausted never reach here, so the number stays a count of attempts made
     rather than of replays run.
     """
     try:
         from delta.tables import DeltaTable
 
-        bad_df.select("_quarantine_id").createOrReplaceTempView("_failed_replay_ids")
-        marked = spark.table("_failed_replay_ids").count()
-        if not marked:
+        failed_ids = bad_df.select("_quarantine_id").distinct().localCheckpoint()
+        if failed_ids.isEmpty():
             return 0
-        (
+
+        result = (
             DeltaTable.forName(spark, quarantine_table)
             .alias("q")
-            .merge(
-                spark.table("_failed_replay_ids").alias("f"),
-                "q._quarantine_id = f._quarantine_id",
-            )
+            .merge(failed_ids.alias("f"), "q._quarantine_id = f._quarantine_id")
             .whenMatchedUpdate(set={"_replay_attempts": "coalesce(q._replay_attempts, 0) + 1"})
             .execute()
         )
-        return marked
+        updated = _merge_updated_count(spark, quarantine_table, result)
+        return updated if updated is not None else 0
     except Exception as exc:  # noqa: BLE001 - see docstring
         logger.warning(
             "Could not record replay attempts for %s: %s. The rows remain quarantined; "
