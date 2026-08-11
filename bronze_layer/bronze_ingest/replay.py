@@ -98,7 +98,7 @@ def _merge_updated_count(spark, table_name, merge_result):
     return None
 
 
-def _increment_replay_attempts(spark, quarantine_table: str, bad_df) -> int:
+def _increment_replay_attempts(spark, quarantine_table: str, failed_ids) -> int:
     """
     Bumps `_replay_attempts` for the rows that were offered to the gate and
     still failed (#159 item 4). Returns how many rows the MERGE actually
@@ -110,11 +110,19 @@ def _increment_replay_attempts(spark, quarantine_table: str, bad_df) -> int:
     that a hopeless row gets rescanned once more, which is exactly the state
     everything was in before this existed.
 
-    `localCheckpoint` is load-bearing, not an optimisation. `bad_df` is derived
-    lazily from the quarantine table, so without truncating that lineage the
-    MERGE's source reads the very table it is writing to - and Delta resolved
-    that to zero updates while reporting success. Materialising the ids first
-    makes the source independent of the target.
+    **Takes the ids, not `bad_df`, and that is not a style choice.**
+    `split_good_bad` RECOMPUTES `_quarantine_id` on the bad side - a content
+    hash over the candidate's columns, which on replay include `_source_file`
+    and did not at original quarantine time. So `bad_df._quarantine_id` does
+    not match anything in the table. `good_df` passes the original through
+    untouched, which is why the delete beside this works and a merge on
+    `bad_df` silently matched zero rows. The caller therefore derives the
+    failing ids by subtracting the promoted ones from the candidates, keeping
+    everything in the ORIGINAL id space.
+
+    `localCheckpoint` is load-bearing too. The ids are derived lazily from the
+    quarantine table, so without truncating that lineage the MERGE's source
+    reads the very table it is writing to.
 
     Only rows that were actually TRIED are incremented. Rows skipped for being
     exhausted never reach here, so the number stays a count of attempts made
@@ -123,14 +131,14 @@ def _increment_replay_attempts(spark, quarantine_table: str, bad_df) -> int:
     try:
         from delta.tables import DeltaTable
 
-        failed_ids = bad_df.select("_quarantine_id").distinct().localCheckpoint()
-        if failed_ids.isEmpty():
+        materialised = failed_ids.distinct().localCheckpoint()
+        if materialised.isEmpty():
             return 0
 
         result = (
             DeltaTable.forName(spark, quarantine_table)
             .alias("q")
-            .merge(failed_ids.alias("f"), "q._quarantine_id = f._quarantine_id")
+            .merge(materialised.alias("f"), "q._quarantine_id = f._quarantine_id")
             .whenMatchedUpdate(set={"_replay_attempts": "coalesce(q._replay_attempts, 0) + 1"})
             .execute()
         )
@@ -291,7 +299,10 @@ def reprocess_quarantine(
             row_count=0,
             quarantined_row_count=still_bad_count,
         )
-        marked = _increment_replay_attempts(spark, quarantine_table, bad_df)
+        # Nothing was promoted, so every candidate is a failed attempt.
+        marked = _increment_replay_attempts(
+            spark, quarantine_table, candidate_df.select("_quarantine_id")
+        )
         return {
             "table": config.full_table_name,
             "replayed_row_count": 0,
@@ -387,7 +398,13 @@ def reprocess_quarantine(
 
     # After the promotion and the delete: a row that still failed has now had
     # one more attempt made on it, whether or not anything else was promoted.
-    marked = _increment_replay_attempts(spark, quarantine_table, bad_df)
+    # Candidates minus promoted = still failing, all in the original id space -
+    # see _increment_replay_attempts for why bad_df's own id cannot be used.
+    marked = _increment_replay_attempts(
+        spark,
+        quarantine_table,
+        candidate_df.select("_quarantine_id").subtract(good_df.select("_quarantine_id")),
+    )
 
     return {
         "table": table_name,
