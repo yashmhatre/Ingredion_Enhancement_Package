@@ -46,6 +46,95 @@ def test_merge_requires_merge_keys_in_required_columns():
     )
 
 
+def test_merge_requires_either_merge_keys_or_content_hash_columns():
+    """write_mode='merge' with neither strategy set is exactly the pre-#84
+    "merge_keys must be provided" case, now phrased to mention both."""
+    with pytest.raises(
+        ValueError, match="merge_keys.*content_hash_columns|content_hash_columns.*merge_keys"
+    ):
+        IngestionConfig(source_path="s3://x", table="t", write_mode="merge")
+
+
+def test_merge_keys_and_content_hash_columns_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        IngestionConfig(
+            source_path="s3://x",
+            table="t",
+            write_mode="merge",
+            merge_keys=["id"],
+            required_columns=["id"],
+            content_hash_columns=["id", "amount"],
+        )
+
+
+def test_content_hash_columns_is_a_valid_merge_key_strategy():
+    # Deliberately no merge_keys and no required_columns entry for the
+    # hashed columns - the #47 nullable-key guard doesn't apply here, there
+    # is no natural key to null-check.
+    cfg = IngestionConfig(
+        source_path="s3://x",
+        table="t",
+        write_mode="merge",
+        content_hash_columns=["id", "amount"],
+    )
+    assert cfg.content_hash_columns == ["id", "amount"]
+    assert cfg.merge_keys is None
+    assert cfg.content_hash_key_col == "_content_hash_key"  # the default
+
+
+def test_content_hash_columns_must_be_non_empty_when_provided():
+    with pytest.raises(ValueError, match="non-empty"):
+        IngestionConfig(
+            source_path="s3://x", table="t", write_mode="merge", content_hash_columns=[]
+        )
+
+
+@pytest.mark.parametrize(
+    "reserved_column",
+    [
+        "_ingested_at",  # audit_ingest_ts_col default
+        "_batch_id",  # audit_batch_id_col default
+        "_source_file",  # audit_source_file_col default
+        "_rescued_data",  # rescued_data_column default
+        "_corrupt_record",  # corrupt_record_column default
+        "_content_hash_key",  # content_hash_key_col default - hashing itself
+    ],
+)
+def test_content_hash_columns_rejects_columns_bronze_adds_itself(reserved_column):
+    """Hashing an audit/rescued/corrupt column (or the hash key column's own
+    name) would make the hash depend on ingest-time metadata rather than row
+    content - identical source bytes ingested on two different runs would
+    then never produce a matching hash (#84's design note)."""
+    with pytest.raises(ValueError, match="content_hash_columns"):
+        IngestionConfig(
+            source_path="s3://x",
+            table="t",
+            write_mode="merge",
+            content_hash_columns=["id", reserved_column],
+        )
+
+
+def test_content_hash_columns_identifiers_are_validated():
+    with pytest.raises(ValueError, match="content_hash_columns"):
+        IngestionConfig(
+            source_path="s3://x",
+            table="t",
+            write_mode="merge",
+            content_hash_columns=["bad-column"],
+        )
+
+
+def test_content_hash_key_col_identifier_is_validated():
+    with pytest.raises(ValueError, match="content_hash_key_col"):
+        IngestionConfig(
+            source_path="s3://x",
+            table="t",
+            write_mode="merge",
+            content_hash_columns=["id"],
+            content_hash_key_col="bad-name",
+        )
+
+
 def test_streaming_requires_checkpoint_and_schema_location():
     with pytest.raises(ValueError):
         IngestionConfig(source_path="s3://x", table="t", ingestion_mode="streaming")

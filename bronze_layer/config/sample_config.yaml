@@ -16,7 +16,11 @@ catalog: "ingredion_en"
 schema_name: "ingredion_dev"
 table: "orders_raw"
 write_mode: "append"           # append | overwrite | merge
-# merge_keys: ["order_id"]
+# merge requires exactly ONE of the two strategies below (#84) - they are
+# not interchangeable, see README.md "merge key strategies":
+# merge_keys: ["order_id"]                                 # natural business key (upsert)
+# content_hash_columns: ["order_id", "customer_id", "amount"]  # content-addressed dedup key
+# content_hash_key_col: "_content_hash_key"                 # optional, this is the default
 merge_schema: true
 
 # --- Table layout: liquid clustering (recommended) vs. partition_by (legacy) ---

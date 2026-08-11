@@ -137,6 +137,39 @@ class IngestionConfig:
     table: str = ""  # target table name (required)
     write_mode: str = "append"  # "append" | "overwrite" | "merge"
     merge_keys: Optional[List[str]] = None  # required when write_mode == "merge"
+    # --- Content-addressed merge key (#84) - an alternative to merge_keys,
+    # not a variant of it. write_mode == "merge" requires exactly one of the
+    # two; they are mutually exclusive.
+    #
+    # merge_keys answers "is this the same business entity?" - on an
+    # upstream UPDATE the key still matches, so the row updates in place
+    # (true upsert). content_hash_columns answers "are these the same
+    # bytes?" - on an upstream UPDATE the hash no longer matches, so the row
+    # INSERTS, leaving both versions in the table. That is correct for an
+    # append-only bronze layer capturing every version of a record, and it
+    # is NOT upsert semantics: content_hash_columns gives idempotent
+    # re-ingestion of identical payloads, nothing more. Pick it when a
+    # source has no reliable non-null natural key - the #47 nullable-key
+    # guard below has nothing to check for this strategy, so it's skipped.
+    #
+    # Must be an explicit, non-empty column list - never "hash every
+    # column". Hashing a column bronze adds itself (audit_ingest_ts_col,
+    # audit_batch_id_col, audit_source_file_col, rescued_data_column,
+    # corrupt_record_column) would make the hash depend on ingest-time
+    # metadata rather than row content, so identical payloads ingested on
+    # different runs would never match; those names are rejected if listed
+    # here (see _validate_content_hash_columns). SHA-256 collisions are not
+    # a practical concern and are not guarded against separately.
+    content_hash_columns: Optional[List[str]] = None
+    # Generated column that carries the computed hash and is used as the
+    # sole merge key when content_hash_columns is set. Computed on the
+    # DataFrame immediately before the write and excluded from the MERGE's
+    # matched-row update in bronze_writer._write_core rather than included
+    # in a blanket updateAll - a genuine match implies source and target
+    # hash are already equal, so excluding it documents that the column is
+    # never meant to move rather than relying on that being incidentally
+    # true.
+    content_hash_key_col: str = "_content_hash_key"
     # hive-style partitioning - discouraged for new tables, see cluster_by
     partition_by: Optional[List[str]] = None
     merge_schema: bool = True  # allow schema evolution on write (mergeSchema)
@@ -199,8 +232,20 @@ class IngestionConfig:
             raise ValueError(
                 f"write_mode must be one of {VALID_WRITE_MODES}, got {self.write_mode!r}"
             )
-        if self.write_mode == "merge" and not self.merge_keys:
-            raise ValueError("merge_keys must be provided when write_mode='merge'")
+        if self.merge_keys and self.content_hash_columns:
+            raise ValueError(
+                "merge_keys and content_hash_columns are mutually exclusive (#84) - "
+                "merge_keys answers 'is this the same business entity?', "
+                "content_hash_columns answers 'are these the same bytes?'. Setting both "
+                "leaves it ambiguous which guarantee the write is making. Pick one merge "
+                "key strategy."
+            )
+        if self.write_mode == "merge" and not self.merge_keys and self.content_hash_columns is None:
+            raise ValueError(
+                "write_mode='merge' requires either merge_keys (a natural business key) "
+                "or content_hash_columns (a content-addressed dedup key, #84) - see "
+                "content_hash_columns' field comment in config.py for how the two differ."
+            )
         if self.write_mode == "merge" and self.merge_keys:
             unguarded = [k for k in self.merge_keys if k not in self.required_columns]
             if unguarded:
@@ -258,6 +303,7 @@ class IngestionConfig:
 
         self._validate_numeric_ranges()
         self._validate_identifiers()
+        self._validate_content_hash_columns()
         self._validate_reader_options()
         self._warn_on_ignored_settings()
 
@@ -333,6 +379,7 @@ class IngestionConfig:
             "audit_batch_id_col",
             "rescued_data_column",
             "corrupt_record_column",
+            "content_hash_key_col",
         ):
             value = getattr(self, name)
             if value is not None:
@@ -345,6 +392,7 @@ class IngestionConfig:
         validate_identifiers(self.required_columns, "required_columns")
         validate_identifiers(self.unique_columns, "unique_columns")
         validate_identifiers(self.merge_keys, "merge_keys")
+        validate_identifiers(self.content_hash_columns, "content_hash_columns")
         validate_identifiers(self.partition_by, "partition_by")
         validate_identifiers(self.cluster_by, "cluster_by")
         if self.dedupe_order_by is not None:
@@ -371,6 +419,48 @@ class IngestionConfig:
             # (delta.enableChangeDataFeed), so validate per part.
             for i, part in enumerate(str(key).split(".")):
                 validate_identifier(part, f"table_properties key {key!r} part {i + 1}")
+
+    def _validate_content_hash_columns(self):
+        """
+        content_hash_columns is the source list for a content-addressed
+        merge key (#84) - deliberately separate from merge_keys and
+        validated separately, because the two answer different questions
+        (see the field comment above). Identifier syntax is already checked
+        by `_validate_identifiers`; this covers the parts specific to the
+        hash strategy.
+        """
+        if self.content_hash_columns is None:
+            return
+        if len(self.content_hash_columns) == 0:
+            raise ValueError(
+                "content_hash_columns, if provided, must be a non-empty list of column names."
+            )
+
+        # Columns bronze adds itself, AFTER the quality gate runs (or that
+        # exist purely to carry ingest-time metadata). Hashing any of these
+        # would make the hash depend on when/how a row was ingested rather
+        # than on its content, so two runs ingesting byte-identical source
+        # data would never produce a matching hash - defeating the point of
+        # a content-addressed key. Rejected explicitly rather than silently
+        # dropped: the #84 design note is specific that "the next added
+        # column silently breaks it" is the failure mode to avoid.
+        reserved = {
+            self.audit_ingest_ts_col,
+            self.audit_batch_id_col,
+            self.audit_source_file_col,
+            self.rescued_data_column,
+            self.corrupt_record_column,
+            self.content_hash_key_col,
+        }
+        blocked = [c for c in self.content_hash_columns if c in reserved]
+        if blocked:
+            raise ValueError(
+                f"content_hash_columns contains column(s) {blocked} that bronze adds "
+                "itself (an audit/rescued-data/corrupt-record column, or the hash key "
+                "column's own name). These are either absent at hash time or differ on "
+                "every run regardless of row content, so hashing them defeats "
+                "content-addressed dedup - remove them from content_hash_columns."
+            )
 
     def _validate_reader_options(self):
         """
