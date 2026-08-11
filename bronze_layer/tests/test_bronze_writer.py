@@ -685,3 +685,32 @@ def test_overwrite_mode_gets_no_cdf_by_default(spark):
 
     _, props = _layout(spark, table)
     assert "delta.enableChangeDataFeed" not in props
+
+
+def test_a_refused_merge_creates_no_table_even_though_cdf_wants_one(spark):
+    """The regression #58 introduced and CI caught.
+
+    _ensure_liquid_clustering_and_properties creates the table when it has
+    something to apply. Before CDF was on by default it usually had nothing,
+    returned early, and a merge refused for a bad key left no table behind.
+    With CDF always on it always has something to apply - so unless the
+    refusals run FIRST, a run that is about to be rejected leaves an empty
+    table sitting in the catalog.
+
+    test_merge_refuses_null_merge_keys already asserts the no-table property
+    and is what failed. This one exists to say why, so the ordering in
+    _write_core is not 'simplified' back later."""
+    table = f"bw_cdf_refusal_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        retry_attempts=1,
+    )
+    assert cfg.resolved_table_properties, "precondition: CDF gives this config properties to apply"
+
+    with pytest.raises(NullMergeKeyError):
+        write_bronze(spark, spark.createDataFrame([(1, "a"), (None, "b")], ["id", "name"]), cfg)
+
+    assert not spark.catalog.tableExists(_table(table))

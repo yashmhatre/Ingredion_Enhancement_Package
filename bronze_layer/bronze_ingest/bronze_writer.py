@@ -5,7 +5,7 @@ schema evolution.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
@@ -329,6 +329,34 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 
     full_name = config.full_table_name
+
+    # Merge preparation and its refusals run BEFORE anything can create the
+    # table, and the ordering is load-bearing in two ways (both caught by
+    # pre-existing tests when #58 made the layout step unconditional):
+    #
+    # 1. _ensure_liquid_clustering_and_properties creates the table when it
+    #    has something to apply. Until #58 it usually had nothing, so it
+    #    returned early and a config-error merge left no table behind -
+    #    test_merge_refuses_null_merge_keys asserts exactly that. With CDF on
+    #    by default it always has something to apply, so a run that is about
+    #    to be refused would otherwise leave an empty table behind.
+    # 2. Under the content-hash strategy (#84) _prepare_merge_keys ADDS a
+    #    column. Creating the table from the pre-hash schema and then merging
+    #    the post-hash DataFrame into it is a schema mismatch.
+    #
+    # So: resolve the keys, refuse if they are unusable, and only then let
+    # anything touch the catalog.
+    merge_key_columns: List[str] = []
+    if config.write_mode == "merge":
+        df, merge_key_columns = _prepare_merge_keys(df, config)
+        _assert_no_null_merge_keys(df, merge_key_columns)
+        # resolved_, not the raw field: it defaults to None so config load can
+        # tell an explicit choice from silence, and None is falsy (#54).
+        if config.resolved_dedupe_before_merge:
+            df = _dedupe_for_merge(df, config, merge_key_columns)
+        else:
+            _assert_no_duplicate_merge_keys(df, merge_key_columns)
+
     _ensure_liquid_clustering_and_properties(spark, df, config, full_name)
 
     writer = df.write.format("delta")
@@ -360,21 +388,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     elif config.write_mode == "merge":
         from delta.tables import DeltaTable
 
-        # Resolves which strategy is active (natural merge_keys vs. the
-        # content-hash key, #84) and, for the hash strategy, computes the
-        # hash column onto df. Everything below operates on
-        # merge_key_columns generically and doesn't need to know which
-        # strategy produced it.
-        df, merge_key_columns = _prepare_merge_keys(df, config)
-
-        _assert_no_null_merge_keys(df, merge_key_columns)
-
-        # resolved_, not the raw field: it defaults to None so config load can
-        # tell an explicit choice from silence, and None is falsy (#54).
-        if config.resolved_dedupe_before_merge:
-            df = _dedupe_for_merge(df, config, merge_key_columns)
-        else:
-            _assert_no_duplicate_merge_keys(df, merge_key_columns)
+        # df and merge_key_columns were both resolved above, before anything
+        # could create the table - see the comment there for why that ordering
+        # matters. merge_key_columns is non-empty here by construction.
 
         # Atomic create-if-not-exists instead of a check-then-act on table
         # existence - two concurrent first-runs against the same
