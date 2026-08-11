@@ -765,3 +765,115 @@ def test_ai_notebook_rejects_a_non_numeric_lookback(run_notebook):
             {"processed": 0, "skipped_unchanged": 0, "skipped_failed": 0, "skipped_malformed": 0},
             widgets={"lookback_hours": "soon"},
         )
+
+
+# ---------------------------------------------------------------------------
+# Maintenance notebook (#159 item 3)
+# ---------------------------------------------------------------------------
+
+MAINTENANCE_WIDGETS = {
+    "catalog": "cat",
+    "schema_name": "sch",
+    "tables": "_ingestion_audit,_schema_registry",
+    "optimize": "true",
+    "vacuum": "true",
+    "vacuum_retention_hours": "",
+}
+
+
+def _fake_maintenance(results):
+    def _run(spark, tables, **kwargs):
+        _run.calls.append({"tables": tables, **kwargs})
+        return results
+
+    _run.calls = []
+    return _run
+
+
+def test_maintenance_notebook_qualifies_tables_and_passes_them_explicitly(run_notebook):
+    """The table list is built from the widget, qualified with catalog and
+    schema, and handed over as an explicit list - the notebook never asks the
+    engine what tables exist."""
+    import bronze_ingest.maintenance as maint
+
+    fake = _fake_maintenance([{"table": "cat.sch._ingestion_audit", "optimize": "ok"}])
+    run = run_notebook(
+        "run_maintenance",
+        widgets=MAINTENANCE_WIDGETS,
+        patches=[(maint, "run_maintenance", fake)],
+    )
+
+    assert fake.calls[0]["tables"] == [
+        "cat.sch._ingestion_audit",
+        "cat.sch._schema_registry",
+    ]
+    assert run.exit_value.startswith("SUCCESS")
+
+
+def test_maintenance_notebook_requires_an_explicit_table_list(run_notebook):
+    """Blank `tables` is refused rather than defaulting to 'everything in the
+    schema' - discovering tables would make this job's blast radius depend on
+    whatever else lives there."""
+    with pytest.raises(ValueError, match="tables job parameter is required"):
+        run_notebook(
+            "run_maintenance",
+            widgets={**MAINTENANCE_WIDGETS, "tables": ""},
+        )
+
+
+def test_maintenance_notebook_blank_retention_means_use_the_table_floor(run_notebook):
+    """Blank must become None, not 0.0 - a retention of zero would expire
+    every file a CDF consumer still needs, which is the failure #58's floor
+    exists to prevent."""
+    import bronze_ingest.maintenance as maint
+
+    fake = _fake_maintenance([])
+    run_notebook(
+        "run_maintenance",
+        widgets=MAINTENANCE_WIDGETS,
+        patches=[(maint, "run_maintenance", fake)],
+    )
+
+    assert fake.calls[0]["vacuum_retention_hours"] is None
+
+
+def test_maintenance_notebook_fails_the_task_when_a_table_fails(run_notebook):
+    """#247: reporting failure must RAISE. dbutils.notebook.exit() exits 0, so
+    a run where every table failed to compact would be marked Succeeded."""
+    import bronze_ingest.maintenance as maint
+
+    fake = _fake_maintenance(
+        [
+            {"table": "cat.sch.a", "optimize": "ok", "vacuum": "ok"},
+            {"table": "cat.sch.b", "optimize": "failed", "optimize_error": "boom"},
+        ]
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_notebook(
+            "run_maintenance",
+            widgets=MAINTENANCE_WIDGETS,
+            patches=[(maint, "run_maintenance", fake)],
+        )
+
+    assert str(excinfo.value).startswith("FAILED")
+    assert "cat.sch.b" in str(excinfo.value)
+
+
+def test_maintenance_notebook_warns_but_succeeds_when_retention_was_clamped(run_notebook, caplog):
+    """A clamped retention is the floor working, not a failure - but it means
+    someone configured a value this job declined to honour, and that must be
+    visible rather than buried in the summary table."""
+    import bronze_ingest.maintenance as maint
+
+    fake = _fake_maintenance(
+        [{"table": "cat.sch.a", "optimize": "ok", "vacuum": "ok", "clamped": True}]
+    )
+    run = run_notebook(
+        "run_maintenance",
+        widgets={**MAINTENANCE_WIDGETS, "vacuum_retention_hours": "24"},
+        patches=[(maint, "run_maintenance", fake)],
+    )
+
+    assert run.exit_value.startswith("SUCCESS")
+    assert "raised to the table floor" in caplog.text
