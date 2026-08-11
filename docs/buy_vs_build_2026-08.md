@@ -65,6 +65,68 @@ DataFrame is touched.
 - The library imports cleanly on OSS Spark. The blocker is specifically the
   workspace client, not Spark compatibility.
 
+### Amendment, 2026-08-11 — two harder constraints, checked against DQX `main`
+
+Re-checked four days on, because a dependency argument dates faster than a
+design one. Both findings **strengthen** the verdict rather than reopening it,
+and neither was in the original write-up.
+
+**1. DQX now requires Python ≥ 3.10. This package floors at 3.8.**
+
+```toml
+# databrickslabs/dqx, pyproject.toml
+requires-python = ">=3.10"
+```
+
+against `bronze_layer/setup.py`'s `python_requires=">=3.8"` and
+`pyproject.toml`'s `target-version = "py38"`. Adopting DQX does not merely add
+a dependency — it **raises this package's supported Python floor**, which is a
+decision `docs/roadmap.md` has been deliberately holding (it notes the 3.8 floor
+blocks PEP 604/585 annotations and ~83 modernisations, pending a decision about
+what the real floor is). That decision should be made on its own merits, not
+arrive as a side effect of a quality-library choice.
+
+**2. DQX depends on `databricks-sdk~=0.73`, which this package excludes on
+purpose.**
+
+```toml
+dependencies = [
+    "databricks-labs-blueprint>=0.9.1,<=0.12",
+    "databricks-sdk~=0.73",
+    "sqlalchemy>=2.0,<3.0",
+    "PyYAML~=6.0.3",
+    "pydantic>=2.8.2,<3",
+]
+```
+
+`setup.py` states the reasoning already, as a comment on the `sdk` extra:
+
+> `databricks-sdk` is deliberately NOT in `install_requires`: the Databricks
+> runtime ships its own copy, and pinning a second one risks a version conflict
+> on job compute.
+
+DQX pins it with `~=0.73`. So adopting DQX imports precisely the conflict this
+package documented a decision to avoid — and does so transitively, where it is
+harder to notice. That is five runtime dependencies (`blueprint`, `sdk`,
+`sqlalchemy`, `pydantic`, `PyYAML`) into a package whose `install_requires` is
+currently **one entry** (`pyyaml`).
+
+**What has NOT changed:** the original finding stands — DQX still cannot be
+constructed without an authenticated workspace, which is what decides #109.
+These two are additional costs on the same side of the ledger, not a new
+argument.
+
+**What is genuinely new and worth tracking separately:** DQX now ships **80+
+built-in checks including PII validation**, and a browser-based no-code
+"DQX Studio". Neither changes a verdict here, but both touch issues that do not
+currently reference this document:
+
+- `architecture.md`'s AI metadata layer proposes building PII detection; DQX
+  and `discoverx` both ship one. Worth naming in #64 / #208 rather than
+  rediscovering.
+- **#267** proposes building a minimal self-service UI. DQX Studio is prior art
+  for that shape, whatever is decided.
+
 ### Why that decides it
 
 This repo's test suite is **322 tests that need no workspace**, and #74 was
