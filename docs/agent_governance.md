@@ -32,7 +32,12 @@ about whose judgment is required (the Project Lead's, or for Tier 1,
 - Opening or updating a PR **into `dev`** (never merging it, except where
   Tier 1 explicitly delegates the merge itself — see below).
 - `databricks bundle validate` (any target) — read-only, resolves config,
-  touches no compute or data.
+  touches no compute or data. It does need an **authenticated profile**
+  (`--profile <name>`): it calls `GET /api/2.0/preview/scim/v2/Me`, so
+  credential-free it fails for auth on every target and CLI version, which
+  says nothing about the bundle. If no profile is authenticated, report the
+  check as NOT RUN, not as a failure — that false signal is what #244
+  removed from CI.
 - Researching and drafting a candidate business opportunity (`business-stakeholder`) — it's a Tier 0 draft, same as any other, until `business-analyst` reconciles it.
 
 ### Tier 1 — draft freely, but don't merge without review
