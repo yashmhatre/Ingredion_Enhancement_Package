@@ -1347,6 +1347,118 @@ is the one that drifted.
   common case (a scheduled run overlapping its predecessor) without making
   the underlying operations safe against concurrent access.
 
+## Table lifecycle: compaction, retention, and what is deliberately not managed (#159)
+
+This package creates five kinds of table and, apart from the CDF retention
+floor below, **manages the lifecycle of none of them.** That is a position
+rather than an oversight, but only some of it is a *good* position — the parts
+that are not are named here rather than left to be rediscovered.
+
+### Measured, not projected
+
+Against the deployed `dev` schema, 2026-08-11 (15 ingestion runs):
+
+| Table | Files | Bytes | Files per run |
+| --- | ---: | ---: | --- |
+| `_ingestion_audit` | 15 | 79,141 | **1.0** |
+| `_schema_registry` | 15 | 63,554 | **1.0** |
+| `_ai_metadata` | 15 | 106,228 | **1.0** |
+| a bronze table (`order_001_bronze`) | 1 | 3,888 | — |
+
+**Every metadata table accumulates exactly one file per run**, at roughly 4-7 KB
+per file. Bronze tables are fine: they are written once per run with the run's
+data, so their file count tracks ingestion volume rather than ingestion
+*frequency*.
+
+Two corrections to what #159 assumed, both from that measurement:
+
+- **`_schema_registry` is not exempt.** #159's table marks it "bounded by table
+  count ✅" on the strength of its docstring. Its *row* count is bounded; its
+  *file* count is not — it commits on every run that observes a schema, so it
+  grows at the same one-file-per-run rate as the audit table.
+- **`_ai_metadata` did not exist when #159 was written** (it arrived with #208)
+  and has the same pattern. Four metadata tables, not three.
+
+### The position, per table
+
+| Table | Compaction | Retention | Position |
+| --- | --- | --- | --- |
+| **bronze** | Databricks predictive optimization, where enabled | CDF floor below | **Accepted dependency**, see the condition |
+| **quarantine** | as bronze | CDF floor below | **Accepted dependency**; but it has no exit — see below |
+| **`_ingestion_audit`** | none | none | **Known gap.** Grows one file per run forever |
+| **`_schema_registry`** | none | none | **Known gap**, same shape |
+| **`_ai_metadata`** | none | none | **Known gap**, same shape |
+
+**The condition the bronze position depends on, stated so it can be checked:**
+compaction for bronze and quarantine is delegated to Databricks *predictive
+optimization*, which is an account- or metastore-level setting a workspace
+admin enables once. It is not configured by this package and this package
+cannot verify it. `cluster_by_auto` is explicitly Databricks-Runtime-only. **On
+any deployment where predictive optimization is off, bronze has no compaction
+story at all** — the position becomes "nothing manages this", and the table
+accumulates small files at whatever rate it is written.
+
+### Retention is load-bearing now, not tidy
+
+#58 enabled Change Data Feed by default, and **CDF history is deleted by
+`VACUUM`.** A Silver job reading `readChangeFeed` from a starting version
+silently loses history if `VACUUM` removed it first — no error, just missing
+changes.
+
+The floor is `change_data_feed_retention_days: 30`, applied as **both**
+`delta.logRetentionDuration` and `delta.deletedFileRetentionDuration` (the
+readable window is the shorter of the two — see the Change Data Feed section).
+
+**What is not protected:** a `VACUUM ... RETAIN n HOURS` with an explicit
+retention shorter than the property **overrides it silently.** Nothing in this
+package runs `VACUUM`, so nothing here can violate the floor today — but
+nothing here can stop a scheduled maintenance job from violating it either. Any
+maintenance this repo adds must respect the floor, and that is the first
+requirement on #159's proposed maintenance job.
+
+### Quarantine has no exit
+
+Rows leave `<table>_quarantine` only via `reprocess_quarantine()`, and only if
+they now pass the quality gate. A genuinely malformed source record never
+passes, so it stays forever, and every replay scans it again. There is no TTL,
+no archive, and no per-row attempt counter to tell "not yet fixed" from "never
+going to be". Open, tracked on #159.
+
+### One fix that looks free and is not
+
+#159 proposes dropping `mergeSchema: true` from `_write_audit_row`'s
+single-row append, on the grounds that the schema is explicit and fixed so the
+compatibility check is wasted work. The performance argument is sound and the
+change is still **not** obviously right, because of what that write does on
+failure:
+
+```python
+except Exception:   # the audit trail must never fail the ingestion it records
+    logger.warning(...)
+```
+
+The audit write is **fail-open by design.** With `mergeSchema` on, a schema
+change lands silently and half-populates the table — which is exactly the
+0.5.0 `table` -> `table_name` defect (#231/#249), and why
+`_assert_audit_migration_complete()` exists to catch that class on the read
+side. With `mergeSchema` off, the same schema change makes every audit write
+raise, and the handler above turns that into a warning: **the run succeeds and
+writes no audit row at all.**
+
+So the choice is not "wasted check vs. no wasted check". It is *silently wrong
+schema* versus *silently absent audit trail*, and the second is worse — the
+first is detectable after the fact (and now is), the second leaves nothing to
+detect. Removing `mergeSchema` should therefore come with making that write
+fail loudly, which is a change to a deliberate design decision and needs its
+own argument. Not done here.
+
+### What this section does not do
+
+It does not add `OPTIMIZE`, `VACUUM`, a maintenance job, or a quarantine exit
+path. Those are #159's items 3 and 4; the maintenance job in particular belongs
+in `resources/` alongside the ingestion job, and deploying it is a decision
+above this document.
+
 ## Operational notes / known caveats
 
 - If you set `schema_hint_ddl` in batch mode, include
