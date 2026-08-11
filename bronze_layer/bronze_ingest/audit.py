@@ -8,6 +8,7 @@ Separate from the per-row audit columns in bronze_writer.py
 within a table. This module describes the run itself.
 """
 
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -95,6 +96,117 @@ def tag_failure_stage(exc: Exception, stage: str) -> None:
         exc.failure_stage = stage  # type: ignore[attr-defined]
 
 
+#: Active audit-row buffer, or None when writes go straight through (#159).
+#:
+#: Thread-local rather than a plain module global. Nothing in the package runs
+#: units concurrently today, but `bronze_writer` already has a concurrent-write
+#: test (#46) and a buffer shared across threads would interleave rows from
+#: unrelated runs into one commit - a failure that would only appear under
+#: load, which is the worst kind to leave available.
+_buffer_state = threading.local()
+
+
+def _active_buffer() -> Optional[dict]:
+    return getattr(_buffer_state, "buffer", None)
+
+
+@contextmanager
+def buffered_audit_writes(spark):
+    """
+    Collects audit rows for the duration of the block and writes them in ONE
+    commit per audit table at the end, instead of one commit per row (#159).
+
+    The measured problem: `_ingestion_audit`, at 15 runs, held 15 files of
+    4-7 KB - exactly one file per run, forever. Directory ingestion is the
+    sharp case because it runs one audited unit per file, so a 50-file
+    directory produced 50 single-row commits per run.
+
+    This mirrors what `RetryState` already does one level up in
+    `directory_ingestion`: one load and at most one write for the whole run,
+    rather than a read-modify-write per file (#151).
+
+    Rows are grouped by resolved audit table, not merged into one write, because
+    per-file config overrides can legitimately redirect individual units to a
+    different audit schema.
+
+    **Flushing never raises**, and never leaves the trail worse off than
+    unbuffered writes would have: if the single batched write fails, each row is
+    retried individually so a malformed row loses itself rather than the whole
+    run's history. Buffering is a file-count optimisation and must not become a
+    durability regression.
+    """
+    if _active_buffer() is not None:
+        # Already buffering - a nested block writes into the outer buffer and
+        # the outermost one flushes. Re-entrancy is not expected today; making
+        # it a no-op is cheaper than making it an error nobody can act on.
+        yield
+        return
+
+    _buffer_state.buffer = {}
+    try:
+        yield
+    finally:
+        buffered = _buffer_state.buffer
+        _buffer_state.buffer = None
+        _flush_audit_buffer(spark, buffered)
+
+
+def _batched_append(spark, schema_ref: str, table: str, rows: list) -> None:
+    """
+    The raw write, for one or many rows. **Raises** - it is the only writer
+    here that does, which is what lets `_flush_audit_buffer` tell a failed
+    batch from a successful one and fall back. Every caller that must not fail
+    the ingestion run goes through `_append_audit_rows` instead.
+    """
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
+    # coalesce(1) because one COMMIT is not one FILE, which is the whole point
+    # of #159. Spark writes one file per non-empty partition, so buffering 50
+    # audit rows into a single commit still produced one file per partition
+    # Spark happened to spread them across - CI caught this as 2 files for 3
+    # rows. Without this, buffering reduces commits and barely touches the file
+    # count it exists to reduce.
+    #
+    # Safe at this size by construction: a batch is bounded by the number of
+    # units in one directory run, each row is a handful of scalar fields, and
+    # the unbuffered path passes a single row (where coalesce is a no-op).
+    df = spark.createDataFrame(rows, schema=AUDIT_SCHEMA).coalesce(1)
+    df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table)
+
+
+def _append_audit_rows(spark, schema_ref: str, table: str, rows: list) -> None:
+    """Never raises - see `_write_audit_row`'s contract."""
+    try:
+        _batched_append(spark, schema_ref, table, rows)
+    except Exception as exc:  # noqa: BLE001 - the audit trail must never fail the run it records
+        logger.warning("Failed to write %d audit record(s) to %s: %s", len(rows), table, exc)
+
+
+def _flush_audit_buffer(spark, buffered: dict) -> None:
+    """Writes each audit table's buffered rows in one commit. Never raises."""
+    for table, entry in buffered.items():
+        rows = entry["rows"]
+        if not rows:
+            continue
+        schema_ref = entry["schema_ref"]
+        try:
+            _batched_append(spark, schema_ref, table, rows)
+            logger.info("Wrote %d buffered audit row(s) to %s in one commit.", len(rows), table)
+        except Exception as exc:  # noqa: BLE001 - as above
+            # Fall back to one write per row rather than dropping the batch.
+            # This gives up the file-count win for this run, which is the right
+            # trade: the point of the audit trail is that it exists. A single
+            # malformed row then loses only itself.
+            logger.warning(
+                "Batched audit write of %d row(s) to %s failed (%s) - falling back to "
+                "individual writes.",
+                len(rows),
+                table,
+                exc,
+            )
+            for row in rows:
+                _append_audit_rows(spark, schema_ref, table, [row])
+
+
 def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
     """
     Writes a single audit row to config.resolved_audit_table. Never raises -
@@ -102,6 +214,9 @@ def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
     itself. Uses an explicit schema (AUDIT_SCHEMA) since
     spark.createDataFrame([row]) cannot safely infer nullability from a
     single-row list.
+
+    Inside a `buffered_audit_writes` block the row is queued instead of
+    written, and the block flushes it in one commit with the rest (#159).
     """
     try:
         # resolved_audit_schema, not audit_schema_name: the latter is None by
@@ -138,10 +253,18 @@ def _write_audit_row(spark, config: IngestionConfig, row_dict: dict) -> None:
             )
 
         row = tuple(row_dict.get(field.name) for field in AUDIT_SCHEMA.fields)
-        df = spark.createDataFrame([row], schema=AUDIT_SCHEMA)
-        df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(
-            config.resolved_audit_table
-        )
+        table = config.resolved_audit_table
+
+        buffer = _active_buffer()
+        if buffer is not None:
+            # Queued, not written. The CREATE SCHEMA above has already run, so
+            # the schema exists by flush time regardless of which unit's config
+            # got here first.
+            entry = buffer.setdefault(table, {"schema_ref": schema_ref, "rows": []})
+            entry["rows"].append(row)
+            return
+
+        _append_audit_rows(spark, schema_ref, table, [row])
     except Exception as exc:  # noqa: BLE001 - the audit trail must never fail the ingestion it records
         logger.warning(
             "Failed to write audit record for run against %s: %s",

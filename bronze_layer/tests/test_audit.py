@@ -3,7 +3,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from bronze_ingest.audit import AUDIT_SCHEMA, audited_run, tag_failure_stage
+from bronze_ingest.audit import (
+    AUDIT_SCHEMA,
+    audited_run,
+    buffered_audit_writes,
+    tag_failure_stage,
+)
 from bronze_ingest.config import IngestionConfig
 from tests.conftest import file_uri
 
@@ -340,3 +345,146 @@ def test_unknown_audit_field_is_reported_not_silently_dropped(spark, tmp_path, c
 
     assert "Ignoring unknown audit field(s)" in caplog.text
     assert "rows_inserted_typo" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Buffered audit writes (#159)
+# ---------------------------------------------------------------------------
+
+
+def _audit_files(spark, table):
+    """numFiles for an audit table - the thing #159 is actually about."""
+    return spark.sql(f"DESCRIBE DETAIL {table}").select("numFiles").collect()[0][0]
+
+
+def test_buffering_writes_many_rows_in_one_commit(spark, tmp_path):
+    """#159's measured problem: one file per run, forever. Three audited runs
+    unbuffered produce three files; inside one buffered block they produce
+    one, with all three rows still present."""
+    cfg = _cfg(spark, tmp_path, "buffered")
+
+    with buffered_audit_writes(spark):
+        for i in range(3):
+            with audited_run(spark, cfg, source_path=cfg.source_path) as audit:
+                audit["row_count"] = i
+
+    df = spark.read.table(cfg.resolved_audit_table)
+    assert df.count() == 3
+    assert sorted(r["row_count"] for r in df.collect()) == [0, 1, 2]
+    # One FILE, not merely one commit. CI caught the difference: Spark writes
+    # one file per non-empty partition, so the first version of this produced
+    # 2 files for 3 rows and reduced commits without reducing files - which is
+    # the metric #159 is about. _batched_append coalesces for that reason.
+    assert _audit_files(spark, cfg.resolved_audit_table) == 1
+
+
+def test_nothing_is_written_until_the_block_exits(spark, tmp_path):
+    """The rows are queued, not streamed - otherwise this is not buffering."""
+    cfg = _cfg(spark, tmp_path, "deferred")
+
+    with buffered_audit_writes(spark):
+        with audited_run(spark, cfg, source_path=cfg.source_path) as audit:
+            audit["row_count"] = 1
+        assert not spark.catalog.tableExists(cfg.resolved_audit_table)
+
+    assert spark.read.table(cfg.resolved_audit_table).count() == 1
+
+
+def test_rows_are_flushed_when_the_block_raises(spark, tmp_path):
+    """Directory ingestion can die halfway through a plan. The units that
+    completed must still be recorded, so the flush is in a finally block -
+    buffering must not turn a partial run into an unrecorded one."""
+    cfg = _cfg(spark, tmp_path, "raises")
+
+    with pytest.raises(RuntimeError, match="halfway"):
+        with buffered_audit_writes(spark):
+            with audited_run(spark, cfg, source_path=cfg.source_path) as audit:
+                audit["row_count"] = 7
+            raise RuntimeError("died halfway through the plan")
+
+    df = spark.read.table(cfg.resolved_audit_table)
+    assert df.count() == 1
+    assert df.collect()[0]["row_count"] == 7
+
+
+def test_rows_are_grouped_per_audit_table(spark, tmp_path):
+    """Per-file config overrides can redirect individual units to a different
+    audit schema, so the buffer groups by resolved table rather than merging
+    everything into one write."""
+    cfg_a = _cfg(spark, tmp_path, "group_a")
+    cfg_b = _cfg(spark, tmp_path, "group_b")
+    assert cfg_a.resolved_audit_table != cfg_b.resolved_audit_table
+
+    with buffered_audit_writes(spark):
+        for cfg in (cfg_a, cfg_b, cfg_a):
+            with audited_run(spark, cfg, source_path=cfg.source_path):
+                pass
+
+    assert spark.read.table(cfg_a.resolved_audit_table).count() == 2
+    assert spark.read.table(cfg_b.resolved_audit_table).count() == 1
+
+
+def test_unbuffered_writes_are_unchanged(spark, tmp_path):
+    """The default path must be exactly what it was - buffering is opt-in per
+    call site, not a new global behaviour."""
+    cfg = _cfg(spark, tmp_path, "unbuffered")
+
+    for i in range(2):
+        with audited_run(spark, cfg, source_path=cfg.source_path) as audit:
+            audit["row_count"] = i
+
+    assert spark.read.table(cfg.resolved_audit_table).count() == 2
+    assert _audit_files(spark, cfg.resolved_audit_table) == 2
+
+
+def test_a_failed_batch_write_falls_back_to_individual_rows(spark, tmp_path, monkeypatch):
+    """The durability guarantee, and the reason buffering is safe to turn on.
+
+    Buffering is a file-count optimisation and must never lose more of the
+    trail than not buffering would have. If the one batched write fails, every
+    row is retried on its own, so a single malformed row loses itself rather
+    than the whole run's history.
+
+    Exercises _flush_audit_buffer directly: the failure being simulated is
+    Spark rejecting a multi-row write, which is impractical to provoke
+    honestly through the public path.
+    """
+    import bronze_ingest.audit as audit_mod
+
+    cfg = _cfg(spark, tmp_path, "fallback")
+    real_batched = audit_mod._batched_append
+    attempts = []
+
+    def flaky(spark_, schema_ref, table, rows):
+        attempts.append(len(rows))
+        if len(rows) > 1:
+            raise RuntimeError("simulated batch write failure")
+        return real_batched(spark_, schema_ref, table, rows)
+
+    monkeypatch.setattr(audit_mod, "_batched_append", flaky)
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        tuple(
+            {
+                "run_id": f"r{i}",
+                "table_name": cfg.full_table_name,
+                "status": "success",
+                "row_count": i,
+                "started_at": now,
+                "finished_at": now,
+            }.get(f.name)
+            for f in AUDIT_SCHEMA.fields
+        )
+        for i in range(3)
+    ]
+    buffered = {
+        cfg.resolved_audit_table: {"schema_ref": "default", "rows": rows},
+    }
+
+    audit_mod._flush_audit_buffer(spark, buffered)
+
+    df = spark.read.table(cfg.resolved_audit_table)
+    assert df.count() == 3, "every row must survive a failed batch write"
+    assert sorted(r["row_count"] for r in df.collect()) == [0, 1, 2]
+    assert attempts == [3, 1, 1, 1], "one batched attempt, then row by row"

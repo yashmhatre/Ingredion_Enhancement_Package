@@ -29,6 +29,7 @@ this module used to define are re-exported below, so no caller moves.
 import os
 from typing import Any, Dict, List, Optional
 
+from .audit import buffered_audit_writes
 from .config import IngestionConfig
 from .fs import (
     RetryState,
@@ -420,79 +421,87 @@ def ingest_directory_to_bronze(
     # read-modify-write of the entire map per file (#151).
     retry_state = RetryState.load(source_dir)
 
-    for item in plan:
-        table = item["table"]
-        overrides = per_file_config.get(os.path.basename(item["source"].rstrip("/")), {})
-        item_config = {**shared, **overrides}
-        if overrides:
-            logger.info(
-                "Applying per-file config override for %s: %s",
-                item["source"],
-                sorted(overrides),
-            )
-
-        if item["type"] == "file":
-            file_path = item["source"]
-            logger.info("Ingesting %s -> %s", file_path, table)
-            try:
-                cfg = IngestionConfig.from_dict(
-                    {**item_config, "source_path": file_path, "table": table}
+    # Same shape as RetryState above, one layer down (#159). Each unit below
+    # opens its own audited_run, so an unbuffered 50-file directory wrote 50
+    # single-row commits - measured as one file per run on the deployed audit
+    # table. This collects them and writes one commit per audit table on exit,
+    # including when the loop raises: the flush is in a finally block, so a run
+    # that dies halfway still records the units that completed.
+    with buffered_audit_writes(spark):
+        for item in plan:
+            table = item["table"]
+            overrides = per_file_config.get(os.path.basename(item["source"].rstrip("/")), {})
+            item_config = {**shared, **overrides}
+            if overrides:
+                logger.info(
+                    "Applying per-file config override for %s: %s",
+                    item["source"],
+                    sorted(overrides),
                 )
-                summary = BronzeIngestion(spark, cfg).run()
 
-                retry_state.clear(file_path)
-
-                move_result = archive_ingested_file(source_dir, file_path)
-                results.append(
-                    {
-                        "file": file_path,
-                        "table": summary["table"],
-                        "status": "success",
-                        "rows": summary["row_count"],
-                        "quarantined_rows": summary.get("quarantined_row_count", 0),
-                        **move_result,
-                    }
-                )
-            except Exception as exc:
-                logger.error("Failed to ingest %s: %s", file_path, exc)
-                if stop_on_error:
-                    raise
-
-                results.append(
-                    _handle_unit_failure(
-                        source_dir=source_dir,
-                        file_path=file_path,
-                        exc=exc,
-                        attempts=retry_state.increment(file_path),
-                        max_ingestion_retries=max_ingestion_retries,
-                        retry_state=retry_state,
-                        extra_fields={"table": table},
+            if item["type"] == "file":
+                file_path = item["source"]
+                logger.info("Ingesting %s -> %s", file_path, table)
+                try:
+                    cfg = IngestionConfig.from_dict(
+                        {**item_config, "source_path": file_path, "table": table}
                     )
+                    summary = BronzeIngestion(spark, cfg).run()
+
+                    retry_state.clear(file_path)
+
+                    move_result = archive_ingested_file(source_dir, file_path)
+                    results.append(
+                        {
+                            "file": file_path,
+                            "table": summary["table"],
+                            "status": "success",
+                            "rows": summary["row_count"],
+                            "quarantined_rows": summary.get("quarantined_row_count", 0),
+                            **move_result,
+                        }
+                    )
+                except Exception as exc:
+                    logger.error("Failed to ingest %s: %s", file_path, exc)
+                    if stop_on_error:
+                        raise
+
+                    results.append(
+                        _handle_unit_failure(
+                            source_dir=source_dir,
+                            file_path=file_path,
+                            exc=exc,
+                            attempts=retry_state.increment(file_path),
+                            max_ingestion_retries=max_ingestion_retries,
+                            retry_state=retry_state,
+                            extra_fields={"table": table},
+                        )
+                    )
+            elif item["type"] == "folder":
+                folder_path = item["source"]
+                folder_result = _ingest_folder_as_table(
+                    spark,
+                    source_dir,
+                    folder_path,
+                    table,
+                    item_config,
+                    stop_on_error=stop_on_error,
+                    max_ingestion_retries=max_ingestion_retries,
                 )
-        elif item["type"] == "folder":
-            folder_path = item["source"]
-            folder_result = _ingest_folder_as_table(
-                spark,
-                source_dir,
-                folder_path,
-                table,
-                item_config,
-                stop_on_error=stop_on_error,
-                max_ingestion_retries=max_ingestion_retries,
-            )
-            results.append(folder_result)
+                results.append(folder_result)
 
-    # One write for the whole run, and none at all if nothing changed.
-    retry_state.flush()
+        # One write for the whole run, and none at all if nothing changed.
+        retry_state.flush()
 
-    ok = sum(1 for r in results if r["status"] == "success")
-    failed = sum(1 for r in results if r["status"] == "failed")
-    skipped = sum(1 for r in results if r["status"] == "skipped")
-    logger.info(
-        "Directory ingestion finished: %d succeeded, %d failed, %d skipped (of %d unit(s))",
-        ok,
-        failed,
-        skipped,
-        len(results),
-    )
+        ok = sum(1 for r in results if r["status"] == "success")
+        failed = sum(1 for r in results if r["status"] == "failed")
+        skipped = sum(1 for r in results if r["status"] == "skipped")
+        logger.info(
+            "Directory ingestion finished: %d succeeded, %d failed, %d skipped (of %d unit(s))",
+            ok,
+            failed,
+            skipped,
+            len(results),
+        )
+
     return results
