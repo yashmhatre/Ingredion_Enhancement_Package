@@ -177,6 +177,78 @@ def test_merge_dedupe_missing_order_column_raises_clear_error(spark):
         write_bronze(spark, df, cfg)
 
 
+def test_content_hash_merge_key_column_is_added_and_populated(spark):
+    """#84: the hash strategy computes its own key column onto the
+    DataFrame and persists it, named _content_hash_key by default."""
+    table = f"bw_hash_col_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="merge", content_hash_columns=["id", "name"])
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    written = spark.read.table(_table(table))
+    assert "_content_hash_key" in written.columns
+    assert written.select("_content_hash_key").collect()[0][0] is not None
+
+
+def test_content_hash_key_col_name_is_configurable(spark):
+    table = f"bw_hash_col_name_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        content_hash_key_col="_my_dedup_key",
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    written = spark.read.table(_table(table))
+    assert "_my_dedup_key" in written.columns
+    assert "_content_hash_key" not in written.columns
+
+
+def test_content_hash_merge_dedupes_identical_rows_within_one_batch(spark):
+    """Two byte-identical rows in the same source batch hash to the same
+    key, so dedupe_before_merge (default True) collapses them the same way
+    it would collapse a duplicate natural merge key."""
+    table = f"bw_hash_dupe_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="merge", content_hash_columns=["id", "name"])
+
+    df = spark.createDataFrame([(1, "a"), (1, "a"), (2, "b")], ["id", "name"])
+    write_bronze(spark, df, cfg)
+
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_content_hash_merge_key_gives_idempotent_reingestion_not_upsert(spark):
+    """#84's central design point: content_hash_columns answers 'are these
+    the same bytes', not 'is this the same business entity'. Re-ingesting
+    byte-identical rows is a no-op (idempotent). An upstream UPDATE against
+    the same business key (id=1 here) produces a NEW row instead of
+    updating in place, because the hash no longer matches - the opposite of
+    what a natural merge_keys=['id'] would do, and the whole reason this is
+    a separate, explicitly-named strategy rather than a variant of
+    merge_keys."""
+    table = f"bw_hash_merge_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    assert spark.read.table(_table(table)).count() == 2
+
+    # Re-ingest the exact same bytes - idempotent, no new rows.
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    assert spark.read.table(_table(table)).count() == 2
+
+    # Same business key (id=1), different content - INSERTS as a new row.
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated")], ["id", "name"]), cfg)
+    rows = {(r["id"], r["name"]) for r in spark.read.table(_table(table)).collect()}
+    assert rows == {(1, "a"), (2, "b"), (1, "a-updated")}
+
+
 def test_append_mode_does_not_require_merge_keys(spark):
     table = f"bw_append_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(table, write_mode="append")

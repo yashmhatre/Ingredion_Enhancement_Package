@@ -80,7 +80,9 @@ error found 40 minutes in has already been paid for.
 
 | Rule | Why |
 | --- | --- |
-| **Identifiers** — `catalog`, `schema_name`, `table`, the audit/registry names, the audit column names, and every entry of `required_columns`, `unique_columns`, `merge_keys`, `partition_by`, `cluster_by` must match `[A-Za-z_][A-Za-z0-9_]*` | All of them are interpolated into SQL this package builds. The realistic failure is not an attacker — it's `table: "orders-2024"` producing an opaque parse error mid-run |
+| **Identifiers** — `catalog`, `schema_name`, `table`, the audit/registry names, the audit column names, `content_hash_key_col`, and every entry of `required_columns`, `unique_columns`, `merge_keys`, `content_hash_columns`, `partition_by`, `cluster_by` must match `[A-Za-z_][A-Za-z0-9_]*` | All of them are interpolated into SQL this package builds. The realistic failure is not an attacker — it's `table: "orders-2024"` producing an opaque parse error mid-run |
+| `write_mode: merge` requires **exactly one** of `merge_keys` / `content_hash_columns` → **raises** | The two answer different questions (natural business key vs. content-addressed dedup key, #84) — setting both or neither is ambiguous, not a default to pick for you |
+| `content_hash_columns` must be non-empty, and must not name a column bronze adds itself (audit/rescued/corrupt/`content_hash_key_col`) | Hashing an ingest-time column makes the hash depend on when a row was ingested, not its content — identical payloads ingested on different runs would never match |
 | `quarantine_table`, `table_properties` keys, `column_comments` keys — validated **per dot-separated part** | These are legitimately dotted (`main.bronze.x`, `delta.enableChangeDataFeed`, `customer.name`). Per-part checking accepts those and still rejects `bad-key` |
 | `reader_options` keys must be on `ALLOWED_READER_OPTIONS`, or `cloudFiles.*` | `reader_options` goes verbatim to the Spark reader, and configs load from a Volume. `path` is a reader option — an unfiltered passthrough lets a config redirect the read while every log line still reports `source_path`. Set `allow_unsafe_reader_options: true` to override; it logs what it let through |
 | `retry_attempts >= 1` | Below 1, `with_retry`'s loop body never executes and it raises `last_exc` — still `None`. You get "exceptions must derive from BaseException" and no trace of the real failure. **1 means "try once, don't retry"** |
@@ -325,6 +327,59 @@ configured - this package does not manage auth.
   `dedupe_before_merge: false` to instead raise a clear
   `DuplicateMergeKeyError` naming the duplicated key(s) rather than
   silently deduping or hitting Delta's cryptic error.
+
+### `merge` key strategies: `merge_keys` vs. `content_hash_columns` (#84)
+
+`write_mode: merge` requires **exactly one** of two mutually exclusive
+strategies - setting both, or neither, raises a `ValueError` at config
+construction:
+
+| | `merge_keys` (natural key) | `content_hash_columns` (content hash) |
+| --- | --- | --- |
+| Answers | "Is this the same business entity?" | "Are these the same bytes?" |
+| On an upstream UPDATE | Row **updates in place** (true upsert) | Row **inserts as a new row** - the old and new versions both remain |
+| `required_columns` | Every `merge_keys` column must also be listed (the #47 guard) | Not required - there's no natural key to null-check, so the guard is skipped |
+| Use when | A reliable, non-null natural key exists | It doesn't, and you still want idempotent re-ingestion of identical payloads |
+
+**These are not interchangeable, and `content_hash_columns` is not a
+drop-in replacement for a missing natural key.** For an append-only bronze
+layer capturing every version of a record, inserting on every content
+change is arguably correct - it's content-addressed dedup, not upsert. A
+caller expecting upsert semantics from it gets silent duplication of every
+updated row instead.
+
+To use it, name the exact source columns to hash - **never leave it
+unset/"all columns"**:
+
+```yaml
+write_mode: merge
+content_hash_columns: ["order_id", "customer_id", "amount", "status"]
+content_hash_key_col: "_content_hash_key"   # optional, this is the default
+```
+
+- **The column list must be explicit and must not include a column bronze
+  adds itself** - `audit_ingest_ts_col`, `audit_batch_id_col`,
+  `audit_source_file_col`, `rescued_data_column`, `corrupt_record_column`,
+  or `content_hash_key_col`'s own name are all rejected at config load if
+  listed. Hashing all columns (or an audit column) is fragile: a new field
+  appearing via schema evolution, or an ingest-time timestamp, changes the
+  hash for rows whose business content hasn't changed at all, and the next
+  run re-inserts the entire table.
+- The hash itself is `sha2(to_json(struct(<columns>)), 256)`
+  (`sql_utils.row_content_hash`) - `to_json` rather than `concat_ws`
+  because `concat_ws` skips NULLs, so `("a", NULL, "b")` and `("a", "",
+  "b")` would otherwise collide. SHA-256 collisions are not a practical
+  concern and this package does not guard against them separately.
+- The computed hash column is added to the DataFrame immediately before
+  the write, used as the sole merge key, and excluded from the MERGE's
+  matched-row update (it's set with an explicit column list, not
+  `whenMatchedUpdateAll()`) - a genuine match implies source and target
+  hash are already equal, so this documents that the column never moves
+  rather than relying on that being incidentally true.
+- `dedupe_before_merge` (default `true`) and `dedupe_order_by` behave
+  exactly as they do for `merge_keys` - two byte-identical rows in one
+  source batch hash to the same key and are deduplicated the same way a
+  duplicate natural key would be.
 
 ## Table layout: liquid clustering vs. partition_by
 
@@ -781,7 +836,7 @@ is ~82s. The realistic ceiling is a *failing* run, not a slow one: with
 |---|---|---|
 | `append` (batch) | Only if `batch_id` is explicit and stable (e.g. job run ID) | `txnAppId=full_table_name` / `txnVersion` derived from `batch_id` |
 | `overwrite` (batch) | Same as `append` | same |
-| `merge` (batch) | Yes, always | MERGE upsert via `merge_keys` - re-running the same batch just re-applies the same updates; Delta's MERGE doesn't accept txn options at all |
+| `merge` (batch) | Yes, always | MERGE via `merge_keys` (upsert - re-running the same batch just re-applies the same updates) or `content_hash_columns` (#84 - an identical retried batch re-hashes to the same key and matches the rows it already wrote, which is idempotent re-ingestion, not upsert); Delta's MERGE doesn't accept txn options at all |
 | any write mode (streaming) | Yes, always | `txnAppId=checkpoint_location` / `txnVersion` = Structured Streaming's own micro-batch counter (stable regardless of `batch_id`) |
 
 An **auto-generated `batch_id`** (the default - a fresh UTC timestamp

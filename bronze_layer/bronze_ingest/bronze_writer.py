@@ -100,7 +100,7 @@ def _assert_no_null_merge_keys(df, merge_keys):
         )
 
 
-def _dedupe_for_merge(df, config: IngestionConfig):
+def _dedupe_for_merge(df, config: IngestionConfig, merge_key_columns):
     """
     Delta MERGE raises "Cannot perform Merge as multiple source rows
     matched..." when the source has more than one row per merge key.
@@ -108,6 +108,12 @@ def _dedupe_for_merge(df, config: IngestionConfig):
     intra-batch duplicates, so deterministically keep one row per key -
     the one with the highest dedupe_order_by value (defaults to the
     ingestion timestamp, so the most-recently-ingested row wins).
+
+    `merge_key_columns` is the columns to partition by for this run - either
+    `config.merge_keys` or, under the content-hash strategy (#84),
+    `[config.content_hash_key_col]`. Passed in rather than read from
+    `config.merge_keys` directly so this function doesn't need to know which
+    strategy is active; `_prepare_merge_keys` already resolved that.
 
     "Deterministically" needs the content-hash tie-break to be true (#147).
     The default order column is the ingestion timestamp, which
@@ -130,7 +136,7 @@ def _dedupe_for_merge(df, config: IngestionConfig):
             "or leave add_audit_columns=True so the default (audit_ingest_ts_col) exists."
         )
 
-    w = Window.partitionBy(*(config.merge_keys or [])).orderBy(
+    w = Window.partitionBy(*merge_key_columns).orderBy(
         col(f"`{order_col}`").desc(), row_content_hash(df).asc()
     )
     return (
@@ -156,6 +162,36 @@ def _assert_no_duplicate_merge_keys(df, merge_keys):
             f"Example duplicated key(s): {[r.asDict() for r in dup_keys]}. Set "
             "dedupe_before_merge=True (default) to auto-dedupe instead of failing."
         )
+
+
+def _prepare_merge_keys(df, config: IngestionConfig):
+    """
+    Resolves the MERGE key column(s) for this write and, under the
+    content-hash strategy, computes them onto `df` (#84).
+
+    Two mutually exclusive strategies - config guarantees exactly one is set
+    when write_mode='merge':
+
+    - Natural key (`config.merge_keys`): used as-is, nothing added to `df`.
+    - Content hash (`config.content_hash_columns`): computes
+      `row_content_hash(df, config.content_hash_columns)` into
+      `config.content_hash_key_col` and returns THAT single column as the
+      merge key. See `content_hash_columns`' field comment in config.py for
+      why this gives idempotent re-ingestion of identical payloads rather
+      than upsert semantics - callers further down this module (dedupe,
+      null/duplicate checks, the MERGE condition itself) don't need to know
+      which strategy produced the key, only which column(s) to use.
+
+    Returns (df, merge_key_columns) - df is unchanged for the natural-key
+    path, and carries the new hash column for the content-hash path.
+    """
+    if config.content_hash_columns:
+        df = df.withColumn(
+            config.content_hash_key_col,
+            row_content_hash(df, config.content_hash_columns),
+        )
+        return df, [config.content_hash_key_col]
+    return df, list(config.merge_keys or [])
 
 
 def _describe_current_layout(spark, full_name):
@@ -325,14 +361,21 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     elif config.write_mode == "merge":
         from delta.tables import DeltaTable
 
-        _assert_no_null_merge_keys(df, config.merge_keys)
+        # Resolves which strategy is active (natural merge_keys vs. the
+        # content-hash key, #84) and, for the hash strategy, computes the
+        # hash column onto df. Everything below operates on
+        # merge_key_columns generically and doesn't need to know which
+        # strategy produced it.
+        df, merge_key_columns = _prepare_merge_keys(df, config)
+
+        _assert_no_null_merge_keys(df, merge_key_columns)
 
         # resolved_, not the raw field: it defaults to None so config load can
         # tell an explicit choice from silence, and None is falsy (#54).
         if config.resolved_dedupe_before_merge:
-            df = _dedupe_for_merge(df, config)
+            df = _dedupe_for_merge(df, config, merge_key_columns)
         else:
-            _assert_no_duplicate_merge_keys(df, config.merge_keys)
+            _assert_no_duplicate_merge_keys(df, merge_key_columns)
 
         # Atomic create-if-not-exists instead of a check-then-act on table
         # existence - two concurrent first-runs against the same
@@ -341,22 +384,32 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         # first batch (#46). Merging into a freshly-created empty table is
         # equivalent to insert-all, so there's no separate "first load"
         # branch needed - and it makes a retried first load idempotent
-        # too, since MERGE on merge_keys can't duplicate rows the way a
-        # retried append could.
+        # too, since MERGE on merge_key_columns can't duplicate rows the way
+        # a retried append could.
         creator = DeltaTable.createIfNotExists(spark).tableName(full_name).addColumns(df.schema)
         if config.partition_by:
             creator = creator.partitionedBy(*config.partition_by)
         creator.execute()
 
         target = DeltaTable.forName(spark, full_name)
-        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in (config.merge_keys or []))
-        (
-            target.alias("target")
-            .merge(df.alias("source"), condition)
-            .whenMatchedUpdateAll()
-            .whenNotMatchedInsertAll()
-            .execute()
-        )
+        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in merge_key_columns)
+        merge_builder = target.alias("target").merge(df.alias("source"), condition)
+
+        if config.content_hash_columns:
+            # Excluded from the matched-row update rather than folded into a
+            # blanket whenMatchedUpdateAll(): a genuine match means source
+            # and target hash are already equal (that's what made them
+            # match), so overwriting it would be a no-op either way - this
+            # makes that explicit instead of relying on it being
+            # incidentally true, per #84's design note.
+            update_columns: Dict[str, Any] = {
+                c: f"source.`{c}`" for c in df.columns if c != config.content_hash_key_col
+            }
+            merge_builder = merge_builder.whenMatchedUpdate(set=update_columns)
+        else:
+            merge_builder = merge_builder.whenMatchedUpdateAll()
+
+        merge_builder.whenNotMatchedInsertAll().execute()
     else:
         raise ValueError(f"Unknown write_mode: {config.write_mode}")
 
@@ -476,8 +529,11 @@ def write_bronze(spark, df, config: IngestionConfig):
     (write succeeded, a downstream step then failed) re-running with the
     same batch_id converges to one copy of the data instead of duplicating
     it. Not applied to write_mode="merge" - Delta's MERGE doesn't accept
-    txn options, but re-running the same batch is naturally safe there via
-    merge_keys upsert semantics anyway.
+    txn options, but re-running the same batch is naturally safe there:
+    via merge_keys upsert semantics, or, under the content-hash strategy
+    (#84), because an identical retried batch re-hashes to the same key and
+    matches the rows it already wrote (idempotent re-ingestion - not
+    upsert, see content_hash_columns' field comment in config.py).
     """
     txn_options = None
     if config.idempotent_batch_writes and config.write_mode in ("append", "overwrite"):
