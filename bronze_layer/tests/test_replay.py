@@ -49,6 +49,10 @@ def test_reprocess_quarantine_no_table_is_noop(spark):
         "table": cfg.full_table_name,
         "replayed_row_count": 0,
         "still_quarantined_row_count": 0,
+        # Present on every return path (#159 item 4), so a caller can read
+        # them without checking which path produced the result.
+        "skipped_exhausted_row_count": 0,
+        "attempts_recorded": 0,
         "replay_batch_id": None,
     }
 
@@ -390,7 +394,7 @@ def test_new_quarantine_rows_start_at_zero_attempts(spark):
     table = f"replay_attempts_new_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(table, required_columns=["name"], fail_on_quality_error=False)
 
-    _quarantine(spark, spark.createDataFrame([(1, None)], ["id", "name"]), cfg)
+    _quarantine(spark, spark.createDataFrame([(1, None)], "id INT, name STRING"), cfg)
 
     rows = _quarantine_rows(spark, cfg)
     assert len(rows) == 1
@@ -402,7 +406,7 @@ def test_a_failed_replay_increments_the_attempt_counter(spark):
     be' with data rather than with age."""
     table = f"replay_attempts_inc_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(table, required_columns=["name"], fail_on_quality_error=False)
-    _quarantine(spark, spark.createDataFrame([(1, None)], ["id", "name"]), cfg)
+    _quarantine(spark, spark.createDataFrame([(1, None)], "id INT, name STRING"), cfg)
 
     first = reprocess_quarantine(spark, _cfg(table, required_columns=["name"]))
     assert first["still_quarantined_row_count"] == 1
@@ -420,7 +424,7 @@ def test_a_promoted_row_is_deleted_rather_than_counted(spark):
     cfg = _cfg(table, required_columns=["name", "email"], fail_on_quality_error=False)
     _quarantine(
         spark,
-        spark.createDataFrame([(1, None, "a@x.com")], ["id", "name", "email"]),
+        spark.createDataFrame([(1, None, "a@x.com")], "id INT, name STRING, email STRING"),
         cfg,
     )
 
@@ -437,7 +441,7 @@ def test_exhausted_rows_are_skipped_but_never_deleted(spark):
     stop rescanning hopeless rows, not to throw them away."""
     table = f"replay_attempts_exhaust_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(table, required_columns=["name"], fail_on_quality_error=False)
-    _quarantine(spark, spark.createDataFrame([(1, None)], ["id", "name"]), cfg)
+    _quarantine(spark, spark.createDataFrame([(1, None)], "id INT, name STRING"), cfg)
 
     strict = _cfg(table, required_columns=["name"], max_replay_attempts=1)
     first = reprocess_quarantine(spark, strict)
@@ -461,7 +465,7 @@ def test_the_limit_can_be_overridden_per_call_to_sweep_exhausted_rows_back_in(sp
     cfg = _cfg(table, required_columns=["name", "email"], fail_on_quality_error=False)
     _quarantine(
         spark,
-        spark.createDataFrame([(1, None, "a@x.com")], ["id", "name", "email"]),
+        spark.createDataFrame([(1, None, "a@x.com")], "id INT, name STRING, email STRING"),
         cfg,
     )
     strict = _cfg(table, required_columns=["name", "email"], max_replay_attempts=1)
@@ -482,7 +486,7 @@ def test_replay_attempts_never_lands_on_the_bronze_table(spark):
     cfg = _cfg(table, required_columns=["name", "email"], fail_on_quality_error=False)
     _quarantine(
         spark,
-        spark.createDataFrame([(1, None, "a@x.com")], ["id", "name", "email"]),
+        spark.createDataFrame([(1, None, "a@x.com")], "id INT, name STRING, email STRING"),
         cfg,
     )
 
