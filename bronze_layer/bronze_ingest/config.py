@@ -193,8 +193,54 @@ class IngestionConfig:
     cluster_by: Optional[List[str]] = None
     # CLUSTER BY AUTO - Databricks Runtime only, not supported by OSS/local Delta
     cluster_by_auto: bool = False
-    # e.g. {"delta.enableChangeDataFeed": "true"}
+    # Free-form Delta properties. Merged OVER the CDF defaults below, so an
+    # explicit entry here always wins - see resolved_table_properties.
     table_properties: Dict[str, str] = field(default_factory=dict)
+
+    # --- Change Data Feed (#58) ---
+    # ON by default, and that default is the point of the issue: CDF only
+    # captures changes from the moment it is enabled, so every run before it
+    # is switched on is history no Silver consumer can ever read
+    # incrementally. `docs/bronze_silver_contract.md` §1 decides Silver reads
+    # Bronze via CDF, which makes this an obligation on Bronze rather than a
+    # nice-to-have. Cost is negligible on an append-heavy layer.
+    #
+    # Applies to bronze AND quarantine tables. Not to the audit or schema
+    # registry tables: they are this package's own metadata, nothing consumes
+    # them incrementally, and #159 is separately concerned with their growth.
+    #
+    # None, not True, and for the reason #54 established elsewhere in this
+    # class: config load must be able to tell an explicit choice from silence.
+    #   None  -> decide from write_mode: on for append/merge, OFF for
+    #            overwrite, because `docs/bronze_silver_contract.md` §2 puts
+    #            overwrite-mode tables out of contract for incremental reads
+    #            (CDF there emits the whole table as deletes then inserts, so
+    #            Silver would do strictly more work than a full rescan while
+    #            carrying all of CDC's complexity).
+    #   True  -> explicit opt-in. REFUSED with write_mode="overwrite", which
+    #            is the enforcement §2 asked for when #58 landed - without it
+    #            the restriction is violated by someone configuring a table
+    #            reasonably and having no way to know.
+    #   False -> explicit opt-out, always honoured.
+    # A plain default of True would have made the refusal unreachable: every
+    # overwrite config in existence would have started failing at load.
+    enable_change_data_feed: Optional[bool] = None
+    # The CDF window, and the reason this field exists rather than leaving
+    # Delta's defaults in place: enabling a feed whose data is then deleted by
+    # an unconfigured maintenance operation is a guarantee that looks real and
+    # is not (#58, #159). Delta bounds readable change data by BOTH the commit
+    # log (delta.logRetentionDuration, default 30 days) and the underlying
+    # files (delta.deletedFileRetentionDuration, default 7 days), so the real
+    # window is the SHORTER of the two - 7 days by default, which is not what
+    # a reader of "log retention 30 days" would assume. Both are set from this
+    # one number so they cannot silently disagree.
+    #
+    # 30 days is a floor chosen to be written down, not derived from a
+    # measured consumer lag: Silver does not exist yet (#205), so there is no
+    # lag to measure. Revisit when there is a real consumer. A VACUUM with an
+    # explicit RETAIN shorter than this overrides the property and silently
+    # shortens the window - that interaction belongs to #159.
+    change_data_feed_retention_days: int = 30
 
     # --- Catalog documentation (see catalog_metadata.py, #64) ---
     # COMMENT ON TABLE - catalog documentation for the bronze table
@@ -259,6 +305,33 @@ class IngestionConfig:
         if self.unique_columns is not None and len(self.unique_columns) == 0:
             raise ValueError(
                 "unique_columns, if provided, must be a non-empty list of column names."
+            )
+        if self.enable_change_data_feed is True and self.write_mode == "overwrite":
+            # The enforcement docs/bronze_silver_contract.md §2 asked for when
+            # #58 landed. Under overwrite, CDF emits the entire table as
+            # deletes then inserts on every run, so a Silver consumer does
+            # strictly more work than a full rescan while carrying all of
+            # CDC's complexity. Only an EXPLICIT True lands here - the default
+            # (None) resolves to off for overwrite rather than failing, so
+            # existing overwrite configs keep loading.
+            raise ValueError(
+                "enable_change_data_feed=True is not supported with write_mode='overwrite'. "
+                "Overwrite emits the entire table as deletes then inserts on every run, so "
+                "the feed carries no incremental information - docs/bronze_silver_contract.md "
+                "§2 puts overwrite-mode tables out of contract for incremental Silver "
+                "reads. Leave enable_change_data_feed unset (it defaults to off for "
+                "overwrite), or change write_mode."
+            )
+        if self.resolved_enable_change_data_feed and self.change_data_feed_retention_days < 1:
+            # Zero or negative would render as "interval 0 days", which either
+            # errors or sets a window that discards change data immediately -
+            # a CDF guarantee that is enabled and empty is the exact
+            # looks-real-and-is-not failure #58 set out to avoid.
+            raise ValueError(
+                "change_data_feed_retention_days must be >= 1 when "
+                f"the change data feed is on, got {self.change_data_feed_retention_days}. "
+                "Set enable_change_data_feed=False to turn the feed off instead of "
+                "configuring a zero-length retention window."
             )
         if self.column_comments:
             blank = [k for k in self.column_comments if not str(k).strip()]
@@ -632,6 +705,57 @@ class IngestionConfig:
             if p
         ]
         return ".".join(parts)
+
+    @property
+    def resolved_enable_change_data_feed(self) -> bool:
+        """
+        Whether CDF is actually applied, once silence is resolved (#58).
+
+        `enable_change_data_feed=None` means "nobody said", and the answer
+        then comes from `write_mode`: on for append and merge, off for
+        overwrite. See the field comment and
+        `docs/bronze_silver_contract.md` §2 — an overwrite-mode feed is not
+        wrong so much as useless, emitting the entire table as deletes then
+        inserts every run.
+
+        `resolved_`, not the raw field, for the #54 reason: the raw one is
+        `None` by default so an explicit choice is distinguishable from
+        silence, and `None` is falsy, so reading it directly would quietly
+        disable the feed everywhere.
+        """
+        if self.enable_change_data_feed is None:
+            return self.write_mode != "overwrite"
+        return self.enable_change_data_feed
+
+    @property
+    def resolved_table_properties(self) -> Dict[str, str]:
+        """
+        The Delta properties actually applied to bronze and quarantine tables:
+        the CDF defaults (#58) with `table_properties` merged OVER them.
+
+        **Precedence is explicit-dict-wins, and it is decided here rather than
+        left to whichever code path runs last.** Someone who writes
+        `table_properties: {"delta.enableChangeDataFeed": "false"}` has said
+        something more specific than the boolean default, and silently
+        overriding it would be the worse surprise of the two. The same holds
+        for the retention keys - a caller pinning
+        `delta.deletedFileRetentionDuration` by hand keeps their value.
+
+        Returning a fresh dict each call, never the stored one: the writer
+        diffs this against DESCRIBE DETAIL and callers have historically
+        treated config fields as inert, so handing out a mutable reference to
+        `table_properties` would let a caller edit config by accident.
+        """
+        props: Dict[str, str] = {}
+        if self.resolved_enable_change_data_feed:
+            props["delta.enableChangeDataFeed"] = "true"
+            # Both keys from one number - see change_data_feed_retention_days
+            # for why the shorter of the two is what actually bounds the feed.
+            interval = f"interval {self.change_data_feed_retention_days} days"
+            props["delta.logRetentionDuration"] = interval
+            props["delta.deletedFileRetentionDuration"] = interval
+        props.update(self.table_properties or {})
+        return props
 
     # ---- constructors ----
     @classmethod

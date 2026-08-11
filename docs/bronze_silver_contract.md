@@ -56,9 +56,12 @@ Silver:
 
 | Obligation | Where it lands |
 | --- | --- |
-| CDF enabled on bronze **and quarantine** tables | #58 |
-| A `VACUUM` retention floor exceeding the slowest consumer's lag | #159 |
+| CDF enabled on bronze **and quarantine** tables | #58 — **shipped**, on by default |
+| A `VACUUM` retention floor exceeding the slowest consumer's lag | #159 — **floor shipped with #58** (30 days); scheduling still #159's |
 | A durable place for Silver to record its read position | Silver's own design |
+
+§2's `overwrite` restriction is now enforced at config load, not merely
+documented — see there.
 
 **CDF only captures changes from the moment it is enabled.** This is the
 single fact that makes #58 time-sensitive: every day it is off is a day of
@@ -99,6 +102,22 @@ not a one-hour blip but "Silver was broken and nobody noticed until someone
 came back from leave". Confirm or override before #58 lands, and record the
 number in #159 — which currently has nowhere for it to live.
 
+> **Taken, in #58: 30 days.** `change_data_feed_retention_days: int = 30`, and
+> it is where the number now lives — code, not a doc that can drift from it.
+>
+> One correction to the table above, found while implementing. It lists 7 days
+> as "Delta's default" against `VACUUM`, but two properties bound readable
+> change data, not one: `delta.logRetentionDuration` (default **30** days) and
+> `delta.deletedFileRetentionDuration` (default **7** days). **The real window
+> is the shorter of them** — so the pre-#58 state was not "30 days of feed", it
+> was 7, and anyone reading `logRetentionDuration` alone would have believed
+> otherwise. Both keys are now set from the single
+> `change_data_feed_retention_days` number so they cannot disagree.
+>
+> Still #159's, and still open: a `VACUUM ... RETAIN n HOURS` shorter than this
+> overrides the property and silently shortens the window. The floor exists;
+> nothing yet stops a maintenance job from undercutting it.
+
 ---
 
 ## 2. What Silver sees on a re-run
@@ -127,6 +146,25 @@ and having no way to know. Suggested: when #58 lands, refuse
 `enable_change_data_feed` together with `write_mode: overwrite` at config
 load, with a message pointing here. That is one more rule in the pattern
 #54 established.
+
+> **Landed in #58, and the enforcement is slightly softer than suggested
+> above — deliberately.** `enable_change_data_feed` defaults to `None`
+> (the #54 pattern this section invokes), which resolves to **off** for
+> `write_mode: overwrite` and **on** for append and merge. An *explicit*
+> `enable_change_data_feed: true` alongside `overwrite` raises at config load
+> with a message pointing here.
+>
+> Refusing unconditionally was rejected: with CDF on by default, it would have
+> broken every existing overwrite config at load — turning a restriction on a
+> combination nobody had chosen yet into a migration. Resolving silence to
+> "off" gets the same guarantee (no meaningless feed is ever created) without
+> that.
+>
+> The raw property remains an escape hatch:
+> `table_properties: {"delta.enableChangeDataFeed": "true"}` is honoured even
+> on overwrite, because writing the Delta property by hand means someone has
+> read this section and decided. That keeps the flag-level refusal a guardrail
+> rather than a wall.
 
 `overwrite` remains entirely valid for bronze tables Silver does **not**
 consume — full-refresh reference data, for instance.

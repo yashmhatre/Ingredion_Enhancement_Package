@@ -14,7 +14,7 @@ from .config import IngestionConfig
 from .errors import DuplicateMergeKeyError, NullMergeKeyError
 from .logging_utils import logger
 from .retry import with_retry
-from .sql_utils import quote_literal, row_content_hash
+from .sql_utils import apply_table_properties, row_content_hash
 
 
 def resolve_batch_id(config: IngestionConfig) -> str:
@@ -230,7 +230,15 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
     branch in _write_core calls this again immediately after its write to
     restore it, rather than relying on it surviving the write.
     """
-    if not (config.cluster_by or config.cluster_by_auto or config.table_properties):
+    # resolved_table_properties, not table_properties: it carries the CDF
+    # defaults (#58) as well as the user's dict. One consequence worth naming
+    # - with CDF on by default this set is never empty, so the early return
+    # below no longer fires for a table that configures no layout at all.
+    # That is the intended behaviour change: CDF has to reach every table the
+    # package creates, including ones nobody configured.
+    desired_props = config.resolved_table_properties
+
+    if not (config.cluster_by or config.cluster_by_auto or desired_props):
         return
 
     from delta.tables import DeltaTable
@@ -241,7 +249,7 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
             creator = creator.clusterBy(*config.cluster_by)
         elif config.partition_by:
             creator = creator.partitionedBy(*config.partition_by)
-        for key, value in (config.table_properties or {}).items():
+        for key, value in desired_props.items():
             creator = creator.property(key, value)
         creator.execute()
 
@@ -269,21 +277,12 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
                 exc,
             )
 
-    changed_props = {
-        k: v for k, v in (config.table_properties or {}).items() if current_props.get(k) != v
-    }
+    # current_props is already in hand from the DESCRIBE DETAIL above, so it
+    # is passed in rather than letting the helper re-read it. Escaping and the
+    # diff-before-ALTER live in the helper now, shared with the quarantine
+    # write (#58) - see sql_utils.apply_table_properties.
+    changed_props = apply_table_properties(spark, full_name, desired_props, current_props)
     if changed_props:
-        # Both sides escaped (#154). `table_properties` is a free-form
-        # Dict[str, str] straight from YAML, and both key and value landed in
-        # single-quoted SQL literals raw: a value containing an apostrophe
-        # broke the statement, and a crafted one appended arbitrary DDL to it.
-        # The keys are additionally validated at config load, per
-        # dot-separated part, since they are dotted by convention
-        # (delta.enableChangeDataFeed).
-        props_clause = ", ".join(
-            f"'{quote_literal(k)}' = '{quote_literal(v)}'" for k, v in changed_props.items()
-        )
-        spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
 
 

@@ -29,8 +29,14 @@ merge_schema: true
                                  # optimization pick clustering keys automatically
 partition_by: null              # discouraged for new tables - prefer cluster_by; kept for
                                  # backward compat with existing hive-partitioned tables
-# table_properties:
-#   delta.enableChangeDataFeed: "true"
+# --- Change Data Feed (#58): ON by default for append/merge, off for
+# overwrite (see docs/bronze_silver_contract.md 2). Both retention keys are
+# derived from the one number below, because Delta bounds the readable feed by
+# the SHORTER of log retention and deleted-file retention.
+# enable_change_data_feed: true        # unset = decide from write_mode
+# change_data_feed_retention_days: 30  # the CDF window, in days
+# table_properties:                    # raw properties WIN over the flag above
+#   delta.enableChangeDataFeed: "false"
 
 # --- Catalog documentation: applied post-write, only when changed ---
 # table_comment: "Raw orders landed from SAP, one row per source record"
