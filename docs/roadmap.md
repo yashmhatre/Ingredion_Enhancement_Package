@@ -158,7 +158,7 @@ urgent; all are cheap, and each will otherwise be rediscovered.
 
 | Finding | Origin |
 | --- | --- |
-| `databricks bundle validate` runs in CI but is **non-blocking**. It has passed on every run since. Drop `continue-on-error` and make it a real gate | #157 |
+| ~~`databricks bundle validate` runs in CI but is **non-blocking**. It has passed on every run since. Drop `continue-on-error` and make it a real gate~~ **Wrong, and resolved.** It had passed on *no* run: it failed on every one, for auth, never for a bundle error. `validate` calls `scim/v2/Me` and cannot run credential-free on any target or CLI version. Step removed (#244); the real gate needs a CI credential and lands with #113 | #157, #244 |
 | Coverage is reported, not enforced. The number is now known and stable (**~86.5%**), so a floor can be set from evidence rather than guessed | #158 |
 | `python_requires>=3.8` pins `ruff target-version` to `py38`, which blocks PEP 604/585 annotations. If the real floor is the Databricks runtime's Python, raising it unlocks ~83 modernisations | #158 |
 | The README retry-safety matrix still does not cover the **quarantine** write, though the MERGE-on-content-hash behaviour has shipped | #148 |
