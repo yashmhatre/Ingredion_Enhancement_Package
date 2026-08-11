@@ -162,9 +162,12 @@ def test_record_schema_failure_returns_none_false(spark, tmp_path, monkeypatch):
 
     monkeypatch.setattr(sr, "_write_row", boom)
 
-    fingerprint, changed = sr.record_schema(spark, cfg, _df(spark, ["id"]))
+    fingerprint, changed, drift = sr.record_schema(spark, cfg, _df(spark, ["id"]))
     assert fingerprint is None
     assert changed is False
+    # A registry failure reports no drift rather than a partial one (#256):
+    # the comparison it would have been derived from never completed.
+    assert drift is None
 
 
 # ---------------------------------------------------------------------------
