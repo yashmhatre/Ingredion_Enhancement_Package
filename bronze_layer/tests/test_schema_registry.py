@@ -1,7 +1,13 @@
+import json
 import uuid
 
 from bronze_ingest.config import IngestionConfig
-from bronze_ingest.schema_registry import REGISTRY_SCHEMA, _fingerprint, record_schema
+from bronze_ingest.schema_registry import (
+    REGISTRY_SCHEMA,
+    _fingerprint,
+    describe_drift,
+    record_schema,
+)
 from tests.conftest import file_uri
 
 
@@ -158,3 +164,73 @@ def test_record_schema_failure_returns_none_false(spark, tmp_path, monkeypatch):
     fingerprint, changed = sr.record_schema(spark, cfg, _df(spark, ["id"]))
     assert fingerprint is None
     assert changed is False
+
+
+# ---------------------------------------------------------------------------
+# Structured drift detail (#256)
+# ---------------------------------------------------------------------------
+
+
+def _schema_json(*fields):
+    return json.dumps({"fields": [{"name": n, "type": t} for n, t in fields]})
+
+
+def test_describe_drift_reports_added_removed_and_retyped_columns():
+    old = _schema_json(("id", "long"), ("name", "string"), ("dropped", "string"))
+    new = _schema_json(("id", "string"), ("name", "string"), ("added", "double"))
+
+    drift = json.loads(describe_drift(old, new))
+
+    assert drift["added"] == ["added"]
+    assert drift["removed"] == ["dropped"]
+    assert drift["type_changed"] == [{"column": "id", "from": "long", "to": "string"}]
+
+
+def test_describe_drift_returns_none_when_there_is_no_previous_schema():
+    """A first registration is not drift. None rather than an empty object, so
+    a consumer can tell 'no drift recorded' from 'drift recorded, and it was
+    nothing' - and so the column stays NULL for rows predating it."""
+    assert describe_drift(None, _schema_json(("id", "long"))) is None
+    assert describe_drift("", _schema_json(("id", "long"))) is None
+
+
+def test_describe_drift_returns_none_for_a_change_that_is_not_add_remove_or_retype():
+    """Reordering columns changes the fingerprint, so schema_changed is True
+    while this is None. That is the honest answer: something changed, and it
+    was not the set of columns or their types."""
+    old = _schema_json(("id", "long"), ("name", "string"))
+    new = _schema_json(("name", "string"), ("id", "long"))
+
+    assert describe_drift(old, new) is None
+
+
+def test_describe_drift_never_raises_on_unparseable_input():
+    """Advisory metadata must never fail the run that produced it - the same
+    contract the rest of this module keeps."""
+    assert describe_drift("not json", _schema_json(("id", "long"))) is None
+    assert describe_drift(_schema_json(("id", "long")), "not json") is None
+    assert describe_drift('{"no_fields_key": 1}', _schema_json(("id", "long"))) is None
+
+
+def test_record_schema_returns_structured_drift_on_a_real_change(spark, tmp_path):
+    cfg = _cfg(tmp_path, "drift_detail")
+
+    fp1, changed1, drift1 = record_schema(spark, cfg, _df(spark, ["id", "name"]))
+    assert changed1 is False and drift1 is None, "first registration is not drift"
+
+    fp2, changed2, drift2 = record_schema(spark, cfg, _df(spark, ["id", "name", "email"]))
+
+    assert changed2 is True
+    assert json.loads(drift2)["added"] == ["email"]
+    assert fp1 != fp2
+
+
+def test_record_schema_reports_no_drift_when_the_schema_is_unchanged(spark, tmp_path):
+    cfg = _cfg(tmp_path, "drift_unchanged")
+    record_schema(spark, cfg, _df(spark, ["id", "name"]))
+
+    fingerprint, changed, drift = record_schema(spark, cfg, _df(spark, ["id", "name"]))
+
+    assert changed is False
+    assert drift is None
+    assert fingerprint is not None

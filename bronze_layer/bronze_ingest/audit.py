@@ -71,6 +71,14 @@ AUDIT_SCHEMA = StructType(
         StructField("failure_stage", StringType(), nullable=True),
         StructField("schema_fingerprint", StringType(), nullable=True),
         StructField("schema_changed", BooleanType(), nullable=True),
+        # WHAT changed, not merely that something did (#256). Compact JSON:
+        # {"added":[...],"removed":[...],"type_changed":[{"column","from","to"}]}.
+        # schema_changed answers a yes/no a dashboard can count; this answers
+        # the question anyone who sees that count actually asks next, without
+        # hand-diffing two schema_json blobs out of the registry.
+        # NULL when there is no previous schema to compare against, and on
+        # every row written before this column existed.
+        StructField("schema_drift_json", StringType(), nullable=True),
         StructField("started_at", TimestampType(), nullable=False),
         StructField("finished_at", TimestampType(), nullable=True),
         StructField("error_message", StringType(), nullable=True),

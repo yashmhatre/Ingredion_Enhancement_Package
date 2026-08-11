@@ -158,9 +158,12 @@ class BronzeIngestion:
             row_count = metrics["row_count"]
 
             if record_metadata:
-                fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
+                fingerprint, schema_changed, schema_drift = record_schema(
+                    self.spark, self.config, final_df
+                )
                 audit["schema_fingerprint"] = fingerprint
                 audit["schema_changed"] = schema_changed
+                audit["schema_drift_json"] = schema_drift
                 apply_catalog_metadata(self.spark, self.config)
 
             logger.info(

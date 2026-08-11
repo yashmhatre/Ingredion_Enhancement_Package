@@ -153,9 +153,57 @@ def _write_row(spark, config: IngestionConfig, row_dict: dict) -> None:
         )
 
 
+def describe_drift(old_schema_json: Optional[str], new_schema_json: str) -> Optional[str]:
+    """
+    A compact, queryable description of what changed between two registered
+    schemas, as JSON: added / removed columns and type changes (#256).
+
+    Until now drift was recorded two ways, neither of them usable: a boolean
+    (`schema_changed`) on the audit row, which says THAT something changed, and
+    a log line, which says what but is not data. Reconstructing the detail
+    meant diffing two `schema_json` blobs by hand, after finding them.
+
+    Returns None when there is nothing to describe - no previous schema (a
+    first registration is not drift), unparseable input, or a diff that comes
+    out empty. None rather than "{}" so a consumer can tell "no drift recorded"
+    from "drift recorded, and it was nothing", and so the column stays NULL for
+    every row that predates this.
+
+    Column ORDER is deliberately not drift. Reordering columns changes the
+    fingerprint, so `schema_changed` will be True and this will be None - which
+    is the honest answer: something changed, and it was not the set of columns
+    or their types.
+    """
+    if not old_schema_json:
+        return None
+    try:
+        old_fields = {f["name"]: f.get("type") for f in json.loads(old_schema_json)["fields"]}
+        new_fields = {f["name"]: f.get("type") for f in json.loads(new_schema_json)["fields"]}
+    except (ValueError, KeyError, TypeError):
+        # Advisory metadata must never fail the run that produced it - the
+        # same contract the rest of this module keeps.
+        return None
+
+    added = sorted(set(new_fields) - set(old_fields))
+    removed = sorted(set(old_fields) - set(new_fields))
+    type_changed = [
+        {"column": name, "from": old_fields[name], "to": new_fields[name]}
+        for name in sorted(set(old_fields) & set(new_fields))
+        if old_fields[name] != new_fields[name]
+    ]
+    if not (added or removed or type_changed):
+        return None
+
+    return json.dumps(
+        {"added": added, "removed": removed, "type_changed": type_changed},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def record_schema(
     spark, config: IngestionConfig, df, source_path: Optional[str] = None
-) -> Tuple[Optional[str], bool]:
+) -> Tuple[Optional[str], bool, Optional[str]]:
     """
     Records the current schema for config's target table, but only if it
     differs from what's already registered.
@@ -163,9 +211,12 @@ def record_schema(
     The unchanged path costs one small read and zero writes - this is the
     cost-safety property that keeps per-run overhead negligible.
 
-    Returns (fingerprint, changed) so callers - notably the run-level audit
-    trail (#51) - can cheaply surface per-run schema drift without
-    re-deriving the fingerprint themselves. `changed` is True only when a
+    Returns (fingerprint, changed, drift_json) so callers - notably the
+    run-level audit trail (#51) - can cheaply surface per-run schema drift
+    without re-deriving any of it themselves. `drift_json` is `describe_drift`'s
+    structured summary of WHAT changed (#256), and is None whenever `changed`
+    is False, plus for a first registration and for a change that is not a
+    column add/remove/retype (a pure reordering, say). `changed` is True only when a
     previously-registered fingerprint existed and differed from this run's;
     False for the first-ever registration, for an unchanged schema, and
     when the registry is disabled or the check itself fails (a registry
@@ -173,14 +224,15 @@ def record_schema(
     rather than raising).
     """
     if not config.enable_schema_registry:
-        return None, False
+        return None, False, None
 
     try:
         fingerprint = _fingerprint(df)
         current = _read_current_row(spark, config)
 
+        new_schema_json = _schema_json(df)
         if current is not None and current["schema_fingerprint"] == fingerprint:
-            return fingerprint, False  # unchanged - nothing to write
+            return fingerprint, False, None  # unchanged - nothing to write
 
         now = datetime.now(timezone.utc)
         _write_row(
@@ -190,7 +242,7 @@ def record_schema(
                 "table_name": config.full_table_name,
                 "source_path": source_path or config.source_path,
                 "schema_fingerprint": fingerprint,
-                "schema_json": _schema_json(df),
+                "schema_json": new_schema_json,
                 "first_seen_at": current["first_seen_at"] if current is not None else now,
                 "last_updated_at": now,
             },
@@ -198,7 +250,7 @@ def record_schema(
 
         if current is None:
             logger.info("Registered schema for %s (%s)", config.full_table_name, fingerprint)
-            return fingerprint, False
+            return fingerprint, False, None
 
         logger.warning(
             "Schema drift detected for %s: %s -> %s",
@@ -206,7 +258,8 @@ def record_schema(
             current["schema_fingerprint"],
             fingerprint,
         )
-        return fingerprint, True
+        drift = describe_drift(current["schema_json"], new_schema_json)
+        return fingerprint, True, drift
     except Exception as exc:  # noqa: BLE001 - as above - drift detection is advisory, never a gate
         logger.warning("Schema registry check failed for %s: %s", config.full_table_name, exc)
-        return None, False
+        return None, False, None
