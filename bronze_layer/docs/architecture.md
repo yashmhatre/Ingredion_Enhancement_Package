@@ -322,10 +322,18 @@ defer to it rather than carrying an independent figure.
 
 ## Open questions
 
-- **CDF retention floor** — `docs/bronze_silver_contract.md` recommends 30
-  days; it's the one number there that can't be derived from the code
-  (needs to exceed the slowest CDF consumer's lag, and no consumer exists
-  yet). Confirm before #58 ships.
+- **CDF retention floor — settled**, not open. #58 shipped 2026-08-11 with
+  `change_data_feed_retention_days = 30`, the number
+  `docs/bronze_silver_contract.md` recommended, and it now lives in code
+  rather than in a doc that can drift from it. One correction landed with
+  it: the readable CDF window is bounded by the SHORTER of
+  `delta.logRetentionDuration` (30 days) and
+  `delta.deletedFileRetentionDuration` (7), so the pre-#58 state advertised
+  30 days of feed and would have delivered 7. Both keys now derive from the
+  one number. What remains is enforcement rather than the value: a
+  `VACUUM ... RETAIN` shorter than the floor still overrides it silently,
+  which is why #159's maintenance job reads each table's own floor back
+  instead of taking a second configured number.
 - **Buy-vs-build — resolved**, not open. `docs/buy_vs_build_2026-08.md`
   verdicts every framework feature in the backlog against a real fixture,
   not a README: Silver's rule engine is **build** (DQX can't be
