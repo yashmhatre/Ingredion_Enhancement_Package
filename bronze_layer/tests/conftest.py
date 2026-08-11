@@ -153,6 +153,16 @@ class NotebookExit(Exception):
     that matters: statements after an `exit()` do not run. A stub that merely
     recorded the value would let execution continue and quietly test a path
     production never takes.
+
+    **It models stopping, never failing (#247).** `run_notebook` catches this
+    and reports a normal outcome, because on Databricks `exit()` exits 0 - the
+    run is Succeeded whatever string it carried. Do not read an exit value of
+    "FAILED: ..." as a failed task: three notebooks reported failure that way,
+    the tests asserted on the string, and both the code and the tests were
+    wrong together for as long as that went unnoticed. A notebook that must
+    fail its task raises, and a test for it asserts `pytest.raises`, not an
+    exit value. `test_no_notebook_reports_failure_through_notebook_exit`
+    enforces that statically.
     """
 
     def __init__(self, value):
