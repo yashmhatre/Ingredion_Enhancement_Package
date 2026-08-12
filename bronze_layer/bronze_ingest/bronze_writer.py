@@ -600,7 +600,21 @@ def write_bronze_micro_batch(spark, micro_batch_df, batch_id: int, config: Inges
     on Auto Loader's own checkpoint (which prevents re-reading the same
     source files) rather than txnVersion.
     """
-    if micro_batch_df.rdd.isEmpty():
+    # DataFrame.isEmpty(), NOT micro_batch_df.rdd.isEmpty() (#248).
+    #
+    # `.rdd` does not exist on Spark Connect - it raises
+    # PySparkNotImplementedError: [NOT_IMPLEMENTED] rdd is not implemented.
+    # Every Databricks compute this project has is serverless (azure_setup.md
+    # Step 3: the trial subscription's 4-vCPU quota rules out classic
+    # compute), and serverless is Spark Connect. So this line failed the
+    # FIRST micro-batch of every streaming run, every time - the streaming
+    # write path could never have worked here.
+    #
+    # It survived because no test could reach it: cloudFiles is Databricks-
+    # only, so the suite cannot start a stream at all, and local pyspark is
+    # classic Spark where `.rdd` exists and the line is fine. Found by the
+    # first real Auto Loader run (#248), not by CI.
+    if micro_batch_df.isEmpty():
         logger.info("Micro-batch %s is empty - skipping write.", batch_id)
         return
 

@@ -9,6 +9,7 @@ from bronze_ingest.bronze_writer import (
     _resolve_idempotent_txn_version,
     add_audit_columns,
     write_bronze,
+    write_bronze_micro_batch,
 )
 from bronze_ingest.config import IngestionConfig
 
@@ -714,3 +715,62 @@ def test_a_refused_merge_creates_no_table_even_though_cdf_wants_one(spark):
         write_bronze(spark, spark.createDataFrame([(1, "a"), (None, "b")], ["id", "name"]), cfg)
 
     assert not spark.catalog.tableExists(_table(table))
+
+
+# ---- streaming micro-batch: Spark Connect compatibility (#248) ----
+
+
+class _ConnectLikeDataFrame:
+    """Stands in for a Spark Connect DataFrame.
+
+    Everything works except `.rdd`, which raises the way serverless does:
+    `PySparkNotImplementedError: [NOT_IMPLEMENTED] rdd is not implemented.`
+    """
+
+    def __init__(self, empty):
+        self._empty = empty
+
+    @property
+    def rdd(self):
+        raise NotImplementedError("[NOT_IMPLEMENTED] rdd is not implemented.")
+
+    def isEmpty(self):  # noqa: N802 - mirrors the PySpark DataFrame API
+        return self._empty
+
+
+def test_micro_batch_empty_check_does_not_touch_rdd():
+    """#248. `write_bronze_micro_batch` used `micro_batch_df.rdd.isEmpty()`,
+    and `.rdd` does not exist on Spark Connect - which is every compute this
+    project has, since the trial subscription's vCPU quota rules out classic
+    compute. It failed the FIRST micro-batch of every streaming run.
+
+    Nothing caught it: cloudFiles is Databricks-only so the suite cannot
+    start a stream, and local pyspark is classic Spark where `.rdd` works
+    fine. So the regression test is a fake that raises exactly where
+    serverless raises, and needs no stream and no Spark.
+    """
+    cfg = _cfg("micro_batch_rdd_guard", checkpoint_location="/tmp/al248_cp")
+
+    # Empty batch: must return early, and must not consult `.rdd` to find out.
+    write_bronze_micro_batch(None, _ConnectLikeDataFrame(empty=True), 0, cfg)
+
+
+def test_micro_batch_writes_a_non_empty_batch_without_touching_rdd(monkeypatch):
+    """The other half: a non-empty batch must get past the emptiness check
+    and reach the write, still without `.rdd`."""
+    import bronze_ingest.bronze_writer as bw
+
+    seen = {}
+
+    def fake_write_core(spark, df, config, txn_options=None):
+        seen["txn_options"] = txn_options
+        return config.full_table_name
+
+    monkeypatch.setattr(bw, "_write_core", fake_write_core)
+
+    cfg = _cfg("micro_batch_rdd_guard_write", checkpoint_location="/tmp/al248_cp")
+    write_bronze_micro_batch(None, _ConnectLikeDataFrame(empty=False), 7, cfg)
+
+    # Keyed on the checkpoint location and the streaming batch id - the
+    # idempotency this function exists to provide.
+    assert seen["txn_options"] == {"txnAppId": "/tmp/al248_cp", "txnVersion": "7"}
