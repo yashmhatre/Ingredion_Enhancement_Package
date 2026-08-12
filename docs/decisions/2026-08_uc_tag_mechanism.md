@@ -144,6 +144,43 @@ established is a wider trust boundary than the repo.
 1. **DDL becomes locally parseable** — e.g. a delta-spark version that accepts
    `SET TAGS` as a no-op. Then the testability argument collapses and DDL's
    consistency with the COMMENT machinery wins.
-2. **The REST API turns out not to support column-level assignment.** Not
-   verified here: only that the tag-policy and ABAC surfaces answer. **This is
-   the one thing to check before writing code**, and it is a single call.
+2. ~~**The REST API turns out not to support column-level assignment.**~~
+   **Checked, 2026-08-12 — it does.** See §7. This was the one open risk to the
+   decision and it is closed.
+
+## 7. Column-level assignment — verified 2026-08-12
+
+§6 listed this as the one unverified thing that could invalidate the decision.
+It does not.
+
+```
+$ databricks entity-tag-assignments --help
+  Entity tagging is supported on catalogs, schemas, tables (including views),
+  COLUMNS, and volumes.
+
+$ databricks entity-tag-assignments list tables  ingredion_en.ingredion_dev.order_001_bronze
+[]
+$ databricks entity-tag-assignments list columns ingredion_en.ingredion_dev.order_001_bronze.order_id
+[]
+```
+
+Both read paths work and return an empty list — no tags are assigned anywhere
+yet, which is the expected starting state.
+
+Two details the implementation needs, and neither required guessing:
+
+- **Entity types are `tables` and `columns`** (plural), passed as the first
+  positional argument. Not `TABLE`/`COLUMN`.
+- **A column is addressed by four-part FQN** —
+  `catalog.schema.table.column` — not by a table name plus a separate column
+  parameter.
+
+The API surface is `create` / `get` / `update` / `delete` / `list`, which is
+exactly what diff-then-apply needs: `list` to read current state, `create` and
+`update` to converge, and nothing that forces a read-modify-write of the whole
+entity.
+
+**Nothing in §2's decision changes.** The one risk that could have sent this
+back to DDL is gone, and the idempotency requirement in §5 is now concretely
+achievable: diff `list`'s output against the desired set, and issue calls only
+for the difference.
