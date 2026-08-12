@@ -181,7 +181,11 @@ targets:
       env_suffix: stg
       audit_schema_name: ingredion_stg
       registry_schema_name: ingredion_stg
-      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/STG/Raw/
+      # Per-environment volume (#160). Requires Phase A of
+      # docs/decisions/2026-08_per_environment_volumes.md to have run - a
+      # deploy that cannot find its source volume should fail rather than
+      # silently read another environment's files.
+      source_volume_path: /Volumes/ingredion_en/ingredion_stg/ext-ingredion-stg/Raw/
       # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
       # is preferable once more than one person is on call - an individual's
       # address means failure alerts stop reaching anyone if that mailbox goes
@@ -206,7 +210,8 @@ targets:
       env_suffix: prd
       audit_schema_name: ingredion_prd
       registry_schema_name: ingredion_prd
-      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/PROD/Raw/
+      # Per-environment volume (#160) - see the staging note above.
+      source_volume_path: /Volumes/ingredion_en/ingredion_prd/ext-ingredion-prd/Raw/
       # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
       # is preferable once more than one person is on call - an individual's
       # address means failure alerts stop reaching anyone if that mailbox goes
