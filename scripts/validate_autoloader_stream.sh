@@ -33,6 +33,10 @@ vol() { echo "${1#dbfs:}"; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# `fs cp` does not create parent directories, and a missing SRC is the
+# first thing every wave hits. Idempotent, so it is safe to repeat.
+ensure_dirs() { databricks fs mkdirs "$SRC" -p "$PROFILE"; }
+
 drop() {  # drop <filename> <content>
   printf '%s\n' "$2" > "$tmp/$1"
   databricks fs cp "$tmp/$1" "$SRC/$1" -p "$PROFILE" --overwrite
@@ -41,21 +45,25 @@ drop() {  # drop <filename> <content>
 
 case "${1:-}" in
   wave-a)
+    ensure_dirs
     drop a1.json '{"order_id":"A-1","customer_id":"C-1","amount":10}'
     drop a2.json '{"order_id":"A-2","customer_id":"C-2","amount":20}'
     drop a3.json '{"order_id":"A-3","customer_id":"C-3","amount":30}'
     ;;
   wave-b)
+    ensure_dirs
     drop b1.json '{"order_id":"B-1","customer_id":"C-4","amount":40}'
     drop b2.json '{"order_id":"B-2","customer_id":"C-5","amount":50}'
     ;;
   wave-drift)
+    ensure_dirs
     # New top-level column. With schemaEvolutionMode=addNewColumns Auto Loader
     # is documented to FAIL the stream on first sight and accept it on the
     # next start - so this wave expects a failure, then a success.
     drop d1.json '{"order_id":"D-1","customer_id":"C-6","amount":60,"currency":"USD"}'
     ;;
   wave-jsonl)
+    ensure_dirs
     # Two records, one per line. multiline defaults to the config value; this
     # is the shape the #146 truncation guard exists for.
     printf '%s\n%s\n' \
