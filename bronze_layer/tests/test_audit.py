@@ -136,6 +136,13 @@ def test_audit_schema_matches_documented_fields():
         # rename that caused #231, so _assert_audit_migration_complete is
         # unaffected and pre-existing rows correctly read NULL.
         "schema_drift_json",
+        # Tag application outcome (#64). A pair mirroring schema_changed /
+        # schema_drift_json: the boolean is what a dashboard counts, the JSON
+        # is what an investigator reads. Both NULL when no tags are
+        # configured, so "nothing attempted" stays distinct from "attempted
+        # and fine".
+        "tags_failed",
+        "tag_outcome_json",
         "started_at",
         "finished_at",
         "error_message",

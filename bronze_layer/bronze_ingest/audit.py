@@ -79,6 +79,20 @@ AUDIT_SCHEMA = StructType(
         # NULL when there is no previous schema to compare against, and on
         # every row written before this column existed.
         StructField("schema_drift_json", StringType(), nullable=True),
+        # Tag application outcome (#64). A PAIR, deliberately mirroring
+        # schema_changed / schema_drift_json above: the boolean is the signal a
+        # dashboard counts without parsing JSON (#62), the JSON carries the
+        # detail whoever investigates needs.
+        #
+        # Tag writes never fail an ingestion run - they are governance
+        # metadata, not data - so without this a failed tag write was visible
+        # only in a log line nobody greps. That is the exact shape of silent
+        # success this repo keeps finding.
+        #
+        # Both NULL when no tags are configured, which is the default: absent
+        # is "nothing was attempted", distinct from false/"attempted and fine".
+        StructField("tags_failed", BooleanType(), nullable=True),
+        StructField("tag_outcome_json", StringType(), nullable=True),
         StructField("started_at", TimestampType(), nullable=False),
         StructField("finished_at", TimestampType(), nullable=True),
         StructField("error_message", StringType(), nullable=True),
