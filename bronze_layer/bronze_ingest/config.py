@@ -260,6 +260,24 @@ class IngestionConfig:
     # {column_name: comment}; top-level columns only
     column_comments: Dict[str, str] = field(default_factory=dict)
 
+    # --- Unity Catalog tags (#64) ---
+    # FREE-FORM tags only. Governed keys - the `class.*` PII taxonomy and
+    # anything else with a tag policy attached - must NEVER be applied from
+    # config, and `apply_catalog_tags` refuses them.
+    #
+    # The reason is access control, not tidiness: a governed tag can carry an
+    # ABAC policy, so writing one can silently change who can read the data
+    # (verified live 2026-08-12 - 63 `class.*` policies, ABAC endpoint
+    # answering). Config loads from a Volume, which #154 established is a
+    # wider trust boundary than the repo, so a YAML file that could opt a
+    # table into a policy-bearing key is a privilege-escalation path.
+    # Governed keys go through `apply_reviewed_tags` and a review step only.
+    # See docs/decisions/2026-08_uc_tag_mechanism.md.
+    table_tags: Dict[str, str] = field(default_factory=dict)
+    # {column_name: {tag_key: tag_value}}; top-level columns only, same as
+    # column_comments.
+    column_tags: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
     # --- Audit / lineage columns added automatically ---
     add_audit_columns: bool = True
     audit_ingest_ts_col: str = "_ingested_at"
