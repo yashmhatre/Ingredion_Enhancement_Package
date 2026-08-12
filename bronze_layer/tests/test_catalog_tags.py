@@ -7,6 +7,8 @@ which is the entire argument for choosing the REST transport over
 DDL implementation could not be covered this way at all.
 """
 
+import json
+
 import pytest
 
 from bronze_ingest.catalog_metadata import (
@@ -14,6 +16,7 @@ from bronze_ingest.catalog_metadata import (
     apply_catalog_tags,
     apply_reviewed_tags,
     is_governed_tag,
+    summarise_tag_outcome,
 )
 from bronze_ingest.config import IngestionConfig
 
@@ -163,7 +166,7 @@ def test_no_tags_configured_touches_nothing():
 
     result = apply_catalog_tags(None, _cfg(), client=client)
 
-    assert result == {"tags_applied": 0, "tags_skipped_governed": []}
+    assert result == {"tags_applied": 0, "tags_skipped_governed": [], "tags_failed": []}
     assert client.sets == []
 
 
@@ -232,3 +235,63 @@ def test_empty_review_is_a_noop():
 
     assert apply_reviewed_tags(None, _cfg(), {}, client=client)["tags_applied"] == 0
     assert client.sets == []
+
+
+# ---------------------------------------------------------------------------
+# Audit-row visibility (#64's remaining criterion)
+# ---------------------------------------------------------------------------
+
+
+def test_nothing_attempted_leaves_both_audit_fields_absent():
+    """Absent is not false. No tags configured must stay distinguishable from
+    tags applied cleanly - conflating them makes an unconfigured table look
+    identical to a healthy one, the same mistake #250 fixed in the quality
+    gate."""
+    client = FakeTagClient()
+
+    outcome = apply_catalog_tags(None, _cfg(), client=client)
+
+    assert summarise_tag_outcome(outcome) == {}
+
+
+def test_a_clean_apply_records_tags_failed_false():
+    client = FakeTagClient()
+    cfg = _cfg(table_tags={"team": "bronze"})
+
+    summary = summarise_tag_outcome(apply_catalog_tags(None, cfg, client=client))
+
+    assert summary["tags_failed"] is False
+    assert json.loads(summary["tag_outcome_json"]) == {
+        "applied": 1,
+        "failed": [],
+        "skipped_governed": [],
+    }
+
+
+def test_a_failed_tag_write_is_visible_in_the_audit_fields():
+    """#64's criterion. Tag writes never fail the run, so without this a
+    failure was visible only in a log line nobody greps."""
+    client = FakeTagClient(fail_on=("team",))
+    cfg = _cfg(table_tags={"team": "bronze"})
+
+    summary = summarise_tag_outcome(apply_catalog_tags(None, cfg, client=client))
+
+    assert summary["tags_failed"] is True
+    detail = json.loads(summary["tag_outcome_json"])
+    assert detail["applied"] == 0
+    assert len(detail["failed"]) == 1
+    assert "cat.sch.t" in detail["failed"][0]
+
+
+def test_a_refused_governed_key_is_visible_without_being_a_failure():
+    """Refusing a governed key is the gate working, not a failure - but it
+    must still be visible, because it means someone configured something this
+    declined to apply."""
+    client = FakeTagClient()
+    cfg = _cfg(table_tags={"class.email_address": "true"})
+
+    summary = summarise_tag_outcome(apply_catalog_tags(None, cfg, client=client))
+
+    assert summary["tags_failed"] is False, "refused is not failed"
+    detail = json.loads(summary["tag_outcome_json"])
+    assert detail["skipped_governed"] == ["cat.sch.t:class.email_address"]

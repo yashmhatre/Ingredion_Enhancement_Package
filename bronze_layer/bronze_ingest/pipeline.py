@@ -15,7 +15,11 @@ from .bronze_writer import (
     write_bronze,
     write_bronze_micro_batch,
 )
-from .catalog_metadata import apply_catalog_metadata, apply_catalog_tags
+from .catalog_metadata import (
+    apply_catalog_metadata,
+    apply_catalog_tags,
+    summarise_tag_outcome,
+)
 from .config import IngestionConfig
 from .json_reader import read_json
 from .logging_utils import logger
@@ -169,7 +173,8 @@ class BronzeIngestion:
                 # applied after a successful write, both diff before writing,
                 # and both are non-fatal. Governed keys are refused here -
                 # they reach the catalog only via apply_reviewed_tags (#64).
-                apply_catalog_tags(self.spark, self.config)
+                tag_outcome = apply_catalog_tags(self.spark, self.config)
+                audit.update(summarise_tag_outcome(tag_outcome))
 
             logger.info(
                 "Wrote %s row(s) to %s (%d quarantined)",

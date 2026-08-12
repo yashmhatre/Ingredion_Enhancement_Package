@@ -24,6 +24,7 @@ Never raises: catalog documentation failing must never fail an ingestion
 run, matching audit.py and schema_registry.py.
 """
 
+import json
 from typing import Any, Dict, Optional
 
 from .config import IngestionConfig
@@ -213,7 +214,7 @@ def apply_catalog_tags(spark, config: IngestionConfig, client=None) -> Dict[str,
 
     No-ops entirely - zero reads, zero writes - when neither field is set.
     """
-    result: Dict[str, Any] = {"tags_applied": 0, "tags_skipped_governed": []}
+    result: Dict[str, Any] = {"tags_applied": 0, "tags_skipped_governed": [], "tags_failed": []}
     if not config.table_tags and not config.column_tags:
         return result
 
@@ -261,7 +262,12 @@ def apply_catalog_tags(spark, config: IngestionConfig, client=None) -> Dict[str,
                 )
             result["tags_applied"] += len(changed)
         except Exception as exc:  # noqa: BLE001 - see docstring
+            # Collected, not just logged. #64 requires tag failures to be
+            # VISIBLE in the audit row - a governance action that silently
+            # did nothing is the failure shape this repo keeps finding, and a
+            # log line nobody greps is not visibility.
             logger.warning("Tagging failed for %s: %s", entity_name, exc)
+            result["tags_failed"].append(f"{entity_name}: {exc}")
 
     return result
 
@@ -289,7 +295,7 @@ def apply_reviewed_tags(
 
     Never raises. Returns the same shape as `apply_catalog_tags`.
     """
-    result: Dict[str, Any] = {"tags_applied": 0, "tags_skipped_governed": []}
+    result: Dict[str, Any] = {"tags_applied": 0, "tags_skipped_governed": [], "tags_failed": []}
     if not reviewed:
         return result
 
@@ -324,5 +330,38 @@ def apply_reviewed_tags(
             result["tags_applied"] += len(changed)
         except Exception as exc:  # noqa: BLE001 - see docstring
             logger.warning("Reviewed tagging failed for %s: %s", entity_name, exc)
+            result["tags_failed"].append(f"{entity_name}: {exc}")
 
     return result
+
+
+def summarise_tag_outcome(outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Turns `apply_catalog_tags`/`apply_reviewed_tags`'s result into the two
+    audit fields (#64): `tags_failed` and `tag_outcome_json`.
+
+    Returns `{}` when nothing was attempted, so both columns stay NULL rather
+    than reading `false` - absent means "no tags configured", which is a
+    different fact from "tags applied and none failed". Conflating them would
+    make an unconfigured table indistinguishable from a healthy one, which is
+    the same mistake #250 fixed one layer down in the quality gate.
+
+    A pair rather than one blob: `tags_failed` is what #62's dashboard counts
+    without parsing JSON, `tag_outcome_json` is what whoever investigates
+    reads. Mirrors `schema_changed` / `schema_drift_json`.
+    """
+    applied = outcome.get("tags_applied", 0)
+    failed = outcome.get("tags_failed") or []
+    skipped = outcome.get("tags_skipped_governed") or []
+
+    if not applied and not failed and not skipped:
+        return {}
+
+    return {
+        "tags_failed": bool(failed),
+        "tag_outcome_json": json.dumps(
+            {"applied": applied, "failed": failed, "skipped_governed": skipped},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    }
