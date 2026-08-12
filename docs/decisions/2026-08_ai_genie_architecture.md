@@ -206,7 +206,7 @@ Runs during #112/Phase 3 provisioning, against the real workspace. Owner:
 | 1 | AI Functions (`ai_query`) available on the warehouse in use | **D1** | ✅ **PASS** 2026-08-08 — see Amendment 1 |
 | 2 | A Claude model is served through Foundation Model APIs **and callable from `ai_query`** | **D1** | ⚠️ **PASS with constraint** — only `opus-4-8`; see Amendment 1 |
 | 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 | ⚠️ **AVAILABLE, unconfigured** — Amendment 3 (Amendment 2's FAIL was wrong) |
-| 4 | UC AI-generated comments are available | Description scope in #208 | ❓ **INCONCLUSIVE** — no API surface; UI-only |
+| 4 | UC AI-generated comments are available | Description scope in #208 | ✅ **RESOLVED 2026-08-12 — capability AVAILABLE**; see Amendment 4 |
 | 5 | DQ Monitoring **anomaly detection** is available, and what its dashboard actually covers | #61, #62 | ⚠️ **PARTIALLY AVAILABLE** — endpoint routes and validates; unproven end to end (Amendment 3) |
 | 6 | Governed tags + ABAC column masks are available | #64 | ✅ **PASS** — tags ✅ **and ABAC ✅** (Amendment 3; Amendment 2's ABAC FAIL was wrong) |
 | 7 | Bundle support for the resource types this implies, at the CLI version in use | Deployment of all of it | ⚠️ **PASS with a gap** — no `metric_views` |
@@ -687,3 +687,70 @@ superseded rather than edited.
 - **Native services cannot be exercised by local `pytest`.** "Buy native" trades engineering
   effort for integration coverage. The gap is closed by a workspace-gated smoke test on
   #113's deploy path, and should be scoped into Phase 3 rather than discovered afterwards.
+
+
+---
+
+### Amendment 4 — 2026-08-12: item 4 resolved, and it was the wrong question
+
+**Item 4 is closed: the capability is available.** It was the last open item on
+#229, and it had sat as ❓ INCONCLUSIVE because the earlier run looked for a
+*setting* and found none.
+
+**What was actually checked, this time:**
+
+```
+$ databricks settings --help
+  (aibi-dashboard-embedding, automatic-cluster-update, compliance-security-profile,
+   dashboard-email-subscriptions, default-namespace, disable-legacy-access,
+   disable-legacy-dbfs, enable-export-notebook, enable-notebook-table-clipboard,
+   enable-results-downloading, enhanced-security-monitoring,
+   restrict-workspace-admins, sql-results-download)
+```
+
+No AI-comments key — confirming it is **not a workspace-level toggle**, which is
+what the previous "no API surface" finding had actually established.
+
+```sql
+SELECT ai_gen('In one short sentence, describe a bronze-layer table named
+order_001_bronze with columns order_id, customer_id, order_date, items, payment.')
+
+-- "The `order_001_bronze` table is a bronze-layer table containing order data
+--  with columns for `order_id`, `customer_id`, `order_date`, `items`, and
+--  `payment`."
+```
+
+**`ai_gen` works and produces exactly the artefact the "AI-generated comments"
+button produces.** Catalog Explorer's feature is a UI affordance over this same
+model surface, not a separate capability that could be absent while `ai_gen`
+works.
+
+#### Why the item was framed wrongly, and what the answer means
+
+Item 4 asks whether a *feature* exists. What gates #208's description scope is
+whether the platform **supersedes** #208 — and it does not, because the two
+things are not the same shape:
+
+| | Catalog Explorer's AI comments | #208's description drafter |
+| --- | --- | --- |
+| Trigger | A human clicking, per object | Scheduled job over changed tables |
+| Output | A suggestion in the UI, accepted or not | A row in `_ai_metadata`, queryable |
+| Auditable | Not by this repo | `model_id`, `generated_at`, `source_run_id` |
+| Feeds a review gate | No | Yes — it is the input `apply_reviewed_tags` (#64) reviews |
+
+**Verdict: thaw the description half of #208.** The native feature is a manual,
+per-object UI affordance. #208 is a scheduled, auditable, queryable advisory lane
+whose output feeds the human-review gate that #64's governed-tag work depends on.
+Superseding one with the other would trade an automatable pipeline for a button.
+
+**D2's freeze does not apply here** and never did on availability grounds — the
+capability is present, and Amendment 3 already established that D2 holds because
+nothing is *configured or demonstrated*, not because the platform lacks features.
+
+#### What this does NOT resolve
+
+- **Item 5 (DQ Monitoring)** remains ⚠️ PARTIALLY AVAILABLE. #61 and #62 stay
+  frozen on that item, not this one.
+- Whether Catalog Explorer *displays* an AI-comments button is still unverified
+  and now irrelevant: the gate was the capability, and the capability answers to
+  `ai_gen`.
