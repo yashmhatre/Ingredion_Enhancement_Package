@@ -207,7 +207,7 @@ Runs during #112/Phase 3 provisioning, against the real workspace. Owner:
 | 2 | A Claude model is served through Foundation Model APIs **and callable from `ai_query`** | **D1** | ⚠️ **PASS with constraint** — only `opus-4-8`; see Amendment 1 |
 | 3 | UC Data Classification is available and can be enabled on this metastore | PII scope in #208 | ⚠️ **AVAILABLE, unconfigured** — Amendment 3 (Amendment 2's FAIL was wrong) |
 | 4 | UC AI-generated comments are available | Description scope in #208 | ✅ **RESOLVED 2026-08-12 — capability AVAILABLE**; see Amendment 4 |
-| 5 | DQ Monitoring **anomaly detection** is available, and what its dashboard actually covers | #61, #62 | ⚠️ **PARTIALLY AVAILABLE** — endpoint routes and validates; unproven end to end (Amendment 3) |
+| 5 | DQ Monitoring **anomaly detection** is available, and what its dashboard actually covers | #61, #62 | ⚠️ **PARTIALLY AVAILABLE — reconfirmed 2026-08-12 via the CLI**; `ListMonitor` is unrouted. See Amendment 5 |
 | 6 | Governed tags + ABAC column masks are available | #64 | ✅ **PASS** — tags ✅ **and ABAC ✅** (Amendment 3; Amendment 2's ABAC FAIL was wrong) |
 | 7 | Bundle support for the resource types this implies, at the CLI version in use | Deployment of all of it | ⚠️ **PASS with a gap** — no `metric_views` |
 
@@ -754,3 +754,54 @@ nothing is *configured or demonstrated*, not because the platform lacks features
 - Whether Catalog Explorer *displays* an AI-comments button is still unverified
   and now irrelevant: the gate was the capability, and the capability answers to
   `ai_gen`.
+
+
+### Amendment 5 — 2026-08-12: item 5 reconfirmed, and it decides #61/#62
+
+Item 5 was the other reason to re-probe: Amendment 3 recorded it as partially
+available from hand-built requests, and Amendment 4 has just shown how that
+method can mislead. **This time it holds up.**
+
+```
+$ databricks data-quality --help
+  cancel-refresh, create-monitor, create-refresh, delete-monitor, delete-refresh,
+  get-monitor, get-refresh, list-monitor, list-refresh, update-monitor
+
+$ databricks data-quality create-monitor --help
+  ...provide either anomaly_detection_config for a schema monitor or...
+
+$ databricks data-quality list-monitor
+  Error: Could not handle RPC class
+  com.databricks.api.proto.dataquality.v1.ListMonitorRequest.
+```
+
+So: the command surface exists, `anomaly_detection_config` is a documented part
+of it, and **`ListMonitor` is unrouted in this workspace** — via the CLI, which
+is the method that corrected Amendments 2 and 4. The earlier finding was right.
+
+#### Why this decides #61 and #62, and which way
+
+D2 freezes scope "superseded by native platform features ... until each feature
+is verified available in this workspace." The purpose of that freeze is to avoid
+building what the platform already gives you.
+
+**A feature whose list operation is unrouted is not giving you anything.** You
+cannot operate a monitoring capability you cannot enumerate: not a dashboard,
+not an alert, not a runbook step that answers "which monitors exist and are they
+healthy". Creating one is possible; living with it is not.
+
+**Recommendation: thaw #61 and #62 — restore their original scope.** They are
+frozen against a replacement that cannot currently be operated, and the freeze
+was never meant to outlast the evidence for it.
+
+Note this is a *thaw*, not a decision to build immediately. Both remain subject
+to normal prioritisation, and if `ListMonitor` starts routing the question
+reopens on its own merits — at which point the right check is a monitor created,
+listed, refreshed and read end to end, not an endpoint that accepts a request.
+
+#### What was deliberately not done
+
+**No monitor was created.** `create-monitor` is a write against Unity Catalog
+with ongoing compute cost, which is Tier 2 — and proving "unproven end to end"
+by creating an object this repo would then own is not a probe, it is an
+adoption. The unrouted `ListMonitor` is sufficient to answer item 5 as posed.
