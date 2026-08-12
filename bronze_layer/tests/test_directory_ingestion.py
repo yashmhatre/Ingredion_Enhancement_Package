@@ -670,7 +670,9 @@ def test_per_file_required_columns_quarantines_through_the_real_pipeline(spark, 
     )
 
     assert results[0]["status"] == "success"
-    assert results[0]["quarantined_row_count"] == 1
+    # The directory layer renames the pipeline's quarantined_row_count to
+    # quarantined_rows in its per-unit result.
+    assert results[0]["quarantined_rows"] == 1
 
     bronze = spark.read.table(f"default.{name}_bronze").collect()
     assert [r["order_id"] for r in bronze] == ["A-1"]
