@@ -194,6 +194,43 @@ def test_quarantine_table_is_reported_only_when_rows_were_quarantined(spark, tmp
     assert summary["quarantine_table"] == cfg.resolved_quarantine_table
 
 
+def test_a_bad_row_is_absent_from_bronze_and_present_in_quarantine(spark, tmp_path):
+    """#250's second acceptance criterion: "a deliberately malformed row is
+    caught and quarantined, NOT passed through".
+
+    The test above asserts summary["quarantined_row_count"] - a number
+    reported by the same code path that decides the split. It is the
+    reported value, not the persisted one, and it cannot distinguish "the
+    bad row was held back" from "the bad row was counted and written
+    anyway". "Not passed through" is the half that was never checked, and
+    it is the half the acceptance criterion is actually about.
+
+    So this reads both tables back and asserts where the rows ended up.
+    """
+    _write_json(
+        tmp_path / "data.json",
+        [{"order_id": "A-1", "amount": 10}, {"order_id": None, "amount": 20}],
+    )
+    cfg = _cfg(
+        tmp_path,
+        f"pipeline_quarantine_split_{uuid.uuid4().hex[:8]}",
+        required_columns=["order_id"],
+        fail_on_quality_error=False,
+    )
+
+    BronzeIngestion(spark, cfg).run()
+
+    bronze = spark.read.table(cfg.full_table_name).collect()
+    assert [r["order_id"] for r in bronze] == ["A-1"]
+    assert [r["amount"] for r in bronze] == [10]
+
+    quarantined = spark.read.table(cfg.resolved_quarantine_table).collect()
+    assert len(quarantined) == 1
+    assert quarantined[0]["order_id"] is None
+    assert quarantined[0]["amount"] == 20
+    assert quarantined[0]["_quarantine_reason"] == "null:order_id"
+
+
 def test_truncation_guard_failure_is_tagged_read_through_the_shared_body(spark, tmp_path):
     """#146's guard used to sit in its own try/except at the top of
     _process_batch, tagged failure_stage="read". #150 folded that method into

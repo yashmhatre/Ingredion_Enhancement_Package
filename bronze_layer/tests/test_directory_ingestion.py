@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 
 import pytest
 
@@ -629,6 +630,57 @@ def test_per_file_config_warns_when_it_matches_nothing(spark, json_test_dir, mon
 
     assert "matched no discovered file" in caplog.text
     assert "typo_in_name.json" in caplog.text
+
+
+def test_per_file_required_columns_quarantines_through_the_real_pipeline(spark, json_test_dir):
+    """#250's second acceptance criterion, on the path the job actually
+    deploys.
+
+    test_per_file_config_is_applied_to_the_named_file monkeypatches
+    BronzeIngestion.run, so it proves the override REACHED the config and
+    stops there - it would still pass if the gate then did nothing with it.
+    bronze_ingest_jobs.yml pairs that override with
+    fail_on_quality_error=false, so the behaviour that matters is what the
+    two do together: the bad row held back and quarantined, the rest of the
+    file still loaded. That composition had no test, so run it for real.
+    """
+    write_dir, source_dir = json_test_dir
+    # Unique per run: these tables live in the shared "default" schema for
+    # the whole session, and write_mode is append.
+    name = f"orders_q_{uuid.uuid4().hex[:8]}"
+    _write(
+        write_dir,
+        f"{name}.json",
+        "\n".join(
+            [
+                json.dumps({"order_id": "A-1", "amount": 10}),
+                json.dumps({"order_id": None, "amount": 20}),
+            ]
+        ),
+    )
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
+        multiline=False,
+        fail_on_quality_error=False,
+        per_file_config={f"{name}.json": {"required_columns": ["order_id"]}},
+    )
+
+    assert results[0]["status"] == "success"
+    # The directory layer renames the pipeline's quarantined_row_count to
+    # quarantined_rows in its per-unit result.
+    assert results[0]["quarantined_rows"] == 1
+
+    bronze = spark.read.table(f"default.{name}_bronze").collect()
+    assert [r["order_id"] for r in bronze] == ["A-1"]
+
+    quarantined = spark.read.table(f"default.{name}_bronze_quarantine").collect()
+    assert len(quarantined) == 1
+    assert quarantined[0]["order_id"] is None
+    assert quarantined[0]["_quarantine_reason"] == "null:order_id"
 
 
 # ---------------------------------------------------------------------------
