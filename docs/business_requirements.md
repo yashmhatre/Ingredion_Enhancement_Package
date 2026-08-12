@@ -181,3 +181,176 @@ answers to the first two and the third respectively):
   reporting workaround today? That's the actual baseline this platform
   would be measured against. **Still unanswered.**
 - Timeline/urgency — not stated. **Still unanswered.**
+
+---
+
+## BR-002 — AI-assisted Silver transformation, constrained to minimal metadata
+
+**Raised by:** Yash (Project Lead), 2026-08-07. No business owner, quantified
+impact, or timeline given — captured as stated, not invented. See "Open
+questions" below.
+
+**Status:** Under review
+
+### Ask, as stated
+
+Verbatim: *"process bronze data using AI in silver with giving ai minimal
+metadata."*
+
+This is a technical direction, not a stated business problem — there is no
+"who is asking / what breaks today / why now" in it. That gap is recorded as
+an open question, not filled in.
+
+### Reading the ask — two structurally different products
+
+**Reading A — AI drafts deterministic transformation rules from metadata;
+Silver's rule engine executes them against real rows.** The AI sees schema,
+drift history, and an aggregate profile — never a row — and produces a
+candidate rule/mapping spec (e.g. a flatten mapping, a business-rule
+suggestion, a column-rename/type-coercion suggestion). A human (or a review
+step) promotes an accepted draft into Silver's own rule engine, which then
+runs deterministically over actual data. The AI is design-time and advisory;
+the transformation that touches rows is not the AI.
+
+**Reading B — AI is invoked per-batch/per-row as the transformation itself**,
+deciding output values live, inside Silver's write path.
+
+**The ask's own qualifier — "minimal metadata" — only supports Reading A.**
+If the AI is given schema/profile/drift and *not* rows, it structurally
+cannot be the thing computing a per-row transformed value in Reading B —
+there is nothing for it to transform. Reading B would require the AI to see
+row data, which directly contradicts the "minimal metadata" constraint as
+given. Unless Yash means something different by "minimal metadata" than the
+literal reading (see open questions), **Reading A is the one recommended**,
+and it is also the only one the ask as stated is internally consistent with.
+
+**Reading B is also a bigger, separately-gated decision, not an
+implementation detail of this one.** `bronze_layer/docs/architecture.md`'s
+governing rule — "it never sits in the write path and never gates a[n]
+... decision" — was amended on 2026-08-07 for exactly one bounded exception
+(autonomous remediation, BR-001 item 4), and that exception's own NEVER list
+(`docs/decisions/2026-08_autonomous_remediation.md` §2, item 9) explicitly
+excludes **"anything outside the bronze layer,"** reasoning *"Silver does not
+exist; ... nothing autonomous reaches into a layer that has no design yet."*
+So Reading B for Silver cannot ride on the 2026-08-07 sign-off — it would
+need its own decision record, of the same weight and shape as #207, scoped
+to Silver, with its own Tier 2 sign-off. That is a real, separate ask this
+repo has not made, and if Yash intends Reading B, it should be named as that
+explicitly rather than assumed to follow from BR-001's remediation decision.
+
+### What "minimal metadata" would have to contain, and what it must never contain
+
+This boundary is the heart of the ask, so it needs to be explicit before any
+design work starts on it.
+
+**May contain (schema/aggregate facts, no rows):**
+- Schema — column names, types, nullability (`_schema_registry`, Fact)
+- Schema-drift history / fingerprint changes (`_schema_registry` +
+  `_ai_metadata.schema_drift_summary`, already produced by the shipped
+  advisory job)
+- Nesting/structure shape (array vs. struct depth, keys present) — enough to
+  draft a `flatten_dataframe` mapping (§4 of the contract) without seeing a
+  single value
+- Aggregate, non-identifying column statistics — null-rate, distinct-count /
+  cardinality, numeric min/max/mean/stddev, string min/max length. **This
+  does not exist anywhere in the repo today** — Bronze computes no per-column
+  statistics; this is new scope, not a reuse of an existing table.
+- Existing `_ai_metadata` drafts (table/column descriptions, PII flags) —
+  reused, not regenerated
+- Run-level facts already in `_ingestion_audit` — row counts, quarantine
+  reason distribution
+
+**Must never contain:**
+- Any row, any sample of rows, or any single business-column value
+- Any "most frequent value" / mode / top-N-values statistic — even an
+  aggregate can leak an identifying value on a low-cardinality column (a
+  common name, a single dominant customer ID)
+- Full-precision aggregates on any column `_ai_metadata.pii_flags_json` has
+  already flagged as possible PII — at minimum, min/max/mode should be
+  suppressed for those columns even though null-rate/cardinality-bucket may
+  be safe
+- Anything used to derive a *corrected* business value — that would be
+  Reading B in different clothing, and reopens the same boundary
+  `docs/decisions/2026-08_autonomous_remediation.md` §2 NEVER item 3 already
+  drew for Bronze ("a corrected value is a transformation... destroys
+  re-derivability"), one layer up
+
+### Reconciliation against what this repo has already decided
+
+| Ask | Existing state |
+| --- | --- |
+| **AI processing data in Silver** | `docs/bronze_silver_contract.md`'s "Deliberately still open" §1 states *"What Silver actually computes. Entirely out of scope"* — Bronze's contract doesn't decide this, and nothing else in the repo does either. BR-002 is proposing to answer part of that open question, not restating a decision. |
+| **Silver has its own transformation/rule mechanism** | Already decided. Contract §5: *"Silver gets its own rule engine. `quality.py` is not extracted."* If Reading A is adopted, AI drafts feed *into* that engine — it doesn't replace or duplicate it. |
+| **AI given only metadata, never rows, for a summarization/drafting task** | Already shipped, as a precedent — not a new principle. `bronze_layer/bronze_ingest/ai_metadata.py`'s docstring: *"the model is asked to summarise facts the pipeline already recorded... it never sees or reshapes the underlying rows."* BR-002's Reading A is the same posture, applied to Silver instead of Bronze, and to rule-drafting instead of description-drafting — a larger scope (drafted output would eventually shape a transformation, not just prose) but the same shape. |
+| **AI in a layer's write path** | Directly reconciled above (Reading B). The one exception that exists (`docs/decisions/2026-08_autonomous_remediation.md`) is Bronze-scoped and explicitly excludes Silver (§2 NEVER item 9). No exception exists for Silver today. |
+| **Silver itself — does it exist to build this on?** | **No.** `silver_layer/` is a README and an archived flattener. The Silver epic (**#205**, filed under BR-001, children #109/#162/#163) has not started; Yash's approved P0–P4 ordering (2026-08-07) places the Silver-adjacent items (#109) in **P4 — later**, behind #112/#113/#115/#160 (P3) and #62/#61/#58 (also P4, ahead of #109). BR-002 is asking to add an AI-assist track to a layer that is not yet actively scheduled. |
+| **LLM provider / cost** | Still an open decision. #225 (merged) defaults the existing Bronze advisory job to the Anthropic SDK behind an injectable interface, but the provider choice itself was never made as a buy-vs-build decision — `docs/buy_vs_build_2026-08.md` has no verdict on it. Cost for a Silver-facing use of the same or a different model is therefore **unestimated**, not merely unstated; no number should be assumed here. |
+| **Rule profiling from data** (a related but distinct idea) | `docs/buy_vs_build_2026-08.md`'s "Follow-ups this surfaced" names *"Rule profiling — generating candidate quality rules from data, which DQX does and #109 does not propose"* as an open, unfiled idea. That follow-up profiles actual **data**; BR-002's Reading A profiles **metadata only**. They look adjacent and are not the same ask — worth flagging so the two don't get merged into one issue by accident. |
+| **Relationship to BR-001** | This ask plausibly **is not a new parent case**. It reads as a refinement of BR-001 item 2 (Silver, already #205) crossed with item 4 (AI agents, already #206/#207/#208/#209) — specifically, it is asking what BR-001 item 2 + item 4 look like once Silver exists, for the transformation (not the monitoring/remediation) half of the AI track. Registering it as BR-002 keeps this specific ask (and its "minimal metadata" constraint) traceable on its own terms, but if approved it should most likely be filed as new sub-issues under **#205**, using the same design-record pattern **#207** established, rather than as an independent epic. That relationship is itself a call for `principal-data-engineer` / Yash, not this register. |
+| **`docs/roadmap.md`** | Stale per the live P0–P4 ordering — not treated as authoritative for sequencing here. Neither #205 nor any BR-002-shaped work appears in its phase plan. |
+
+### Recommendation
+
+1. **Reading A is the recommended interpretation** — AI drafts
+   metadata-derived transformation/rule specs; Silver's already-decided rule
+   engine executes them against real rows; a human promotes drafts before
+   they take effect. This is consistent with the shipped Bronze advisory
+   pattern and does not reopen any write-path decision.
+2. **Reading B (AI as the live, per-row transformation) is not recommended**
+   and, if Yash wants it anyway, needs to be named explicitly — it requires a
+   new decision record scoped to Silver, of the same weight as #207, because
+   the existing bronze exception does not reach Silver.
+3. **This depends on Silver existing.** Nothing here should be filed as
+   issues, or even fully decomposed, ahead of #205 having enough shape to
+   receive them — that sequencing question (does an AI-assist track get
+   added to #205 now, or wait until #109/#162/#163 land) is a roadmap
+   question for `principal-data-engineer` and Yash, not a unilateral call
+   here.
+4. **The aggregate-profiling capability is new scope**, independent of the
+   AI question — nothing today computes per-column statistics on Bronze or
+   Silver data. Whether that gets built as part of this case or as its own
+   prerequisite issue is worth deciding explicitly rather than folding it
+   silently into a larger AI issue.
+
+### Decomposition (candidate — not filed; Under review, not Approved)
+
+Sized to the shape of the ask today; a `solution-architect` design, once
+attached, supersedes this sizing for the pieces it covers.
+
+1. **Decision: reading + whether a Silver-scoped write-path exception is
+   needed** — Yash's call, same shape as the BR-001 "suggest fixes" decision.
+   Blocking; not an implementation issue.
+2. **Minimal-metadata payload definition for Silver** — enumerate the exact
+   fields (schema, drift, aggregate profile, reused `_ai_metadata` drafts)
+   and the PII-suppression rule for flagged columns; likely a short
+   contract doc in `bronze_silver_contract.md`'s style, since it's a
+   cross-layer interface decision, not an implementation detail of either
+   layer alone.
+3. **Aggregate-profiling job** — the new per-column statistics computation
+   (null-rate, cardinality, numeric ranges) needed to feed #2; does not
+   exist today in either layer.
+4. **AI rule-drafting job** — mirrors `ai_metadata.py`'s shape (standalone,
+   async, advisory), consumes #2's payload, writes candidate rule specs for
+   human review; depends on #205's rule engine existing to have somewhere to
+   promote drafts into.
+
+### Open questions for Yash — still unanswered
+
+- **Confirm the reading.** Reading A is recommended and is the only one
+  consistent with "minimal metadata" as stated; if Reading B is actually
+  intended, that needs to be said explicitly, because it is a different,
+  larger decision requiring its own Silver-scoped decision record.
+- **Does "minimal metadata" allow any value-level statistic at all**
+  (numeric min/max, string length) on columns not flagged as PII, or should
+  it be stricter — schema and drift only, no aggregates? The ask doesn't
+  define "minimal" precisely enough to build against.
+- **Sequencing:** does this become an AI-assist sub-track of #205 now (ahead
+  of Silver's core rule engine landing), or wait until #109/#162/#163 ship?
+  This reshapes P4 of the approved priority ordering and needs
+  `principal-data-engineer` + Yash to decide, not this register.
+- **Business owner, quantified impact, timeline** — none given in the raw
+  ask. Not invented here; needed before this can move to Approved.
+- **LLM provider/cost** — still open repo-wide (see reconciliation above);
+  does a Silver-facing use share #225's Anthropic-SDK default, or does the
+  higher likely call volume (per-table rule drafting vs. per-table
+  description drafting) warrant its own buy-vs-build pass?
