@@ -15,7 +15,7 @@ from .bronze_writer import (
     write_bronze,
     write_bronze_micro_batch,
 )
-from .catalog_metadata import apply_catalog_metadata
+from .catalog_metadata import apply_catalog_metadata, apply_catalog_tags
 from .config import IngestionConfig
 from .json_reader import read_json
 from .logging_utils import logger
@@ -165,6 +165,11 @@ class BronzeIngestion:
                 audit["schema_changed"] = schema_changed
                 audit["schema_drift_json"] = schema_drift
                 apply_catalog_metadata(self.spark, self.config)
+                # Tags travel with comments: both are catalog documentation
+                # applied after a successful write, both diff before writing,
+                # and both are non-fatal. Governed keys are refused here -
+                # they reach the catalog only via apply_reviewed_tags (#64).
+                apply_catalog_tags(self.spark, self.config)
 
             logger.info(
                 "Wrote %s row(s) to %s (%d quarantined)",
@@ -269,6 +274,7 @@ class BronzeIngestion:
         # contract these modules already have.
         record_schema(self.spark, self.config, stream_df)
         apply_catalog_metadata(self.spark, self.config)
+        apply_catalog_tags(self.spark, self.config)
 
         def _process_batch(micro_batch_df, batch_id):
             # #174's truncation guard runs as part of "reading" this
