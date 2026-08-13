@@ -90,6 +90,7 @@ if [[ -z "$PY" ]]; then
   skip_gate "hook lockdown tests" "no python interpreter on PATH"
 else
   run_gate "hook lockdown tests" "$REPO_ROOT" "$PY" scripts/hooks/test_block_orchestrator_writes.py
+  run_gate "path ownership tests" "$REPO_ROOT" "$PY" scripts/test_check_path_ownership.py
 fi
 
 # --- Gates 2-5: lint / format / types / security -------------------------

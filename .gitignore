@@ -45,3 +45,9 @@ venv/
 # Records which agents.lock version the local .claude/agents/ was fetched at,
 # so scripts/verify.sh can catch the directory silently lagging the pin.
 .claude/agents/.fetched
+
+# The same proprietary definitions rendered a second time, as VS Code Copilot
+# chat modes, by scripts/generate_copilot_chatmodes.py. .github/ is committed,
+# so these must be ignored for the same reason .claude/agents/*.md is - never
+# commit this output either.
+.github/chatmodes/*.chatmode.md

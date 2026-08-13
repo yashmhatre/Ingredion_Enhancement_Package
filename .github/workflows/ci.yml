@@ -390,6 +390,21 @@ jobs:
         if: '!cancelled()'
         run: python3 scripts/hooks/test_block_orchestrator_writes.py
 
+      # Path ownership is the *enforcing* half of the write-lockdown rules.
+      # The PreToolUse hook above can only ever be advisory: it lives inside
+      # one vendor's agent runtime, matches an agent_type that exists nowhere
+      # else, and silently never loads when a session starts from the wrong
+      # directory -- which is exactly what happened on the primary dev machine
+      # for the hook's entire life. This check runs on the commit, so it binds
+      # Claude, Copilot and a human editing by hand alike.
+      - name: path ownership tests
+        if: '!cancelled()'
+        run: python3 scripts/test_check_path_ownership.py
+
+      - name: path ownership check
+        if: "!cancelled() && github.event_name == 'pull_request'"
+        run: python3 scripts/check_path_ownership.py --base "origin/${{ github.base_ref }}"
+
       # Each gate runs even if an earlier one failed, so one PR gets the full
       # picture instead of one finding per push.
       - name: ruff format
