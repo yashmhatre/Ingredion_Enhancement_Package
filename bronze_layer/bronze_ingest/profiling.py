@@ -64,7 +64,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from pyspark.sql import Row
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     ArrayType,
@@ -85,7 +84,8 @@ from pyspark.sql.types import (
 )
 
 from .logging_utils import logger
-from .sql_utils import quote_ident, quote_literal
+from .metadata_store import MetadataStore, validate_rows
+from .sql_utils import quote_ident
 
 #: Column "kinds" - what profiling can do with a column, not what Spark calls
 #: it. Only SCALAR columns get statistics; the rest are recorded for structure.
@@ -237,6 +237,10 @@ class ProfileConfig:
     def schema_ref(self) -> str:
         return ".".join(p for p in (self.metadata_catalog, self.metadata_schema) if p)
 
+    def store(self, spark) -> MetadataStore:
+        """The single writer for every framework metadata table (#324)."""
+        return MetadataStore(spark, self.metadata_schema, self.metadata_catalog)
+
 
 @dataclass(frozen=True)
 class ColumnNode:
@@ -372,22 +376,13 @@ def _table_description(spark, table_name: str) -> Dict[str, Any]:
 
 def _last_profile_state(spark, table_name: str, config: ProfileConfig):
     """(schema_fingerprint, table_version) of the most recent profile, or None."""
-    target = config.resolved_table_metadata
     try:
-        if not spark.catalog.tableExists(target):
-            return None
-        # A Column expression rather than an f-string predicate (#154): the
-        # table name is data here, not a validated config identifier.
-        rows = (
-            spark.read.table(target)
-            .filter(F.col("table_name") == table_name)
-            .orderBy(F.col("profiled_at").desc())
-            .limit(1)
-            .collect()
+        row = config.store(spark).latest_for(
+            config.table_metadata_table, table_name, order_by="profiled_at"
         )
-        if not rows:
+        if row is None:
             return None
-        return rows[0]["schema_fingerprint"], rows[0]["table_version"]
+        return row["schema_fingerprint"], row["table_version"]
     except Exception as exc:  # noqa: BLE001 - unreadable state means "profile it"
         logger.debug("Could not read previous profile state for %s (%s).", table_name, exc)
         return None
@@ -566,11 +561,17 @@ def profile_table(spark, table_name: str, config: ProfileConfig) -> Dict[str, An
         for node in nodes
     ]
 
-    _replace_rows(spark, config, config.resolved_table_metadata, TABLE_METADATA_SCHEMA, [table_row])
-    _replace_rows(
-        spark, config, config.resolved_column_metadata, COLUMN_METADATA_SCHEMA, column_rows
+    store = config.store(spark)
+    # Structure is REPLACED (it describes the current shape, and two rows both
+    # claiming to describe one table say nothing); profiles are APPENDED,
+    # because how a null rate moves is itself evidence (#324).
+    store.replace_for(config.table_metadata_table, TABLE_METADATA_SCHEMA, [table_row])
+    store.replace_for(
+        config.column_metadata_table,
+        COLUMN_METADATA_SCHEMA,
+        validate_rows(column_rows, {"column_kind": "column_kind"}),
     )
-    _append_rows(spark, config, config.resolved_column_profile, COLUMN_PROFILE_SCHEMA, profile_rows)
+    store.append(config.column_profile_table, COLUMN_PROFILE_SCHEMA, profile_rows)
 
     logger.info(
         "Profiled %s: %d row(s), %d of %d column(s) profiled%s.",
@@ -672,49 +673,3 @@ def _split_name(table_name: str):
     if len(parts) == 2:
         return None, parts[0], parts[1]
     return None, None, table_name
-
-
-def _ensure_schema(spark, config: ProfileConfig) -> None:
-    if config.schema_ref:
-        spark.sql(f"CREATE SCHEMA IF NOT EXISTS {config.schema_ref}")
-
-
-def _frame(spark, schema: StructType, rows: List[dict]):
-    return spark.createDataFrame([Row(**r) for r in rows], schema=schema)
-
-
-def _append_rows(spark, config: ProfileConfig, target: str, schema: StructType, rows) -> None:
-    if not rows:
-        return
-    _ensure_schema(spark, config)
-    _frame(spark, schema, rows).write.format("delta").mode("append").saveAsTable(target)
-
-
-def _replace_rows(spark, config: ProfileConfig, target: str, schema: StructType, rows) -> None:
-    """
-    Replaces this table's rows in a structure table, leaving other tables' rows
-    alone.
-
-    `replaceWhere` rather than read-modify-write: the latter would race two
-    profiling runs against each other, and this metadata is small enough that
-    correctness beats cleverness.
-    """
-    if not rows:
-        return
-    _ensure_schema(spark, config)
-    frame = _frame(spark, schema, rows)
-    if not spark.catalog.tableExists(target):
-        frame.write.format("delta").saveAsTable(target)
-        return
-    table_name = rows[0]["table_name"]
-    (
-        frame.write.format("delta")
-        .mode("overwrite")
-        # quote_literal, not raw interpolation (#154). The table name is DATA
-        # here - it arrives from whatever was scanned, not from a config field
-        # that passed validate_identifier - so an apostrophe in it would either
-        # break the predicate or widen it. A predicate that matches more rows
-        # than intended silently deletes another table's metadata.
-        .option("replaceWhere", f"table_name = '{quote_literal(table_name)}'")
-        .saveAsTable(target)
-    )
