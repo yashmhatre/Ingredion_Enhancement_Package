@@ -91,6 +91,7 @@ if [[ -z "$PY" ]]; then
 else
   run_gate "hook lockdown tests" "$REPO_ROOT" "$PY" scripts/hooks/test_block_orchestrator_writes.py
   run_gate "path ownership tests" "$REPO_ROOT" "$PY" scripts/test_check_path_ownership.py
+  run_gate "agent frontmatter" "$REPO_ROOT" "$PY" scripts/check_agent_frontmatter.py
 fi
 
 # --- Gates 2-5: lint / format / types / security -------------------------
