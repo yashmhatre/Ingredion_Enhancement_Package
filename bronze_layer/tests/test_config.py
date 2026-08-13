@@ -1,6 +1,15 @@
+from pathlib import Path
+
 import pytest
 
+from bronze_ingest import formats
 from bronze_ingest.config import IngestionConfig
+
+#: Non-recursive on purpose: config/contracts/ holds data-contract specs, not
+#: IngestionConfig YAML, and glob("**/*.yaml") would pull those in too and
+#: fail them against a schema they were never meant to satisfy.
+CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+CONFIG_YAML_FILES = sorted(CONFIG_DIR.glob("*.yaml")) + sorted(CONFIG_DIR.glob("*.yml"))
 
 
 def test_requires_source_path_and_table():
@@ -342,6 +351,55 @@ def test_unsafe_reader_options_can_be_opted_into():
         allow_unsafe_reader_options=True,
     )
     assert cfg.reader_options["path"] == "/Volumes/somewhere/else"
+
+
+def test_reader_options_rejection_names_the_configured_source_format():
+    """The allowlist is per-format (#303) - the error should say which
+    format's allowlist it checked against, not just "the allowlist"."""
+    with pytest.raises(ValueError, match=r"source_format='json'"):
+        _cfg(reader_options={"path": "/Volumes/somewhere/else"})
+
+
+# ---- source_format (#303) ----
+
+
+def test_source_format_defaults_to_json():
+    cfg = _cfg()
+    assert cfg.source_format == "json"
+
+
+def test_source_format_accepts_every_registered_format():
+    for fmt in formats.supported_formats():
+        cfg = _cfg(source_format=fmt)
+        assert cfg.source_format == fmt
+
+
+def test_source_format_rejects_an_unregistered_format():
+    with pytest.raises(ValueError) as excinfo:
+        _cfg(source_format="xml")
+
+    message = str(excinfo.value)
+    assert "xml" in message
+    for fmt in formats.supported_formats():
+        assert fmt in message
+
+
+def test_there_is_at_least_one_shipped_config_to_check():
+    """Guards the parametrised test below - it must not be able to pass by
+    discovering zero config files."""
+    assert CONFIG_YAML_FILES
+
+
+@pytest.mark.parametrize("config_path", CONFIG_YAML_FILES, ids=lambda p: p.name)
+def test_shipped_config_yaml_still_constructs_unchanged(config_path):
+    """New fields must be additive (CONTRIBUTING.md) - a shipped config that
+    never mentions source_format must still load, and must default to the
+    format it was already implicitly using."""
+    text = config_path.read_text()
+    assert "source_format" not in text
+
+    cfg = IngestionConfig.load(str(config_path))
+    assert cfg.source_format == "json"
 
 
 # ---- numeric ranges (#54) ----
