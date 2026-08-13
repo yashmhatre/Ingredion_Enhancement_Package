@@ -312,14 +312,26 @@ def test_profile_schema_records_whether_the_numbers_came_from_a_sample():
 
 
 class _PassCounter:
-    """Counts the DataFrame actions profile_table performs."""
+    """Counts the DataFrame actions profile_table performs.
 
-    def __init__(self, monkeypatch):
-        from pyspark.sql import DataFrame
+    Patches the CONCRETE runtime class, not `pyspark.sql.DataFrame`. In
+    PySpark 4 the public name is an abstract base and
+    `pyspark.sql.classic.dataframe.DataFrame` defines its own `agg`, so a
+    patch applied to the base is shadowed by the subclass and counts nothing.
+
+    The first version of this helper did exactly that and recorded 0 passes.
+    The one-pass test caught it only because it asserts `== 1`; its sibling
+    asserting `== 0` was passing for entirely the wrong reason. That is this
+    repo's recurring shape - a check that confirms rather than measures - so
+    `test_the_pass_counter_actually_counts` now pins the helper itself.
+    """
+
+    def __init__(self, monkeypatch, spark):
+        cls = type(spark.range(1))
 
         self.aggs = 0
         self.counts = 0
-        real_agg, real_count = DataFrame.agg, DataFrame.count
+        real_agg, real_count = cls.agg, cls.count
 
         def agg(df_self, *a, **k):
             self.aggs += 1
@@ -329,8 +341,21 @@ class _PassCounter:
             self.counts += 1
             return real_count(df_self)
 
-        monkeypatch.setattr(DataFrame, "agg", agg)
-        monkeypatch.setattr(DataFrame, "count", count)
+        monkeypatch.setattr(cls, "agg", agg)
+        monkeypatch.setattr(cls, "count", count)
+
+
+def test_the_pass_counter_actually_counts(spark, monkeypatch):
+    """A test for the test. Without this, a counter that silently patches the
+    wrong class reports 0 passes and every cost assertion below becomes a
+    tautology."""
+    counter = _PassCounter(monkeypatch, spark)
+
+    spark.range(3).agg(F.count(F.lit(1))).collect()
+    spark.range(3).count()
+
+    assert counter.aggs == 1
+    assert counter.counts == 1
 
 
 def _table(spark, rows, ddl):
@@ -344,7 +369,7 @@ def test_profile_table_makes_exactly_one_pass(spark, monkeypatch):
     the ingestion path because it re-read the source for a number already
     available; profiling would reintroduce that per column."""
     table = _table(spark, [(1, "a", 10.0), (2, "b", 20.0)], "id bigint, name string, amt double")
-    counter = _PassCounter(monkeypatch)
+    counter = _PassCounter(monkeypatch, spark)
 
     profile_table(spark, table, _cfg())
 
@@ -359,7 +384,7 @@ def test_reprofiling_an_unchanged_table_reads_no_data(spark, monkeypatch):
     table = _table(spark, [(1, "a")], "id bigint, name string")
     profile_table(spark, table, _cfg())
 
-    counter = _PassCounter(monkeypatch)
+    counter = _PassCounter(monkeypatch, spark)
     result = profile_table(spark, table, _cfg())
 
     assert result["status"] == "skipped"
