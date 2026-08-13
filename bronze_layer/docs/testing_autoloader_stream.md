@@ -74,19 +74,94 @@ runs, which is what makes the discovery claim testable.
 
 | # | Action | What it proves | Expected result | Actual |
 | --- | --- | --- | --- | --- |
-| 1 | Drop 3 well-formed files (wave A), run once | Auto Loader reads a directory at all; checkpoint and schema locations get created | 3 rows in `TBL`; `_checkpoint/` and `_schema/` populated | _pending_ |
-| 2 | Run again, **no new files** | The checkpoint suppresses reprocessing — the exactly-once claim | 0 new rows; total still 3; run exits clean rather than hanging | _pending_ |
-| 3 | Drop 2 more files (wave B), run once | Incremental discovery of files that arrived after the first run | +2 rows only, total 5; waves A files not re-read | _pending_ |
-| 4 | Drop 1 file carrying a **new column**, run once | `schemaEvolutionMode=addNewColumns` behaviour — Auto Loader is documented to *fail the stream* on an unknown field and pick the new schema up on restart | Run 1 fails with `UnknownFieldException`; the immediately following run succeeds and the column exists | _pending_ |
-| 5 | Inspect the audit table for this table | Whether streaming writes one audit row per micro-batch, and whether the count is sane (#156 flagged 2,880/day on a 30s trigger — `availableNow` should make this small) | one row per run, not per file | _pending_ |
-| 6 | Inspect `_source_file` / lineage columns | Streaming attaches the same lineage the batch path does | non-null, one distinct value per source file | _pending_ |
-| 7 | Drop a `.jsonl` file with `multiline` left at its default | The truncation guard (#146) fires on the streaming path, not just in the unit tests | `JsonLinesTruncationError`, or a documented reason it does not apply here | _pending_ |
+| 1 | Drop 3 well-formed files (wave A), run once | Auto Loader reads a directory at all; checkpoint and schema locations get created | 3 rows in `TBL` | **FAILED first, then PASS.** The first attempt died in our writer - see Finding 1. After the fix: 3 rows. |
+| 2 | Run again, **no new files** | The checkpoint suppresses reprocessing - the exactly-once claim | 0 new rows; total still 3 | **PASS.** Still 3. Run exited clean, and wrote no audit row at all: the empty micro-batch is skipped before `audited_run`. |
+| 3 | Drop 2 more files (wave B), run once | Incremental discovery of files that arrived after the first run | +2 rows only, total 5 | **PASS.** Exactly `A-1,A-2,A-3,B-1,B-2`. Wave A not re-read. |
+| 4 | Drop 1 file carrying a **new column**, run once | `schemaEvolutionMode=addNewColumns` behaviour | Run 1 fails, run 2 succeeds | **PASS, but not as predicted - see Finding 2.** One run, reported SUCCESS. The `UnknownFieldException` did happen and DBR retried it internally. `currency` was added and `D-1` landed. |
+| 5 | Inspect the audit table for this table | Whether streaming writes a sane number of audit rows | one row per run, not per file | **PASS.** 8 rows across 6 runs: 3 `failed/write` (Finding 1, one per retry attempt), 3 `success` (3, 2, 1 rows), 2 `failed/read` (wave 7). Empty batches write nothing. |
+| 6 | Inspect `_source_file` / lineage columns | Streaming attaches the same lineage the batch path does | non-null per row | **PASS.** `_source_file` non-null on every row. |
+| 7 | Drop a `.jsonl` file with `multiline` left at its default (which is `True`) | The truncation guard (#146) fires on the streaming path, not just in the unit tests | `JsonLinesTruncationError` | **PASS.** Raised; batch not committed, checkpoint not advanced, audit tagged `failure_stage=read`. |
 
 ## Findings
 
-_Not yet run. This section is the deliverable of #248's second acceptance
-criterion ("findings documented — what works, what doesn't, what needs fixing
-before Stage 1.5") and stays empty until the runs above have actual results._
+Run 2026-08-12 against `dev`: six bounded `availableNow` submits.
+
+**Auto Loader itself was never the problem.** Every failure below is ours. In
+the very first run `CloudFilesSource` discovered the files, inferred the
+schema, projected `_rescued_data` and `_input_file_name`, and committed
+offsets - and then our writer raised.
+
+### Finding 1 - the streaming write path had never worked on this platform
+
+`write_bronze_micro_batch` tested emptiness with `micro_batch_df.rdd.isEmpty()`:
+
+```
+PySparkNotImplementedError: [NOT_IMPLEMENTED] rdd is not implemented. SQLSTATE: 38000
+```
+
+`.rdd` does not exist on Spark Connect. Every compute this project has is
+serverless, and serverless *is* Spark Connect, so this failed the **first
+micro-batch of every streaming run**, always.
+
+It survived because nothing could reach it: `cloudFiles` is Databricks-only
+so the suite cannot start a stream, local pyspark and CI are classic Spark
+where `.rdd` is fine, and `write_bronze_micro_batch` had no tests at all.
+**This is the defect #248 existed to find, and writing more tests would never
+have found it.** Fixed in #295, with regression tests that fake the Connect
+behaviour and so need neither a stream nor Spark.
+
+### Finding 2 - a drifting stream reports SUCCESS, and the audit trail cannot say it drifted
+
+Wave 4 was predicted to fail and then succeed on restart. Visibly it did
+neither: **one run, reported `SUCCESS`.** The exception did happen -
+
+```
+[UNKNOWN_FIELD_EXCEPTION.NEW_FIELDS_IN_RECORD_WITH_FILE_PATH]
+Encountered unknown fields during parsing: {"currency":"USD"},
+which can be fixed by an automatic retry: true
+```
+
+- and the runtime retried it transparently. The only trace is the `error`
+field of a run whose state is `SUCCESS`. Nobody reads that field.
+
+Our own trail cannot fill the gap. **`schema_changed` is NULL on every
+streaming audit row, structurally.** `run_streaming` calls `record_schema`
+once before the stream starts, and every micro-batch runs with
+`record_metadata=False` - deliberately, per #156, since otherwise it would
+fire per batch. So the boolean a dashboard would count is never set on this
+path.
+
+`_schema_registry` *did* update - its fingerprint now carries `currency` -
+but it holds current state, not history. It can say the schema differs now;
+it cannot say which run changed it.
+
+**Net: a bronze table can gain a column, from a run that reported success,
+with nothing in the audit trail marking it.** That is a live gap against
+#256's goal, which was believed closed.
+
+### Finding 3 - four streaming knobs have no deployed caller
+
+`run_ingestion.py` has no widget for `trigger_mode`,
+`trigger_processing_time`, `schema_evolution_mode`, or `multiline`. So
+`get_trigger_kwargs`' `processingTime` branch is unreachable from the only
+streaming entrypoint, and only the `addNewColumns` default can be exercised
+end to end. (`multiline` having no widget is why wave 7 tested the default
+`True` - which turned out to be the interesting case anyway.)
+
+There is also **no deployed streaming job resource**: the only
+streaming-capable one is commented out. Stage 1.5 assumes one exists.
+
+### What holds up
+
+Checkpointing, exactly-once and incremental discovery behave exactly as
+claimed (waves 2 and 3), and the #146 truncation guard fires correctly on the
+streaming path with the batch left uncommitted (wave 7). Once Finding 1 is
+fixed, the streaming path works.
+
+### Teardown
+
+Source files, checkpoint and schema store removed. `al248_stream_bronze` and
+its audit rows are left in place - `DROP TABLE` is Tier 2.
 
 ## Gaps already visible without running anything
 
