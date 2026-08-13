@@ -10,6 +10,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from . import formats
 from .logging_utils import logger
 from .sql_utils import validate_identifier, validate_identifiers
 
@@ -24,53 +25,26 @@ VALID_INGESTION_MODES = ("batch", "streaming")
 VALID_SCHEMA_EVOLUTION_MODES = ("addNewColumns", "rescue", "failOnNewColumns", "none")
 VALID_TRIGGER_MODES = ("availableNow", "once", "processingTime")
 
-#: Spark JSON-reader options this package will pass through without
-#: complaint (#154). `reader_options` goes straight to `spark.read.option()`,
-#: and configs are loaded from a Unity Catalog Volume - anyone with WRITE
-#: VOLUME can influence their content, which is a wider set of people than
-#: those with CREATE TABLE on the target schema.
+#: Spark reader options this package will pass through without complaint
+#: (#154). `reader_options` goes straight to `spark.read.option()`, and
+#: configs are loaded from a Unity Catalog Volume - anyone with WRITE VOLUME
+#: can influence their content, which is a wider set of people than those
+#: with CREATE TABLE on the target schema.
 #:
 #: The specific thing an allowlist buys here: `path` is a reader option, so an
 #: unfiltered passthrough lets a config redirect the read at a location the
 #: config was never meant to touch, while every log line and audit row still
 #: reports `source_path`. Parsing and formatting options cannot do that, so
 #: they are allowed.
-ALLOWED_READER_OPTIONS = frozenset(
-    {
-        # Parsing behaviour
-        "multiLine",
-        "mode",
-        "columnNameOfCorruptRecord",
-        "primitivesAsString",
-        "prefersDecimal",
-        "allowComments",
-        "allowUnquotedFieldNames",
-        "allowSingleQuotes",
-        "allowNumericLeadingZeros",
-        "allowBackslashEscapingAnyCharacter",
-        "allowUnquotedControlChars",
-        "dropFieldIfAllNull",
-        "ignoreNullFields",
-        "samplingRatio",
-        "rescuedDataColumn",
-        "inferTimestamp",
-        "enableDateTimeParsingFallback",
-        # Formats, encoding, locale
-        "dateFormat",
-        "timestampFormat",
-        "timestampNTZFormat",
-        "timeZone",
-        "locale",
-        "encoding",
-        "charset",
-        "lineSep",
-        # File selection - these narrow what is read, they cannot redirect it
-        "recursiveFileLookup",
-        "pathGlobFilter",
-        "modifiedBefore",
-        "modifiedAfter",
-    }
-)
+#:
+#: The allowlist is now looked up PER-FORMAT - `formats.allowed_reader_options`
+#: is the registry that decides what each `source_format` accepts, since not
+#: every reader option means the same thing (or exists at all) for every
+#: format (see `formats.py`'s module docstring). This name survives as a true
+#: alias to the "json" entry of that registry, not a second copy of the set,
+#: so existing importers of `config.ALLOWED_READER_OPTIONS` keep working
+#: unchanged - `tests/test_formats.py` asserts the two stay equal.
+ALLOWED_READER_OPTIONS = formats.allowed_reader_options("json")
 
 #: Prefixes allowed wholesale. Auto Loader's surface is large, versioned and
 #: entirely namespaced, so enumerating it would go stale faster than it would
@@ -84,11 +58,17 @@ class IngestionConfig:
     # --- Source ---
     # any Spark-readable URI: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/...
     source_path: str
+    # Drives both what discovery lists (formats.extensions_for) and which
+    # reader_options are valid (formats.allowed_reader_options) - see
+    # formats.py's module docstring for why one field controls both. Must be
+    # one of formats.supported_formats(); checked in __post_init__.
+    source_format: str = "json"
     multiline: bool = True  # set True if each file is a single JSON document (not JSON-lines)
     # optional DDL string to enforce a read schema instead of inferring it
     schema_hint_ddl: Optional[str] = None
     # extra options passed straight to spark.read.options();
-    # keys must be on ALLOWED_READER_OPTIONS
+    # keys must be on the allowlist for this source_format
+    # (formats.allowed_reader_options(source_format))
     reader_options: Dict[str, Any] = field(default_factory=dict)
     # opt out of the reader_options allowlist (#154); logs what it lets through
     allow_unsafe_reader_options: bool = False
@@ -304,6 +284,11 @@ class IngestionConfig:
             raise ValueError("source_path is required")
         if not self.table:
             raise ValueError("table is required")
+        if self.source_format not in formats.supported_formats():
+            raise ValueError(
+                f"source_format must be one of {formats.supported_formats()}, "
+                f"got {self.source_format!r}"
+            )
         if self.write_mode not in VALID_WRITE_MODES:
             raise ValueError(
                 f"write_mode must be one of {VALID_WRITE_MODES}, got {self.write_mode!r}"
@@ -574,15 +559,21 @@ class IngestionConfig:
         CREATE TABLE on the target schema. Unknown keys are rejected rather
         than silently applied; `allow_unsafe_reader_options` is the documented
         way out, and it logs what it let through.
+
+        The allowlist is looked up PER `source_format` (formats.py) - what is
+        valid for one format is not necessarily valid for another. This runs
+        after the source_format check in __post_init__, so self.source_format
+        is always a registered format by the time it gets here.
         """
         options = self.reader_options or {}
         if not options:
             return
 
+        allowed = formats.allowed_reader_options(self.source_format)
         unknown = sorted(
             k
             for k in options
-            if k not in ALLOWED_READER_OPTIONS and not k.startswith(ALLOWED_READER_OPTION_PREFIXES)
+            if k not in allowed and not k.startswith(ALLOWED_READER_OPTION_PREFIXES)
         )
         if not unknown:
             return
@@ -596,8 +587,9 @@ class IngestionConfig:
             return
 
         raise ValueError(
-            f"reader_options contains key(s) not on the allowlist: {unknown}. "
-            f"Allowed: {sorted(ALLOWED_READER_OPTIONS)}. reader_options is applied "
+            f"reader_options contains key(s) not on the allowlist for "
+            f"source_format={self.source_format!r}: {unknown}. "
+            f"Allowed: {sorted(allowed)}. reader_options is applied "
             "verbatim to the Spark reader and configs are loaded from a Volume, so "
             "unrecognised keys are refused rather than applied silently. Set "
             "allow_unsafe_reader_options=True to override deliberately."

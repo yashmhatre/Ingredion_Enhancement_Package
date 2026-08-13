@@ -1,6 +1,9 @@
 # Sample config for bronze_ingest
 # Any Spark-readable path works: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/
 source_path: "/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/orders.json"
+# source_format: "json"  # must be one of formats.supported_formats() (currently just "json");
+                          # drives both what discovery lists and which reader_options are valid.
+                          # Case-sensitive - "JSON" is rejected, not normalized.
 multiline: true
 # schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
 reader_options: {}
