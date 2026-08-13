@@ -67,7 +67,8 @@ class IngestionConfig:
     # optional DDL string to enforce a read schema instead of inferring it
     schema_hint_ddl: Optional[str] = None
     # extra options passed straight to spark.read.options();
-    # keys must be on ALLOWED_READER_OPTIONS
+    # keys must be on the allowlist for this source_format
+    # (formats.allowed_reader_options(source_format))
     reader_options: Dict[str, Any] = field(default_factory=dict)
     # opt out of the reader_options allowlist (#154); logs what it lets through
     allow_unsafe_reader_options: bool = False

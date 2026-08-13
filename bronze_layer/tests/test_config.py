@@ -392,12 +392,9 @@ def test_there_is_at_least_one_shipped_config_to_check():
 
 @pytest.mark.parametrize("config_path", CONFIG_YAML_FILES, ids=lambda p: p.name)
 def test_shipped_config_yaml_still_constructs_unchanged(config_path):
-    """New fields must be additive (CONTRIBUTING.md) - a shipped config that
-    never mentions source_format must still load, and must default to the
-    format it was already implicitly using."""
-    text = config_path.read_text()
-    assert "source_format" not in text
-
+    """New fields must be additive (CONTRIBUTING.md) - every shipped config
+    must still load, and must default (or, if it sets the field explicitly,
+    resolve) to the format it was already implicitly using."""
     cfg = IngestionConfig.load(str(config_path))
     assert cfg.source_format == "json"
 

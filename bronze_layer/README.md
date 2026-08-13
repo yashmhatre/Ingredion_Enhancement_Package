@@ -84,7 +84,8 @@ error found 40 minutes in has already been paid for.
 | `write_mode: merge` requires **exactly one** of `merge_keys` / `content_hash_columns` → **raises** | The two answer different questions (natural business key vs. content-addressed dedup key, #84) — setting both or neither is ambiguous, not a default to pick for you |
 | `content_hash_columns` must be non-empty, and must not name a column bronze adds itself (audit/rescued/corrupt/`content_hash_key_col`) | Hashing an ingest-time column makes the hash depend on when a row was ingested, not its content — identical payloads ingested on different runs would never match |
 | `quarantine_table`, `table_properties` keys, `column_comments` keys — validated **per dot-separated part** | These are legitimately dotted (`main.bronze.x`, `delta.enableChangeDataFeed`, `customer.name`). Per-part checking accepts those and still rejects `bad-key` |
-| `reader_options` keys must be on `ALLOWED_READER_OPTIONS`, or `cloudFiles.*` | `reader_options` goes verbatim to the Spark reader, and configs load from a Volume. `path` is a reader option — an unfiltered passthrough lets a config redirect the read while every log line still reports `source_path`. Set `allow_unsafe_reader_options: true` to override; it logs what it let through |
+| `reader_options` keys must be on the allowlist for the configured `source_format` (`formats.allowed_reader_options(source_format)`), or `cloudFiles.*` | `reader_options` goes verbatim to the Spark reader, and configs load from a Volume. `path` is a reader option — an unfiltered passthrough lets a config redirect the read while every log line still reports `source_path`. The allowlist is looked up per format, since not every reader option means the same thing (or exists at all) for every format, and the error names the configured `source_format`. Set `allow_unsafe_reader_options: true` to override; it logs what it let through |
+| `source_format` must be one of `formats.supported_formats()` (currently just `json`) — case-sensitive, `"JSON"` is rejected | Matches the registry key in `formats.py` exactly rather than normalizing case; fails loud instead of silently accepting a variant that only happens to work today |
 | `retry_attempts >= 1` | Below 1, `with_retry`'s loop body never executes and it raises `last_exc` — still `None`. You get "exceptions must derive from BaseException" and no trace of the real failure. **1 means "try once, don't retry"** |
 | `retry_delay_seconds >= 0` | A negative value reaches `time.sleep()` and raises mid-run, on a cluster |
 | `max_files_per_trigger >= 1` when set | Leave it `None` for no limit |
@@ -94,7 +95,7 @@ error found 40 minutes in has already been paid for.
 | `enable_schema_registry` without `enable_run_audit` → **warns** | Legal, but drift visibility works by writing the fingerprint onto the audit row, so drift becomes invisible |
 
 Plus the pre-existing rules: enum membership for `write_mode` /
-`ingestion_mode` / `schema_evolution_mode` / `trigger_mode`; `merge_keys`
+`ingestion_mode` / `schema_evolution_mode` / `trigger_mode` / `source_format`; `merge_keys`
 required for merge and required to be a subset of `required_columns`;
 `checkpoint_location` + `schema_location` for streaming;
 `trigger_processing_time` for `processingTime`; non-empty `unique_columns` and
