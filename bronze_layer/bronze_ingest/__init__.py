@@ -1,5 +1,6 @@
 from .catalog_metadata import apply_catalog_metadata
 from .config import IngestionConfig
+from .contract import ContractError, DataContract, validate_dataframe, validate_schema
 from .directory_ingestion import build_table_name, ingest_directory_to_bronze, sanitize_table_name
 from .logging_utils import get_logger
 from .pipeline import BronzeIngestion, ingest_json_to_bronze
@@ -9,6 +10,10 @@ from .streaming_reader import JsonLinesTruncationError
 
 __all__ = [
     "IngestionConfig",
+    "DataContract",
+    "ContractError",
+    "validate_schema",
+    "validate_dataframe",
     "BronzeIngestion",
     "ingest_json_to_bronze",
     "ingest_directory_to_bronze",
