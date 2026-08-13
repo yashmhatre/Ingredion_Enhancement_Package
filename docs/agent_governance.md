@@ -17,12 +17,13 @@ for any coding agent here). Read those first. If this doc and `AGENTS.md`
 disagree, that's a bug — fix one of them, don't quietly follow whichever is
 more convenient.
 
-**The governing principle:** agents propose, draft, and verify;
-`orchestrator` merges routine Tier 1 work on its own; Yash signs anything
-that carries judgment, spends money, touches a credential, changes who can
-see production data, or moves code toward prod. Nothing below is about agent
-*capability* — it's about whose judgment is required, regardless of how
-capable the model is.
+**The governing principle:** agents propose, draft, verify, and merge into
+`dev` on their own authority; Yash signs anything that carries judgment,
+spends money, touches a credential, changes who can see production data, or
+moves code toward prod. The boundary is the branch: **everything into `dev`
+belongs to the agent team, everything out of it belongs to Yash.** Nothing
+below is about agent *capability* — it's about whose judgment is required,
+regardless of how capable the model is.
 
 ---
 
@@ -47,38 +48,54 @@ subagent. A cheap local model summarising a `GRANT` doesn't make it Tier 0.
   check as NOT RUN, not as a failure — that false signal is what #244
   removed from CI, and it's the same rule `scripts/verify.sh` follows.
 
-### Tier 1 — draft freely; merging splits two ways
+### Tier 1 — draft freely; the agent team merges into `dev`
 
 Tier 1 covers: any PR merge into `dev`; any change to `IngestionConfig`'s
 public shape; any change to `.github/workflows/ci.yml`; any suppression of a
 ruff/mypy/bandit/pip-audit finding; any change to a notebook or
 `bronze_layer/resources/*.yml`.
 
-Within that, merge authority splits on a **mechanical trigger** — never on
-an agent's judgment about whether something "feels" significant:
+**`orchestrator` merges every Tier 1 change into `dev` on its own authority**,
+once *all* of these hold:
 
-**`orchestrator` merges on its own** when *all* of these hold:
+- CI is green **on a run that actually executed** — the change-detection
+  `WATCHED` regex will skip the suite for some paths, and a skipped run
+  reports success in seconds. Read the pass counts, not the check mark. A
+  green tick over a suite that never ran is not evidence of anything;
+- `scripts/verify.sh` reports no FAILED gate;
+- every escalation path the diff touches has the review it requires, below.
 
-- CI is green, and `scripts/verify.sh` reports no FAILED gate;
-- the diff touches none of the escalation paths below;
-- the change is a dependency bump, a docs change, added tests, or a
-  refactor with no behavior change.
+Yash's approval is **not** required for a change to reach `dev`. It is
+required for a change to leave it: `dev` → `staging` and `staging` → `main`
+are promotion PRs and sit in Tier 2.
 
-**Yash signs** when the diff touches any of:
+**Escalation paths — these require a `reviewer` verdict before the merge,
+not Yash's signature:**
 
 - `bronze_layer/bronze_ingest/` in a way that changes behavior;
-- `bronze_layer/notebooks/` or `bronze_layer/resources/*.yml` — this repo's
-  two known live production defects both shipped through untested notebooks
-  (#144, #145), and that history outranks any agent's confidence;
+- `bronze_layer/notebooks/` or `bronze_layer/resources/*.yml` — these need
+  the owning agent (`notebook-qa` or `platform`) to have made the change
+  **and** a `reviewer` verdict on top. This repo's two known live production
+  defects both shipped through untested notebooks (#144, #145). That history
+  did not stop being true when the merge gate moved off Yash, so this path
+  keeps two agents on it rather than one;
 - `IngestionConfig`'s public shape;
-- `.github/workflows/ci.yml`, `scripts/verify.sh`, or the write-lockdown hook;
+- `.github/workflows/ci.yml`, `scripts/verify.sh`, or the write-lockdown hook
+  — and note the mirror rule: a gate changed in one must be changed in the
+  other in the same PR. Two quality gates that disagree are worse than one;
 - any new or widened suppression;
 - `agents.lock`.
 
-The trigger is path-plus-CI-status, so no agent ever has to decide whether
-to escalate — it either matched a path or it didn't. Getting a Tier 1 change
-green on `scripts/verify.sh` before asking is table stakes, not a substitute
-for the review.
+The trigger is still path-plus-CI-status, so no agent ever has to decide
+whether to escalate — it either matched a path or it didn't. What changed is
+what escalation *means*: a second agent's adversarial read before merge,
+rather than a human signature. Getting a Tier 1 change green on
+`scripts/verify.sh` before merging is table stakes, not a substitute for that
+review.
+
+`reviewer` never reviews work it produced itself, and never merges — the
+agent that blesses a change is not the agent that wrote it, and neither is
+the agent that routes it.
 
 ### Tier 2 — draft only; requires Yash's explicit, named sign-off before executing
 
@@ -126,7 +143,7 @@ principal engineer as the sign-off authority, those layers were latency.
 
 | Agent | Lane | Owns | Never |
 | --- | --- | --- | --- |
-| `orchestrator` | Claude | Routing, Tier 1 routine merges, sign-off packets | Implements; executes Tier 2/3 |
+| `orchestrator` | Claude | Routing, all Tier 1 merges into `dev`, sign-off packets for Tier 2/3 | Implements; executes Tier 2/3; merges a promotion PR |
 | `architect` | Claude | Business reconciliation, technical design, decision records | Writes pipeline code |
 | `reviewer` | Claude | Adversarial pre-merge review on escalation paths | Merges; reviews its own work |
 | `builder` | Copilot | `bronze_layer/bronze_ingest/` | Touches notebooks, resources, `databricks.yml` |
@@ -153,8 +170,8 @@ roster earned by evidence rather than by tidiness.
 
 ```mermaid
 graph TD
-    Y["Yash — Senior Principal Data Engineer<br/>(human; sign-off only)"]
-    O["orchestrator (Claude)<br/>routes work, merges routine Tier 1,<br/>assembles sign-off packets"]
+    Y["Yash — Senior Principal Data Engineer<br/>(human; promotions and Tier 2/3 only)"]
+    O["orchestrator (Claude)<br/>routes work, merges Tier 1 into dev,<br/>assembles Tier 2/3 sign-off packets"]
     A["architect (Claude)<br/>reconciled case, design, decision record"]
     R["reviewer (Claude)<br/>adversarial pre-merge review"]
     B["builder (Copilot)<br/>bronze_ingest/"]
@@ -227,18 +244,23 @@ happen.
 
 ## The sign-off packet
 
-Yash gets three interrupt types and nothing else. Each arrives complete — an
+Yash gets two interrupt types and nothing else. Each arrives complete — an
 agent that asks a question without having done the work to make it
 answerable has failed at its job.
 
 1. **Design arbitration** — `architect` hit a fork it can't settle from the
    repo's recorded decisions. Packet: the fork, both options with
    consequences, a recommendation, and the decision record it would write.
-2. **Tier 1 escalation** — packet: the diff, CI status, `verify.sh` output
-   including every NOT RUN gate, `reviewer`'s verdict, its single strongest
-   objection, and an explicit list of what it could not verify.
-3. **Tier 2/3 sign-off** — packet: the exact command/SQL/diff, the blast
-   radius, and what happens if it's wrong.
+2. **Tier 2/3 sign-off**, which includes every promotion PR (`dev` →
+   `staging`, `staging` → `main`) — packet: the exact command/SQL/diff, the
+   blast radius, and what happens if it's wrong.
+
+A Tier 1 escalation is **not** an interrupt. It produces the same packet as
+before — the diff, CI status with real pass counts, `verify.sh` output
+including every NOT RUN gate, `reviewer`'s verdict, its single strongest
+objection, and an explicit list of what it could not verify — but that packet
+now goes from `reviewer` to `orchestrator`, which merges on it. Yash reads
+Tier 1 packets when he wants to, not because the merge is waiting on him.
 
 "What I could not verify" is mandatory in every packet. A packet claiming
 full green when gates were skipped is the failure mode this repo already hit

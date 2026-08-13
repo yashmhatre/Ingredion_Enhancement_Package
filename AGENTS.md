@@ -53,10 +53,13 @@ This repo runs **7 purpose-built subagents**, defined by function and
 substrate rather than by an org-chart metaphor — see
 `docs/agent_governance.md` for the full table and the approval tiers. Short
 version: Yash, the Project Lead (human, a Senior Principal Data Engineer),
-**signs off; he does not route work and does not implement.** `orchestrator`
-is the routing layer that exists so he doesn't have to be — it delegates,
-merges routine Tier 1 work into `dev`, and assembles sign-off packets for
-everything else. `architect` turns an ask into a reconciled case and then a
+**signs off; he does not route work and does not implement.** The boundary is
+the branch — everything into `dev` is the agent team's call, everything out of
+it (`dev` → `staging`, `staging` → `main`) is Yash's. `orchestrator` is the
+routing layer that exists so he doesn't have to be — it delegates, merges
+**all** Tier 1 work into `dev` once CI is genuinely green and any escalation
+path has its `reviewer` verdict, and assembles sign-off packets for Tier 2/3.
+`architect` turns an ask into a reconciled case and then a
 technical design, and owns `docs/business_requirements.md`. `reviewer` gives
 an adversarial pre-merge read on the escalation paths, and is separate from
 `orchestrator` precisely so the agent that routes work doesn't also bless it.
