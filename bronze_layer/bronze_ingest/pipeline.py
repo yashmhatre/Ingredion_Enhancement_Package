@@ -69,6 +69,7 @@ class BronzeIngestion:
         build_summary=True,
         stream_batch_id=None,
         record_metadata=True,
+        schema_audit=None,
     ):
         """
         The single ingestion sequence, shared by all three entry points:
@@ -109,6 +110,15 @@ class BronzeIngestion:
             are per-STREAM concerns that were being re-executed per batch -
             2,880 times a day on a 30-second trigger (#156). run_streaming
             does them once at stream start instead.
+
+        schema_audit: schema fields already resolved by the CALLER, to stamp
+            onto this run's audit row. This is how streaming gets its drift
+            onto the audit trail at all: record_metadata=False means this
+            method resolves nothing itself, so run_streaming resolves it once
+            per stream and hands it to exactly one micro-batch (#256).
+            Stamped before the read, so a batch that fails still carries it -
+            a run that drifted and then broke is precisely the one worth
+            being able to find.
         """
         with audited_run(
             self.spark,
@@ -116,6 +126,9 @@ class BronzeIngestion:
             source_path=self.config.source_path,
             stream_batch_id=stream_batch_id,
         ) as audit:
+            if schema_audit:
+                audit.update(schema_audit)
+
             logger.info(start_message, self.config.full_table_name)
 
             try:
@@ -277,11 +290,41 @@ class BronzeIngestion:
         # Deliberately not fatal: a metadata failure must not stop a stream
         # that is otherwise writing correctly, matching the never-raise
         # contract these modules already have.
-        record_schema(self.spark, self.config, stream_df)
+        fingerprint, schema_changed, schema_drift = record_schema(
+            self.spark, self.config, stream_df
+        )
         apply_catalog_metadata(self.spark, self.config)
         apply_catalog_tags(self.spark, self.config)
 
+        # #256: this return value used to be discarded, and that was the whole
+        # bug. record_schema wrote the drift to _schema_registry and told us
+        # about it, and we dropped it on the floor - so `schema_changed` and
+        # `schema_drift_json` were NULL on every streaming audit row that has
+        # ever been written. A bronze table could gain a column, from a run
+        # reporting SUCCESS, with nothing in the audit trail marking it.
+        # Confirmed against dev under #248, not theorised.
+        #
+        # Stamped on exactly ONE micro-batch, not all of them. The schema is
+        # resolved once per stream, so N batches carrying schema_changed=True
+        # would report one drift as N drifts - and `schema_changed` exists
+        # precisely so a dashboard can COUNT drift (audit.py). One row per
+        # actual event is the honest shape.
+        #
+        # Known limit: a run that drifts and then processes no batches records
+        # nothing here, because an empty micro-batch is skipped before
+        # audited_run opens. The registry still has it. Fixing that needs an
+        # audit row with no batch behind it, which is a bigger change than
+        # this issue.
+        pending_schema_audit = {
+            "schema_fingerprint": fingerprint,
+            "schema_changed": schema_changed,
+            "schema_drift_json": schema_drift,
+        }
+
         def _process_batch(micro_batch_df, batch_id):
+            nonlocal pending_schema_audit
+            schema_audit, pending_schema_audit = pending_schema_audit, None
+
             # #174's truncation guard runs as part of "reading" this
             # micro-batch, rather than as a separate step before the shared
             # body. That placement is what preserves both of its properties
@@ -303,6 +346,7 @@ class BronzeIngestion:
                 build_summary=False,
                 stream_batch_id=batch_id,
                 record_metadata=False,
+                schema_audit=schema_audit,
             )
 
         query = (

@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 
+from bronze_ingest.bronze_writer import write_bronze
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.pipeline import BronzeIngestion
 from bronze_ingest.quality import DataQualityError
@@ -259,3 +260,183 @@ def test_truncation_guard_failure_is_tagged_read_through_the_shared_body(spark, 
     row = spark.read.table(cfg.resolved_audit_table).collect()[0]
     assert row["status"] == "failed"
     assert row["failure_stage"] == "read"
+
+
+# ---- streaming schema drift reaches the audit row (#256) ----
+
+
+def _drift_json():
+    return '{"added":["email"],"removed":[],"type_changed":[]}'
+
+
+def test_execute_stamps_caller_supplied_schema_audit_onto_the_audit_row(spark, tmp_path):
+    """#256. Streaming resolves the schema ONCE per stream (#156) and runs
+    every micro-batch with record_metadata=False, so `_execute` resolves
+    nothing itself. run_streaming used to simply discard record_schema's
+    return value, which meant `schema_changed` and `schema_drift_json` were
+    NULL on every streaming audit row ever written - a bronze table could
+    gain a column, from a run reporting SUCCESS, with nothing in the audit
+    trail marking it. Confirmed against dev under #248.
+
+    This is the seam that carries it: fields resolved by the caller must
+    reach the persisted audit row.
+    """
+    _write_json(tmp_path / "data.json", [{"id": 1, "name": "a"}])
+    cfg = _cfg(tmp_path, f"pipeline_schema_audit_{uuid.uuid4().hex[:8]}")
+    job = BronzeIngestion(spark, cfg)
+
+    job._execute(
+        lambda: spark.read.json(file_uri(tmp_path, "data.json")),
+        lambda df: write_bronze(spark, df, cfg),
+        "stamping schema audit -> %s",
+        build_summary=False,
+        record_metadata=False,
+        schema_audit={
+            "schema_fingerprint": "deadbeef",
+            "schema_changed": True,
+            "schema_drift_json": _drift_json(),
+        },
+    )
+
+    row = spark.read.table(cfg.resolved_audit_table).collect()[0]
+    assert row["schema_fingerprint"] == "deadbeef"
+    assert row["schema_changed"] is True
+    assert row["schema_drift_json"] == _drift_json()
+
+
+def test_execute_stamps_schema_audit_even_when_the_batch_fails(spark, tmp_path):
+    """A run that drifted and then broke is precisely the one worth being
+    able to find, so the stamp happens before the read rather than after a
+    successful write."""
+    cfg = _cfg(tmp_path, f"pipeline_schema_audit_fail_{uuid.uuid4().hex[:8]}")
+    job = BronzeIngestion(spark, cfg)
+
+    def _boom():
+        raise RuntimeError("read exploded")
+
+    with pytest.raises(RuntimeError):
+        job._execute(
+            _boom,
+            lambda df: None,
+            "stamping then failing -> %s",
+            build_summary=False,
+            record_metadata=False,
+            schema_audit={
+                "schema_fingerprint": "deadbeef",
+                "schema_changed": True,
+                "schema_drift_json": _drift_json(),
+            },
+        )
+
+    row = spark.read.table(cfg.resolved_audit_table).collect()[0]
+    assert row["status"] == "failed"
+    assert row["failure_stage"] == "read"
+    assert row["schema_changed"] is True
+    assert row["schema_drift_json"] == _drift_json()
+
+
+def test_execute_records_no_schema_fields_when_the_caller_supplies_none(spark, tmp_path):
+    """The other direction: absent a caller-supplied value, `_execute` must
+    not invent one. Streaming batches after the first pass None, and they
+    must stay NULL so one drift is not counted N times."""
+    _write_json(tmp_path / "data.json", [{"id": 1, "name": "a"}])
+    cfg = _cfg(tmp_path, f"pipeline_schema_audit_none_{uuid.uuid4().hex[:8]}")
+    job = BronzeIngestion(spark, cfg)
+
+    job._execute(
+        lambda: spark.read.json(file_uri(tmp_path, "data.json")),
+        lambda df: write_bronze(spark, df, cfg),
+        "no schema audit -> %s",
+        build_summary=False,
+        record_metadata=False,
+        schema_audit=None,
+    )
+
+    row = spark.read.table(cfg.resolved_audit_table).collect()[0]
+    assert row["schema_changed"] is None
+    assert row["schema_drift_json"] is None
+
+
+class _FakeQuery:
+    def awaitTermination(self):  # noqa: N802 - mirrors the PySpark API
+        return None
+
+
+class _FakeWriteStream:
+    """Captures the foreachBatch handler instead of running a stream."""
+
+    def __init__(self, sink):
+        self._sink = sink
+
+    def foreachBatch(self, fn):  # noqa: N802 - mirrors the PySpark API
+        self._sink["handler"] = fn
+        return self
+
+    def option(self, *_a, **_k):
+        return self
+
+    def trigger(self, **_k):
+        return self
+
+    def start(self):
+        return _FakeQuery()
+
+
+class _FakeStreamDataFrame:
+    def __init__(self, sink):
+        self.writeStream = _FakeWriteStream(sink)
+
+
+def test_run_streaming_gives_the_schema_audit_to_exactly_one_micro_batch(monkeypatch, tmp_path):
+    """#256's actual bug and its actual fix.
+
+    run_streaming discarded record_schema's return value, so no streaming
+    audit row could ever carry schema_changed or schema_drift_json. It must
+    now reach a micro-batch - and exactly ONE of them, because the schema is
+    resolved once per stream (#156) and `schema_changed` exists so a
+    dashboard can COUNT drift. N batches each claiming the same drift would
+    report one event as N.
+
+    No cloudFiles and no Spark here: the stream is faked down to the
+    foreachBatch handler, which is the only part this behaviour lives in.
+    """
+    import bronze_ingest.pipeline as pl
+
+    sink = {}
+    drift = _drift_json()
+
+    monkeypatch.setattr(pl, "read_json_stream", lambda spark, cfg: _FakeStreamDataFrame(sink))
+    monkeypatch.setattr(pl, "record_schema", lambda *a, **k: ("fp-1", True, drift))
+    monkeypatch.setattr(pl, "apply_catalog_metadata", lambda *a, **k: None)
+    monkeypatch.setattr(pl, "apply_catalog_tags", lambda *a, **k: None)
+    monkeypatch.setattr(pl, "get_trigger_kwargs", lambda cfg: {"availableNow": True})
+
+    calls = []
+    monkeypatch.setattr(
+        pl.BronzeIngestion,
+        "_execute",
+        lambda self, *a, **kw: calls.append(kw.get("schema_audit")),
+    )
+
+    cfg = _cfg(
+        tmp_path,
+        "streaming_oneshot",
+        ingestion_mode="streaming",
+        checkpoint_location=str(tmp_path / "_cp"),
+        schema_location=str(tmp_path / "_schema"),
+    )
+    BronzeIngestion(None, cfg).run_streaming()
+
+    handler = sink["handler"]
+    handler(object(), 0)
+    handler(object(), 1)
+    handler(object(), 2)
+
+    assert calls[0] == {
+        "schema_fingerprint": "fp-1",
+        "schema_changed": True,
+        "schema_drift_json": drift,
+    }
+    # Once, not once per batch.
+    assert calls[1] is None
+    assert calls[2] is None
