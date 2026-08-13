@@ -732,7 +732,7 @@ bronze_layer/
     naming.py              # filename -> table name (depends on nothing)
     fs/                    # filesystem concerns, independent of ingestion
       paths.py             #   file:// URI <-> local path
-      discovery.py         #   list_json_files / list_subfolders
+      discovery.py         #   list_source_files (list_json_files: deprecated alias) / list_subfolders
       archival.py          #   move_file / archive_ingested_file / archive_files_parallel
       retry_state.py       #   RetryState - per-file failure counts, one load + one flush per run
     errors.py              # shared exception types (no package imports - cannot cycle)

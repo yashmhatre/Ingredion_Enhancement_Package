@@ -18,7 +18,7 @@ Nothing in here imports `pipeline`, `config` or each other except through
 """
 
 from .archival import archive_files_parallel, archive_ingested_file, move_file, move_file_direct
-from .discovery import list_json_files, list_subfolders
+from .discovery import list_json_files, list_source_files, list_subfolders
 from .paths import local_path_from_uri
 from .retry_state import RetryState, retry_state_path
 
@@ -27,6 +27,7 @@ __all__ = [
     "archive_files_parallel",
     "archive_ingested_file",
     "list_json_files",
+    "list_source_files",
     "list_subfolders",
     "local_path_from_uri",
     "move_file",

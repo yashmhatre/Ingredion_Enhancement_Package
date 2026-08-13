@@ -1,19 +1,21 @@
 """
 Filesystem discovery: which files and folders are there.
 
-Split out of `directory_ingestion` (#151). Depends only on `databricks_fs`
-and `paths` - it knows nothing about ingestion, tables or configs, which is
-why it does not belong in a module about orchestrating them.
+Split out of `directory_ingestion` (#151). Depends only on `databricks_fs`,
+`paths`, and the leaf format registry in `formats.py` (#304) - it knows
+nothing about ingestion, tables or configs, which is why it does not belong
+in a module about orchestrating them.
 """
 
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ..databricks_fs import list_entries
+from ..formats import extensions_for
 from .paths import local_path_from_uri
 
 
-def _try_dbutils_ls(source_dir: str) -> Optional[List[str]]:
+def _try_dbutils_ls(source_dir: str, extensions: Tuple[str, ...]) -> Optional[List[str]]:
     """Databricks-native file listing - works on ALL Databricks compute,
     including serverless (where spark._jvm is blocked). Returns None if
     Databricks isn't available at all (e.g. local pytest runs); raises if it
@@ -22,12 +24,10 @@ def _try_dbutils_ls(source_dir: str) -> Optional[List[str]]:
     if entries is None:
         return None
 
-    return sorted(
-        e.path for e in entries if not e.is_dir and e.name.lower().endswith((".json", ".jsonl"))
-    )
+    return sorted(e.path for e in entries if not e.is_dir and e.name.lower().endswith(extensions))
 
 
-def _try_posix_ls(source_dir: str) -> Optional[List[str]]:
+def _try_posix_ls(source_dir: str, extensions: Tuple[str, ...]) -> Optional[List[str]]:
     """File listing via os.listdir for POSIX-style paths: local file:/ paths
     and FUSE-mounted locations like /Volumes/... . Returns None if the path
     isn't visible as a local directory."""
@@ -40,7 +40,7 @@ def _try_posix_ls(source_dir: str) -> Optional[List[str]]:
     return sorted(
         f"{source_dir.rstrip('/')}/{f}"
         for f in os.listdir(local)
-        if f.lower().endswith((".json", ".jsonl")) and os.path.isfile(os.path.join(local, f))
+        if f.lower().endswith(extensions) and os.path.isfile(os.path.join(local, f))
     )
 
 
@@ -97,9 +97,18 @@ def list_subfolders(spark, source_dir: str) -> List[str]:
     ]
 
 
-def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> List[str]:
+def list_source_files(
+    spark,
+    source_dir: str,
+    *,
+    source_format: str = "json",
+    max_files: Optional[int] = None,
+) -> List[str]:
     """
-    Lists .json files in source_dir (non-recursive).
+    Lists files of `source_format` in source_dir (non-recursive). Files whose
+    extension doesn't match `source_format` are invisible, not an error - see
+    `architecture.md`'s "Multi-format ingestion" section (`extensions_for`
+    resolves the tuple once, from the single registry in `formats.py`).
 
     Strategy, in order:
       1. dbutils.fs.ls - available on every Databricks compute type,
@@ -110,10 +119,12 @@ def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> 
          (serverless blocks _jvm), needed for direct cloud URIs like
          abfss:// or s3:// when dbutils isn't available.
     """
-    files = _try_dbutils_ls(source_dir)
+    extensions = extensions_for(source_format)
+
+    files = _try_dbutils_ls(source_dir, extensions)
 
     if files is None:
-        files = _try_posix_ls(source_dir)
+        files = _try_posix_ls(source_dir, extensions)
 
     if files is None:
         # Classic-cluster / spark-submit fallback for cloud URIs.
@@ -127,10 +138,19 @@ def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> 
         files = sorted(
             str(status.getPath().toString())
             for status in statuses
-            if status.isFile()
-            and str(status.getPath().getName()).lower().endswith((".json", ".jsonl"))
+            if status.isFile() and str(status.getPath().getName()).lower().endswith(extensions)
         )
 
     if max_files is not None:
         files = files[:max_files]
     return files
+
+
+def list_json_files(spark, source_dir: str, max_files: Optional[int] = None) -> List[str]:
+    """
+    Lists .json files in source_dir (non-recursive).
+
+    Deprecated: use `list_source_files(spark, source_dir, source_format="json",
+    max_files=max_files)` instead. This wrapper will be removed at 1.0.
+    """
+    return list_source_files(spark, source_dir, source_format="json", max_files=max_files)
