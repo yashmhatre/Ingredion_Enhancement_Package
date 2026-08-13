@@ -103,4 +103,19 @@ mkdir -p "$DEST_DIR"
 find "$DEST_DIR" -maxdepth 1 -type f ! -name 'README.md' -delete
 cp "$TMP_DIR"/agents/*.md "$DEST_DIR"/
 
+# Record what was actually installed, so a later `agents.lock` bump that
+# nobody re-bootstrapped is detectable. Without this, a stale .claude/agents/
+# is invisible: the directory still holds a plausible number of .md files, so
+# "is it populated?" answers yes while the content is versions behind. That
+# exact drift went unnoticed here once already. scripts/verify.sh diffs this
+# stamp against agents.lock.
+cat > "${DEST_DIR}/.fetched" <<STAMP
+# Written by scripts/bootstrap_agents.sh - do not edit by hand.
+# Compared against agents.lock by scripts/verify.sh.
+version=${VERSION}
+sha=${ACTUAL_SHA}
+fetched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+STAMP
+
 echo "Done. $(ls "$DEST_DIR"/*.md | grep -v README.md | wc -l | tr -d ' ') agent file(s) written to ${DEST_DIR}/ (gitignored)."
+echo "Installed ${VERSION} (${ACTUAL_SHA})."
