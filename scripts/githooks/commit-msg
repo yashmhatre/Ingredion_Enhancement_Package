@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# commit-msg hook: enforce path ownership before the commit is written.
+#
+# Install for this clone (one-time, per clone -- git hooks are never cloned):
+#     git config core.hooksPath scripts/githooks
+#
+# Uses commit-msg rather than pre-commit because the check needs the commit
+# message: a change to a guarded path must declare `Agent: <role>`, and
+# pre-commit runs before that message exists.
+#
+# CI runs the same check on the PR, so skipping this locally delays the
+# failure rather than avoiding it.
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Prefer an interpreter that exists over one with the tidiest name: on Windows
+# `python3` is frequently a bare Store alias while `python` is the real
+# environment. This check is stdlib-only, so any working interpreter will do.
+PY="$(command -v python || command -v python3 || true)"
+if [[ -z "$PY" ]]; then
+  echo "commit-msg: no python interpreter on PATH - skipping path-ownership check." >&2
+  echo "            CI will still run it on the PR." >&2
+  exit 0
+fi
+
+exec "$PY" "${REPO_ROOT}/scripts/check_path_ownership.py" --commit-msg "$1"

@@ -119,3 +119,15 @@ STAMP
 
 echo "Done. $(ls "$DEST_DIR"/*.md | grep -v README.md | wc -l | tr -d ' ') agent file(s) written to ${DEST_DIR}/ (gitignored)."
 echo "Installed ${VERSION} (${ACTUAL_SHA})."
+
+# Render the Copilot-lane definitions as VS Code chat modes. Copilot agent
+# mode cannot read .claude/agents/, so the same source is emitted twice; see
+# scripts/generate_copilot_chatmodes.py for why that output is gitignored too.
+# Not fatal if it fails: the Claude lane is fully functional without it, and a
+# broken second rendering should not block the first.
+PY_BIN="$(command -v python3 || command -v python || true)"
+if [[ -n "$PY_BIN" ]]; then
+  "$PY_BIN" "$(dirname "${BASH_SOURCE[0]}")/generate_copilot_chatmodes.py" ||     echo "warning: Copilot chat mode generation failed; the Claude lane is unaffected." >&2
+else
+  echo "warning: no python interpreter - skipped Copilot chat mode generation." >&2
+fi
