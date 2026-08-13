@@ -4,11 +4,13 @@ import uuid
 
 import pytest
 
+from bronze_ingest import formats as formats_module
 from bronze_ingest.directory_ingestion import (
     build_table_name,
     list_json_files,
     sanitize_table_name,
 )
+from bronze_ingest.fs import list_source_files
 
 
 def _write(write_dir, name, content):
@@ -86,6 +88,92 @@ def test_list_json_files_missing_dir_raises(spark, json_test_dir):
     _, source_dir = json_test_dir
     with pytest.raises(FileNotFoundError):
         list_json_files(spark, f"{source_dir}/does_not_exist")
+
+
+# ---- list_source_files (#304): format-aware discovery, list_json_files's
+# replacement. list_json_files itself is now a two-line wrapper delegating
+# here with source_format="json" - the tests above are unmodified and are
+# the no-op proof for that delegation. ----
+
+
+def test_list_source_files_json_matches_list_json_files(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "b.jsonl", json.dumps({"x": 2}))
+    _write(write_dir, "notes.txt", "ignore me")
+
+    files = list_source_files(spark, source_dir, source_format="json")
+    names = sorted(os.path.basename(f) for f in files)
+    assert names == ["a.json", "b.jsonl"]
+
+
+def test_list_source_files_default_format_is_json(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "notes.txt", "ignore me")
+
+    files = list_source_files(spark, source_dir)
+    names = sorted(os.path.basename(f) for f in files)
+    assert names == ["a.json"]
+
+
+def test_list_source_files_max_files(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    for i in range(5):
+        _write(write_dir, f"f{i}.json", json.dumps({"i": i}))
+    files = list_source_files(spark, source_dir, source_format="json", max_files=2)
+    assert len(files) == 2
+
+
+def test_list_source_files_missing_dir_raises(spark, json_test_dir):
+    _, source_dir = json_test_dir
+    with pytest.raises(FileNotFoundError):
+        list_source_files(spark, f"{source_dir}/does_not_exist", source_format="json")
+
+
+def test_list_source_files_unregistered_format_raises(spark, json_test_dir):
+    # csv is not in the format registry yet - that's #310. list_source_files
+    # must fail the same way config validation does today (a ValueError
+    # naming what IS supported), not silently return nothing and not
+    # hardcode a .csv extension ahead of the registry existing.
+    _, source_dir = json_test_dir
+    with pytest.raises(ValueError, match="source_format must be one of"):
+        list_source_files(spark, source_dir, source_format="csv")
+
+
+def test_list_source_files_extension_threading_is_per_format(spark, json_test_dir, monkeypatch):
+    """
+    #304's acceptance criteria: given a directory with a.json, b.jsonl,
+    c.csv and notes.txt, source_format="json" returns exactly the two JSON
+    files and source_format="csv" returns exactly the CSV file - neither
+    errors on the other's files (architecture.md: "files of other formats
+    are invisible, not an error").
+
+    csv isn't registered in `formats.py` yet (#310), so a throwaway spec is
+    registered in `formats.FORMATS` for the duration of this test only, via
+    monkeypatch (auto-reverted). This proves the extensions tuple is
+    resolved per-call through `formats.extensions_for` rather than
+    hardcoded, without landing real csv support ahead of its own issue.
+    """
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "b.jsonl", json.dumps({"x": 2}))
+    _write(write_dir, "c.csv", "x,y\n1,2\n")
+    _write(write_dir, "notes.txt", "ignore me")
+
+    fake_csv_spec = formats_module.FormatSpec(
+        name="csv",
+        extensions=(".csv",),
+        cloudfiles_format="csv",
+        allowed_reader_options=frozenset(),
+    )
+    monkeypatch.setitem(formats_module.FORMATS, "csv", fake_csv_spec)
+
+    json_files = list_source_files(spark, source_dir, source_format="json")
+    csv_files = list_source_files(spark, source_dir, source_format="csv")
+
+    assert sorted(os.path.basename(f) for f in json_files) == ["a.json", "b.jsonl"]
+    assert sorted(os.path.basename(f) for f in csv_files) == ["c.csv"]
 
 
 # ---- file archival tests (real filesystem, local or Databricks Volume) ----
