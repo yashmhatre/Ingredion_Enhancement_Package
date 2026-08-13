@@ -49,28 +49,21 @@ path from candidate to validated case.
 
 ## Agent roster and approval tiers
 
-This repo runs **10 purpose-built subagents**, organized as a real reporting
-structure rather than a flat list — see `docs/agent_governance.md`'s "Agent
-org chart" for the full diagram. Short version: Yash, the Project Lead
-(human), sits at the top. `principal-data-engineer` is the managerial and
-senior-technical layer directly below Yash — the three branches below
-(`business-stakeholder`; `business-analyst` + `solution-architect`;
-`devops-lead`) all report to it, and it holds standing authority to review
-and merge Tier 1 PRs into `dev` on its own, escalating anything that feels
-like more than Tier 1 rather than self-approving. Yash still holds every
-Tier 2/3 sign-off directly — that authority does not shift.
-`business-stakeholder` researches and proposes candidate opportunities when
-no real ask exists yet, and always hands them to `business-analyst` rather
-than skipping ahead. `business-analyst` and `solution-architect` are peers
-who jointly direct `data-engineer`, `qa-engineer`, and `data-analyst` on the
-delivery side. `devops-lead` sequences `devops-engineer` and
-`platform-engineer` on the DevOps side. Prefer the matching subagent over
-general-purpose editing when one fits. `business-analyst` captures and
-reconciles business asks against what's already built or decided (from a
-human *or* from `business-stakeholder`'s research — same reconciliation
-either way); `solution-architect` turns an Approved case into a technical
-design. Neither `solution-architect` nor `business-stakeholder` writes
-pipeline code themselves.
+This repo runs **7 purpose-built subagents**, defined by function and
+substrate rather than by an org-chart metaphor — see
+`docs/agent_governance.md` for the full table and the approval tiers. Short
+version: Yash, the Project Lead (human, a Senior Principal Data Engineer),
+**signs off; he does not route work and does not implement.** `orchestrator`
+is the routing layer that exists so he doesn't have to be — it delegates,
+merges routine Tier 1 work into `dev`, and assembles sign-off packets for
+everything else. `architect` turns an ask into a reconciled case and then a
+technical design, and owns `docs/business_requirements.md`. `reviewer` gives
+an adversarial pre-merge read on the escalation paths, and is separate from
+`orchestrator` precisely so the agent that routes work doesn't also bless it.
+`builder` (`bronze_ingest/`), `notebook-qa` (`notebooks/` + notebook tests),
+and `platform` (deploy config, drafts only) implement. `scout` runs on a free
+local model and produces briefs — **its output is an index, never evidence.**
+Prefer the matching subagent over general-purpose editing when one fits.
 
 **The actual agent definitions — prompts, tool grants, workflow
 instructions — are proprietary and are not stored in this repo, including in
@@ -198,12 +191,10 @@ If `git status` ever shows one of those files as untracked-and-stageable
 with real prompt content in it, that's a sign the gitignore or the fetch
 script has drifted — fix that before committing anything else.
 
-**A researched candidate is not a validated case.** `business-stakeholder`
-can propose a sourced opportunity when no real ask exists, but it never
-skips `business-analyst`'s reconciliation, never gets a fabricated owner or
-impact figure, and never reaches `solution-architect` or an implementing
-agent directly. Treat any candidate the same as an unreconciled human ask
-until `business-analyst` says otherwise.
+**A brief is not a finding.** `scout` runs on a small local model, which
+produces fluent, confident, wrong summaries. Its output tells you where to
+look; it never substitutes for looking. The moment a decision rests on a
+`scout` summary being correct, verify the source first.
 
 ## What to work on
 

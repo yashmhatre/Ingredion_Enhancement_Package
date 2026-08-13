@@ -38,7 +38,7 @@ def run(payload, raw=None):
     return proc.returncode, proc.stderr
 
 
-def edit(path, agent="solution-architect", cwd=WIN_CWD, tool="Edit"):
+def edit(path, agent="architect", cwd=WIN_CWD, tool="Edit"):
     return {
         "agent_type": agent,
         "tool_name": tool,
@@ -72,27 +72,37 @@ CASES = [
      edit(WIN_CWD + r"\databricks.yml"), BLOCK),
     ("Write is blocked too",
      edit("bronze_layer/bronze_ingest/audit.py", tool="Write"), BLOCK),
-    ("every restricted agent is covered",
-     edit("bronze_layer/bronze_ingest/config.py", agent="principal-data-engineer"), BLOCK),
-    ("business-analyst covered",
-     edit("bronze_layer/bronze_ingest/config.py", agent="business-analyst"), BLOCK),
-    ("devops-lead covered",
-     edit("bronze_layer/resources/bronze_ingest_jobs.yml", agent="devops-lead"), BLOCK),
+    ("orchestrator covered",
+     edit("bronze_layer/bronze_ingest/config.py", agent="orchestrator"), BLOCK),
+    ("reviewer covered",
+     edit("bronze_layer/bronze_ingest/config.py", agent="reviewer"), BLOCK),
+    ("scout covered",
+     edit("bronze_layer/resources/bronze_ingest_jobs.yml", agent="scout"), BLOCK),
+    # A retired role name must NOT be silently restricted -- but more
+    # importantly this case documents the failure mode: if RESTRICTED_AGENTS
+    # still held the old names, every case above would ALLOW and the suite
+    # would look green while the hook guarded nothing.
+    ("retired role name is not restricted",
+     edit("bronze_layer/bronze_ingest/config.py", agent="principal-data-engineer"), ALLOW),
 
     # --- must NOT block ---
-    ("data-engineer owns this path",
-     edit("bronze_layer/bronze_ingest/config.py", agent="data-engineer"), ALLOW),
+    ("builder owns this path",
+     edit("bronze_layer/bronze_ingest/config.py", agent="builder"), ALLOW),
+    ("notebook-qa owns notebooks",
+     edit("bronze_layer/notebooks/run_ingestion.py", agent="notebook-qa"), ALLOW),
+    ("platform owns resources and databricks.yml",
+     edit("databricks.yml", agent="platform"), ALLOW),
     ("main agent has no agent_type",
      {"tool_name": "Edit", "cwd": WIN_CWD,
       "tool_input": {"file_path": "bronze_layer/bronze_ingest/config.py"}}, ALLOW),
     ("docs are allowed",
      edit("docs/roadmap.md"), ALLOW),
     ("business_requirements.md is allowed",
-     edit("docs/business_requirements.md", agent="business-analyst"), ALLOW),
+     edit("docs/business_requirements.md", agent="architect"), ALLOW),
     ("non-Edit/Write tool",
      edit("bronze_layer/bronze_ingest/config.py", tool="Read"), ALLOW),
     ("missing file_path",
-     {"agent_type": "solution-architect", "tool_name": "Edit",
+     {"agent_type": "architect", "tool_name": "Edit",
       "cwd": WIN_CWD, "tool_input": {}}, ALLOW),
     # segment matching, not substring: a sibling directory whose name merely
     # starts with a restricted one must stay writable.
