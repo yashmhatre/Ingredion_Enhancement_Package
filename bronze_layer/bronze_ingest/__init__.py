@@ -4,6 +4,7 @@ from .contract import ContractError, DataContract, validate_dataframe, validate_
 from .directory_ingestion import build_table_name, ingest_directory_to_bronze, sanitize_table_name
 from .logging_utils import get_logger
 from .pipeline import BronzeIngestion, ingest_json_to_bronze
+from .profiling import ProfileConfig, profile_table, profile_tables
 from .quality import DataQualityError
 from .replay import reprocess_quarantine, reprocess_quarantined_files
 from .streaming_reader import JsonLinesTruncationError
@@ -25,6 +26,9 @@ __all__ = [
     "reprocess_quarantined_files",
     "apply_catalog_metadata",
     "get_logger",
+    "ProfileConfig",
+    "profile_table",
+    "profile_tables",
 ]
 # Single source of truth for the package version: setup.py parses this
 # string rather than declaring its own. They previously disagreed (wheel
