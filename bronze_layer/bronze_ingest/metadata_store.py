@@ -77,6 +77,10 @@ VOCABULARIES: Dict[str, frozenset] = {
     "evolution_class": frozenset({"NON_BREAKING", "BREAKING", "REQUIRES_REVIEW"}),
     #: Produced by profiling.describe_columns.
     "column_kind": frozenset({"SCALAR", "STRUCT", "ARRAY", "MAP"}),
+    #: key_detector produces the first two. FOREIGN_KEY is declared here and
+    #: not produced yet: it is a claim about two tables, needs a join to
+    #: verify, and belongs to RelationshipDetector (#298 phase 4).
+    "key_candidate_type": frozenset({"PRIMARY_KEY", "UNIQUE", "FOREIGN_KEY"}),
     "model_status": frozenset(
         {
             "DISCOVERED",
