@@ -34,11 +34,12 @@ fetch instead of committing agent content directly here, encrypted or not.
 See `docs/agent_governance.md`'s "The team" section for the full table, the
 lanes, and the dispatch ladder. Short version: Yash (Senior Principal Data
 Engineer) signs off and does not route or implement. `orchestrator` routes
-and merges routine Tier 1 work; `architect` designs; `reviewer` reviews the
-escalation paths; `builder`, `notebook-qa`, and `platform` implement; `scout`
-produces cheap briefs on a local model. **Seven subagents in total**, pinned
-at `agents.lock`'s current version.
+and merges all Tier 1 work into `dev`; `architect` designs; `reviewer` reviews
+the escalation paths; `builder`, `notebook-qa`, and `platform` implement;
+`scout` produces cheap briefs on a local model. **Seven subagents in total**,
+pinned at `agents.lock`'s current version.
 
-Tier 2/3 actions (staging/prod deploys, GRANT/DROP/VACUUM, credentials,
-promotions) require Yash's own named sign-off — that authority sits with no
-agent.
+Merging into `dev` is the agent team's authority. Tier 2/3 actions
+(staging/prod deploys, GRANT/DROP/VACUUM, credentials, and the promotion PRs
+`dev` → `staging` and `staging` → `main`) require Yash's own named sign-off —
+that authority sits with no agent.

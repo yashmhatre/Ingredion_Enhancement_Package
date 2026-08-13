@@ -29,11 +29,15 @@ place as conventions prove wrong or new ones emerge, the same way
   `bronze_layer/docs/archive/`) with a banner explaining what superseded
   them. Content is preserved, not lost — old paths only get removed once
   the archived copy exists and every cross-reference is updated.
-- **Yash reviews Tier 2/3 before merge; `principal-data-engineer` reviews
-  Tier 1.** Agents open/update PRs into `dev` and stack related work onto
-  an existing open PR rather than opening duplicate/competing PRs — Tier 1
-  merges are approved by `principal-data-engineer` on its own authority,
-  Tier 2/3 still needs Yash's own named sign-off. See
+- **The boundary is the branch.** Everything into `dev` is the agent team's
+  call; everything out of it is Yash's. Agents open/update PRs into `dev`
+  and stack related work onto an existing open PR rather than opening
+  duplicate/competing PRs — `orchestrator` merges all Tier 1 work into `dev`
+  on its own authority once CI is genuinely green (real pass counts, not a
+  run the `WATCHED` regex skipped) and any escalation path the diff touches
+  has a `reviewer` verdict. Tier 2/3 — staging/prod deploys,
+  GRANT/DROP/VACUUM, credentials, and the promotion PRs `dev` → `staging`
+  and `staging` → `main` — still needs Yash's own named sign-off. See
   `docs/agent_governance.md` for the full tier system (Tier 0 autonomous →
   Tier 3 never-autonomous).
 - **Task-first.** Non-trivial work should trace back to an open GitHub
