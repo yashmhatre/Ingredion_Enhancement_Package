@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: block principal-data-engineer, solution-architect,
-business-analyst, and devops-lead from editing implementation code,
-notebooks, deploy resources, or databricks.yml directly.
+"""PreToolUse hook: block orchestrator, architect, reviewer, and scout from
+editing implementation code, notebooks, deploy resources, or databricks.yml
+directly.
 
-These four agents are the orchestration/planning layer. Implementation
-always goes through data-engineer, qa-engineer, or platform-engineer via a
+These four agents are the orchestration/planning/read-only layer.
+Implementation always goes through builder, notebook-qa, or platform via a
 filed issue -- see docs/agent_governance.md and AGENTS.md's agent roster.
+
+The names below are matched as exact strings. A roster rename that lands
+without updating this set leaves the hook matching nothing and failing open
+for every agent, silently -- so this set, its tests, and agents.lock are one
+change, never three.
 
 Reads the PreToolUse JSON payload from stdin. Exit 0 lets the tool call
 proceed; exit 2 blocks it and Claude sees stderr as the reason.
@@ -23,10 +28,10 @@ import json
 import sys
 
 RESTRICTED_AGENTS = {
-    "principal-data-engineer",
-    "solution-architect",
-    "business-analyst",
-    "devops-lead",
+    "orchestrator",
+    "architect",
+    "reviewer",
+    "scout",
 }
 
 RESTRICTED_PATH_PREFIXES = (
@@ -96,7 +101,7 @@ def main() -> int:
     sys.stderr.write(
         f"BLOCKED: {agent_type} may not {payload['tool_name'].lower()} "
         f"{relative_path or file_path}. This path belongs to "
-        "data-engineer, qa-engineer, or platform-engineer. File or "
+        "builder, notebook-qa, or platform. File or "
         "update an issue describing the change instead of editing it "
         "directly -- see docs/agent_governance.md.\n"
     )

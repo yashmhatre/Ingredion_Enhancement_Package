@@ -29,17 +29,16 @@ See `docs/private_agent_architecture.md` for the full comparison of options
 and why this project uses a private authoring repo + a pinned, versioned
 fetch instead of committing agent content directly here, encrypted or not.
 
-## Current org structure
+## Current team
 
-See `docs/agent_governance.md`'s "Agent org chart" section for who reports
-to whom and what each role does. Short version: Yash, the Project Lead
-(human) → `principal-data-engineer` (managerial + senior-technical layer,
-with standing authority to review and merge Tier 1 work into `dev` on its
-own) → three branches reporting to it: `business-stakeholder`
-(origination), `business-analyst` + `solution-architect` (jointly
-overseeing `data-engineer`, `qa-engineer`, `data-analyst`), and
-`devops-lead` (overseeing `devops-engineer`, `platform-engineer`). Ten
-subagents in total, pinned at `agents.lock`'s current version. Tier 2/3
-actions (staging/prod deploys, GRANT/DROP/VACUUM, credentials, promotions)
-still require Yash's own named sign-off — that authority does not shift to
-`principal-data-engineer`.
+See `docs/agent_governance.md`'s "The team" section for the full table, the
+lanes, and the dispatch ladder. Short version: Yash (Senior Principal Data
+Engineer) signs off and does not route or implement. `orchestrator` routes
+and merges routine Tier 1 work; `architect` designs; `reviewer` reviews the
+escalation paths; `builder`, `notebook-qa`, and `platform` implement; `scout`
+produces cheap briefs on a local model. **Seven subagents in total**, pinned
+at `agents.lock`'s current version.
+
+Tier 2/3 actions (staging/prod deploys, GRANT/DROP/VACUUM, credentials,
+promotions) require Yash's own named sign-off — that authority sits with no
+agent.
