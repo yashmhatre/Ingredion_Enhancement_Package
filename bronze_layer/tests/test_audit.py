@@ -500,3 +500,59 @@ def test_a_failed_batch_write_falls_back_to_individual_rows(spark, tmp_path, mon
     assert df.count() == 3, "every row must survive a failed batch write"
     assert sorted(r["row_count"] for r in df.collect()) == [0, 1, 2]
     assert attempts == [3, 1, 1, 1], "one batched attempt, then row by row"
+
+
+#: Set by `audited_run` itself on every row, so no caller needs to - and so
+#: their absence from _CALLER_FIELDS is correct rather than a bug.
+_AUTO_POPULATED = {
+    "run_id",
+    "table_name",
+    "status",
+    "write_mode",
+    "stream_batch_id",
+    "failure_stage",
+    "started_at",
+    "finished_at",
+    "error_message",
+    "source_path",
+}
+
+
+def test_every_audit_column_can_actually_be_filled():
+    """
+    A column in AUDIT_SCHEMA that is neither auto-populated nor listed in
+    _CALLER_FIELDS is permanently NULL, because `_row` builds the row as
+    `{f: result.get(f) for f in _CALLER_FIELDS}` - a caller can set the key
+    on the yielded dict all it likes and the value is dropped on the way out.
+
+    This is not hypothetical. `schema_drift_json` (#276), `tags_failed` and
+    `tag_outcome_json` (#64) were each set faithfully by pipeline.py, were
+    each missing from _CALLER_FIELDS, and were therefore NULL in every audit
+    row ever written - on the batch path as much as the streaming one. Both
+    features were reported as shipped, and every test covering them asserted
+    the value handed to the dict rather than the value that came back out of
+    the table.
+
+    So the guard is structural: adding a column to the schema without also
+    giving something a way to fill it fails here.
+    """
+    from bronze_ingest.audit import _CALLER_FIELDS
+
+    columns = {f.name for f in AUDIT_SCHEMA.fields}
+    fillable = _AUTO_POPULATED | set(_CALLER_FIELDS)
+
+    orphans = sorted(columns - fillable)
+    assert orphans == [], (
+        f"audit columns no caller can ever fill (always NULL): {orphans}. "
+        "Add them to _CALLER_FIELDS, or to _AUTO_POPULATED here if audited_run "
+        "sets them itself."
+    )
+
+
+def test_caller_fields_are_all_real_columns():
+    """The other direction: a key in _CALLER_FIELDS with no column behind it
+    is a value a caller believes is recorded and which goes nowhere."""
+    from bronze_ingest.audit import _CALLER_FIELDS
+
+    columns = {f.name for f in AUDIT_SCHEMA.fields}
+    assert sorted(set(_CALLER_FIELDS) - columns) == []

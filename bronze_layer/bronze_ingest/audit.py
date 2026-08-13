@@ -349,6 +349,19 @@ def record_replay_run(
 #: success and failure paths cannot drift apart - they previously listed the
 #: same keys twice, which is how a new column gets recorded on success and
 #: silently omitted on failure.
+#:
+#: `_row` builds the audit row as `{f: result.get(f) for f in _CALLER_FIELDS}`,
+#: so a key absent from this tuple is SILENTLY DROPPED however faithfully the
+#: caller sets it. That is not hypothetical: `schema_drift_json` (#276),
+#: `tags_failed` and `tag_outcome_json` (#64) were all set by pipeline.py,
+#: were all missing here, and were therefore NULL in every audit row ever
+#: written - on the batch path as much as the streaming one. Both features
+#: were reported as shipped. Found while adding the streaming half of #256,
+#: by a test that read the persisted row back instead of trusting the dict.
+#:
+#: `test_every_audit_column_can_actually_be_filled` now makes this
+#: impossible to reintroduce: fixing the schema without fixing this list
+#: fails there.
 _CALLER_FIELDS = (
     "row_count",
     "source_row_count",
@@ -358,6 +371,9 @@ _CALLER_FIELDS = (
     "quarantined_row_count",
     "schema_fingerprint",
     "schema_changed",
+    "schema_drift_json",
+    "tags_failed",
+    "tag_outcome_json",
 )
 
 
