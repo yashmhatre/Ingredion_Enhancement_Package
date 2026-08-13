@@ -315,7 +315,7 @@ class BronzeIngestion:
         # audited_run opens. The registry still has it. Fixing that needs an
         # audit row with no batch behind it, which is a bigger change than
         # this issue.
-        pending_schema_audit = {
+        pending_schema_audit: Optional[Dict[str, Any]] = {
             "schema_fingerprint": fingerprint,
             "schema_changed": schema_changed,
             "schema_drift_json": schema_drift,
