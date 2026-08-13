@@ -11,8 +11,8 @@ exercised deliberately.
 import pytest
 
 import bronze_ingest.databricks_fs as dfs
-from bronze_ingest.fs import discovery
 from bronze_ingest.formats import extensions_for
+from bronze_ingest.fs import discovery
 
 # #304 made the extension filter a required argument on the private listing
 # helpers. Resolve it from the registry rather than restating (".json",
