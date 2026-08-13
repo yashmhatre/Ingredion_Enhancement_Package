@@ -42,3 +42,6 @@ venv/
 # output. See docs/private_agent_architecture.md.
 .claude/agents/*.md
 !.claude/agents/README.md
+# Records which agents.lock version the local .claude/agents/ was fetched at,
+# so scripts/verify.sh can catch the directory silently lagging the pin.
+.claude/agents/.fetched
