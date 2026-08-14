@@ -42,9 +42,9 @@ from .fs import (
     move_file_direct,
     retry_state_path,
 )
-from .json_reader import read_json
 from .logging_utils import logger
 from .naming import build_table_name, sanitize_table_name
+from .readers import read_source
 
 # Re-exported for backwards compatibility. `sanitize_table_name` and
 # `build_table_name` are in the package's `__all__`, and the CI wheel check
@@ -191,7 +191,7 @@ def _ingest_folder_as_table(
             cfg = IngestionConfig.from_dict(
                 {**shared_config, "source_path": file_path, "table": table}
             )
-            df = read_json(spark, cfg)
+            df = read_source(spark, cfg)
             df.count()  # eagerly validate this file is actually readable,
             # without persisting - files stay in place, safe to
             # re-read again later at final write time
