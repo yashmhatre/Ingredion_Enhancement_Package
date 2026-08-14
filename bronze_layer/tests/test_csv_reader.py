@@ -37,7 +37,7 @@ def csv_format(monkeypatch):
             name="csv",
             extensions=(".csv",),
             cloudfiles_format="csv",
-            allowed_reader_options=frozenset({"multiLine", "sep", "quote", "escape"}),
+            allowed_reader_options=frozenset({"multiLine", "sep", "quote", "escape", "mode"}),
         ),
     )
 
@@ -85,7 +85,25 @@ class _FakeSpark:
         self.read = _RecordingRead(sink)
 
 
-def _capture(config) -> dict:
+class _FakeCol:
+    """`col()` requires an active SparkContext, which is the one thing these
+    tests exist to avoid needing. We are asserting which columns read_csv
+    asks for, not what Spark builds from them."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def alias(self, other):
+        return _FakeCol(f"{self.name} AS {other}")
+
+    def __str__(self):
+        return self.name
+
+
+def _capture(config, monkeypatch) -> dict:
+    import pyspark.sql.functions as F
+
+    monkeypatch.setattr(F, "col", lambda name: _FakeCol(name))
     sink = {"options": [], "schema": None, "loaded": None, "selected": None}
     cr.read_csv(_FakeSpark(sink), config)
     sink["option_dict"] = dict(sink["options"])
@@ -101,7 +119,7 @@ def _cfg(csv_format_installed=True, **kw):
 # ---- the rule this module exists to enforce -----------------------------
 
 
-def test_config_multiline_never_reaches_the_csv_reader(csv_format):
+def test_config_multiline_never_reaches_the_csv_reader(csv_format, monkeypatch):
     """
     CSV's `multiLine` means "a quoted field may contain a newline" - an
     unrelated meaning to JSON's "this file is one document". The deployed
@@ -111,64 +129,66 @@ def test_config_multiline_never_reaches_the_csv_reader(csv_format):
 
     Asserted with multiline explicitly True, which is also the default.
     """
-    sink = _capture(_cfg(multiline=True))
+    sink = _capture(_cfg(multiline=True), monkeypatch)
     assert "multiLine" not in sink["option_dict"], sink["options"]
 
 
-def test_multiline_still_reachable_explicitly_through_reader_options(csv_format):
+def test_multiline_still_reachable_explicitly_through_reader_options(csv_format, monkeypatch):
     """The escape hatch must remain: a source whose quoted fields genuinely
     contain newlines sets it deliberately, and that value is what applies."""
-    sink = _capture(_cfg(multiline=False, reader_options={"multiLine": "true"}))
+    sink = _capture(_cfg(multiline=False, reader_options={"multiLine": "true"}), monkeypatch)
     assert sink["option_dict"]["multiLine"] == "true"
 
 
 # ---- option shape --------------------------------------------------------
 
 
-def test_fixed_options(csv_format):
-    sink = _capture(_cfg())
+def test_fixed_options(csv_format, monkeypatch):
+    sink = _capture(_cfg(), monkeypatch)
     assert sink["format"] == "csv"
     assert sink["option_dict"]["header"] is True
     assert sink["option_dict"]["inferSchema"] is True
     assert sink["option_dict"]["mode"] == "PERMISSIVE"
 
 
-def test_header_and_infer_schema_follow_their_config_fields(csv_format):
-    sink = _capture(_cfg(csv_header=False, csv_infer_schema=False, schema_hint_ddl="a STRING"))
+def test_header_and_infer_schema_follow_their_config_fields(csv_format, monkeypatch):
+    sink = _capture(
+        _cfg(csv_header=False, csv_infer_schema=False, schema_hint_ddl="a STRING"), monkeypatch
+    )
     assert sink["option_dict"]["header"] is False
     assert sink["option_dict"]["inferSchema"] is False
 
 
-def test_corrupt_record_options_only_with_a_schema_hint(csv_format):
+def test_corrupt_record_options_only_with_a_schema_hint(csv_format, monkeypatch):
     """Not style: Spark only materialises columnNameOfCorruptRecord for CSV
     when the column is declared in the read schema. Setting it against an
     inferred schema would imply a capture that does not happen."""
-    without = _capture(_cfg())
+    without = _capture(_cfg(), monkeypatch)
     assert "columnNameOfCorruptRecord" not in without["option_dict"]
     assert "rescuedDataColumn" not in without["option_dict"]
 
     cfg = _cfg(schema_hint_ddl="id INT, name STRING")
-    with_hint = _capture(cfg)
+    with_hint = _capture(cfg, monkeypatch)
     assert with_hint["option_dict"]["columnNameOfCorruptRecord"] == cfg.corrupt_record_column
     assert with_hint["option_dict"]["rescuedDataColumn"] == cfg.rescued_data_column
 
 
-def test_reader_options_are_applied_last_so_an_override_wins(csv_format):
+def test_reader_options_are_applied_last_so_an_override_wins(csv_format, monkeypatch):
     """Same precedence as read_json - config.reader_options runs after the
     fixed options, so an explicit value beats the default."""
-    sink = _capture(_cfg(reader_options={"mode": "FAILFAST"}))
+    sink = _capture(_cfg(reader_options={"mode": "FAILFAST"}), monkeypatch)
     assert sink["option_dict"]["mode"] == "FAILFAST"
     keys = [k for k, _ in sink["options"]]
     assert keys.index("mode") < len(keys) - 1 or keys.count("mode") == 2
 
 
-def test_schema_applied_only_when_ddl_is_set(csv_format):
-    assert _capture(_cfg())["schema"] is None
-    assert _capture(_cfg(schema_hint_ddl="id INT"))["schema"] == "id INT"
+def test_schema_applied_only_when_ddl_is_set(csv_format, monkeypatch):
+    assert _capture(_cfg(), monkeypatch)["schema"] is None
+    assert _capture(_cfg(schema_hint_ddl="id INT"), monkeypatch)["schema"] == "id INT"
 
 
-def test_lineage_column_is_selected(csv_format):
-    sink = _capture(_cfg())
+def test_lineage_column_is_selected(csv_format, monkeypatch):
+    sink = _capture(_cfg(), monkeypatch)
     assert sink["loaded"] == "/tmp/x.csv"
     assert any("_input_file_name" in s for s in sink["selected"]), sink["selected"]
 
