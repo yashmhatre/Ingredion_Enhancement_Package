@@ -426,17 +426,17 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     _write(write_dir, "orders/good1.json", json.dumps({"id": 1}))
     _write(write_dir, "orders/good2.json", json.dumps({"id": 2}))
 
-    from bronze_ingest import json_reader as jr
+    from bronze_ingest import readers
     from bronze_ingest.pipeline import BronzeIngestion
 
-    real_read_json = jr.read_json
+    real_read_source = readers.read_source
 
-    def flaky_read_json(spark, config):
+    def flaky_read_source(spark, config):
         if "good2" in config.source_path:
             raise ValueError("simulated bad file")
-        return real_read_json(spark, config)
+        return real_read_source(spark, config)
 
-    monkeypatch.setattr(di, "read_json", flaky_read_json)
+    monkeypatch.setattr(di, "read_source", flaky_read_source)
 
     def fake_run_on_dataframe(self, df):
         return {

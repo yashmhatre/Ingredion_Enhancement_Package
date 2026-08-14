@@ -2,7 +2,7 @@
 Top-level orchestrator: BronzeIngestion.
 
 This is the single entry point most users need. It wires together:
-  json_reader.read_json -> add audit columns -> bronze_writer.write_bronze
+  readers.read_source -> add audit columns -> bronze_writer.write_bronze
 """
 
 from typing import Any, Dict, Optional
@@ -21,9 +21,9 @@ from .catalog_metadata import (
     summarise_tag_outcome,
 )
 from .config import IngestionConfig
-from .json_reader import read_json
 from .logging_utils import logger
 from .quality import enforce_quality, write_quarantine
+from .readers import read_source
 from .schema_registry import record_schema
 from .streaming_reader import assert_no_silent_truncation, get_trigger_kwargs, read_json_stream
 
@@ -52,7 +52,7 @@ class BronzeIngestion:
 
     # ---- core run ----
     def read(self):
-        return read_json(self.spark, self.config)
+        return read_source(self.spark, self.config)
 
     def transform(self, df):
         df = add_audit_columns(df, self.config)
