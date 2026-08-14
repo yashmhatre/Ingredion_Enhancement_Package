@@ -14,5 +14,5 @@
 #
 # See docs/private_agent_architecture.md for the full model.
 
-version=v2.0.1
-sha=136466b9acc18b7bef2d1ec92224b52bdbf95cc2
+version=v2.1.0
+sha=e9cfeefb1671e9f5c1b73ead70befcc38af9c826
