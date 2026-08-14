@@ -391,7 +391,10 @@ def test_folder_with_no_json_is_skipped_not_failed(spark, json_test_dir):
 
     assert len(results) == 1
     assert results[0]["status"] == "skipped"
-    assert results[0]["reason"] == "no JSON files in folder"
+    # #307: the reason echoes the configured `source_format` verbatim, so it
+    # is the lowercase registry key rather than the word "JSON". The status
+    # semantics are unchanged - that is what the rest of this test guards.
+    assert results[0]["reason"] == "no json files in folder"
     assert "error" not in results[0]
     # The job task keys off "failed" specifically - a skip must not appear there.
     assert [r for r in results if r["status"] == "failed"] == []
@@ -836,3 +839,137 @@ def test_both_paths_produce_the_same_shape_for_the_same_failure(tmp_path):
     assert set(folder_inner) - set(per_file) == set()
     for key in ("file", "status", "error", "attempts"):
         assert per_file[key] == folder_inner[key]
+
+
+# ---- #307: discovery is format-aware end to end -------------------------
+
+
+def _fake_csv_spec():
+    return formats_module.FormatSpec(
+        name="csv",
+        extensions=(".csv",),
+        cloudfiles_format="csv",
+        allowed_reader_options=frozenset(),
+    )
+
+
+def test_skipped_reason_names_the_configured_format(spark, json_test_dir, monkeypatch):
+    """
+    #307's acceptance criterion. Before this, a CSV config found nothing and
+    reported it as a JSON problem - the operator is told the wrong thing
+    about why their run did nothing, which is worse than an unhelpful
+    message because it sends them looking at the wrong files.
+
+    csv is not registered yet (#310), so a throwaway FormatSpec is installed
+    for this test only.
+    """
+    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    # A folder holding only JSON, discovered under source_format="csv".
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default", source_format="csv"
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "skipped"
+    assert results[0]["reason"] == "no csv files in folder"
+    # The deliberate skipped-vs-failed distinction must survive the rewording.
+    assert "error" not in results[0]
+    assert [r for r in results if r["status"] == "failed"] == []
+
+
+def test_source_format_discovers_and_ingests_only_that_format(spark, json_test_dir, monkeypatch):
+    """
+    The other half of the acceptance criterion: only the configured format's
+    files are ingested, and the other format's are invisible rather than an
+    error (architecture.md: "files of other formats are invisible, not an
+    error").
+
+    Needs a csv *reader* as well as a csv FormatSpec - #306's `read_source`
+    raises for a registered format with no reader, by design. Both are
+    monkeypatched for this test only; neither lands real csv support.
+    """
+    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
+
+    read_calls = []
+
+    def fake_csv_reader(spark_, config):
+        read_calls.append(config.source_path)
+        # Reuse the JSON reader's output shape - this test is about which
+        # files are routed here, not about CSV parsing.
+        return spark_.createDataFrame([(1,)], "id int")
+
+    from bronze_ingest import readers
+    from bronze_ingest.pipeline import BronzeIngestion
+
+    monkeypatch.setitem(readers._BATCH_READERS, "csv", fake_csv_reader)
+
+    def fake_run_on_dataframe(self, df):
+        return {
+            "table": self.config.full_table_name,
+            "row_count": df.count(),
+            "quarantined_row_count": 0,
+        }
+
+    monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
+
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.csv", "id\n1\n")
+    _write(write_dir, "customers.json", json.dumps({"id": 2}))
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default", source_format="csv"
+    )
+
+    ingested = sorted(os.path.basename(f) for f in read_calls)
+    assert ingested == ["orders.csv"], f"routed the wrong files: {ingested}"
+    assert len(results) == 1
+    assert results[0]["status"] == "success"
+
+
+def test_explicit_source_format_beats_base_config(spark, json_test_dir, monkeypatch):
+    """
+    The two routes must never be silently followed at once. The explicit
+    parameter wins - the same "explicit kwarg beats base_config" precedence
+    every other field already has.
+    """
+    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
+        base_config={"source_format": "json"},
+        source_format="csv",
+    )
+
+    # csv won: the JSON file was not discovered.
+    assert results[0]["reason"] == "no csv files in folder"
+
+
+def test_base_config_source_format_applies_when_the_parameter_is_omitted(
+    spark, json_test_dir, monkeypatch
+):
+    """Leaving the parameter None must leave base_config's value untouched -
+    the pre-#307 behaviour for callers who already set it that way."""
+    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
+        base_config={"source_format": "csv"},
+    )
+
+    assert results[0]["reason"] == "no csv files in folder"
