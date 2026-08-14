@@ -8,11 +8,16 @@
 # reviewed and tagged in the private repo.
 #
 # `version` is the release tag; `sha` is the commit that tag resolved
-# to when it was reviewed. Both are checked on every fetch, because a
+# to when it was reviewed. Derive it with
+# `git rev-parse "refs/tags/<tag>^{commit}"`, NOT `git rev-parse <tag>`:
+# from v2.1.0 onward these are annotated tags, so the bare form returns the
+# tag *object* instead. Pinning that makes every fetch fail with "the tag
+# has been moved since it was pinned" - which fails closed, but points at
+# the wrong cause. Both are checked on every fetch, because a
 # tag is a movable name and this repo's plan does not offer tag
 # protection rulesets. Bump both together, in the same PR.
 #
 # See docs/private_agent_architecture.md for the full model.
 
-version=v2.0.1
-sha=136466b9acc18b7bef2d1ec92224b52bdbf95cc2
+version=v2.1.1
+sha=1104b0e854f4590d6868a1fa328e0d3e934bd0b1
