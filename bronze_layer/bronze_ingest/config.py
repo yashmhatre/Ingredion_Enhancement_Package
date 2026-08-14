@@ -64,6 +64,16 @@ class IngestionConfig:
     # one of formats.supported_formats(); checked in __post_init__.
     source_format: str = "json"
     multiline: bool = True  # set True if each file is a single JSON document (not JSON-lines)
+    # CSV-only; ignored for every other source_format. Spark's CSV reader
+    # defaults this to False, which yields positional column names
+    # ("_c0".."_cN") instead of the real header row - see the __post_init__
+    # check below for why that default would be unsafe here.
+    csv_header: bool = True
+    # CSV-only; ignored for every other source_format. Spark's CSV reader
+    # defaults this to False, which yields all-string columns - the same
+    # format-dependent-schema trap documented for batch JSON inference in
+    # bronze_layer/config/contracts/orders.yaml.
+    csv_infer_schema: bool = True
     # optional DDL string to enforce a read schema instead of inferring it
     schema_hint_ddl: Optional[str] = None
     # extra options passed straight to spark.read.options();
@@ -288,6 +298,17 @@ class IngestionConfig:
             raise ValueError(
                 f"source_format must be one of {formats.supported_formats()}, "
                 f"got {self.source_format!r}"
+            )
+        if self.source_format == "csv" and self.csv_header is False and not self.schema_hint_ddl:
+            raise ValueError(
+                "source_format='csv' with csv_header=False and no schema_hint_ddl. Headerless "
+                "CSV produces positional column names ('_c0', '_c1', ...) instead of the real "
+                "ones - required_columns, merge_keys, unique_columns, cluster_by, "
+                "column_comments and the data contract all become unusable without hand-mapping "
+                "positions. Worse, those names are positional: an upstream column insertion "
+                "silently shifts data under the same stable '_cN' name and the write still "
+                "succeeds, because '_c0' is a perfectly legal Delta column name. Set "
+                "schema_hint_ddl to name the columns explicitly instead."
             )
         if self.write_mode not in VALID_WRITE_MODES:
             raise ValueError(
