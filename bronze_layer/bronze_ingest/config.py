@@ -64,6 +64,16 @@ class IngestionConfig:
     # one of formats.supported_formats(); checked in __post_init__.
     source_format: str = "json"
     multiline: bool = True  # set True if each file is a single JSON document (not JSON-lines)
+    # CSV-only; ignored for every other source_format. Spark's CSV reader
+    # defaults this to False, which yields positional column names
+    # ("_c0".."_cN") instead of the real header row - see the __post_init__
+    # check below for why that default would be unsafe here.
+    csv_header: bool = True
+    # CSV-only; ignored for every other source_format. Spark's CSV reader
+    # defaults this to False, which yields all-string columns - the same
+    # format-dependent-schema trap documented for batch JSON inference in
+    # bronze_layer/config/contracts/orders.yaml.
+    csv_infer_schema: bool = True
     # optional DDL string to enforce a read schema instead of inferring it
     schema_hint_ddl: Optional[str] = None
     # extra options passed straight to spark.read.options();
@@ -288,6 +298,42 @@ class IngestionConfig:
             raise ValueError(
                 f"source_format must be one of {formats.supported_formats()}, "
                 f"got {self.source_format!r}"
+            )
+        # Type-checked before the guard below reads them. Both are plain
+        # `bool` with no meaningful third state, so - unlike the
+        # `Optional[bool]` fields that use `is True` to tell "user said so"
+        # from "unset" - an identity comparison here would buy nothing and
+        # cost correctness: `csv_header: "false"` from YAML is the truthy
+        # string 'false', which Spark's CSV reader then reads as false. The
+        # deployed job writes booleans as quoted strings as a matter of habit
+        # (`resources/bronze_ingest_jobs.yml` ships `multiline: "true"`,
+        # `fail_on_quality_error: "false"`), and `per_file_config_json`
+        # reaches IngestionConfig with only its KEYS validated - so a string
+        # here is the realistic input, not a hypothetical one. Fail loudly
+        # rather than let the guard below silently not fire.
+        for _name, _value in (
+            ("csv_header", self.csv_header),
+            ("csv_infer_schema", self.csv_infer_schema),
+        ):
+            if not isinstance(_value, bool):
+                raise ValueError(
+                    f"{_name} must be a bool, got {_value!r}. A quoted YAML value like "
+                    f"`{_name}: \"false\"` is the string 'false', which is truthy in Python "
+                    "but false to Spark - the two would disagree silently. Write it "
+                    f"unquoted: `{_name}: false`."
+                )
+
+        if self.source_format == "csv" and not self.csv_header and not self.schema_hint_ddl:
+            raise ValueError(
+                "source_format='csv' with csv_header=False and no schema_hint_ddl. Headerless "
+                "CSV produces positional column names ('_c0', '_c1', ...) instead of the real "
+                "ones - required_columns, merge_keys, unique_columns, cluster_by, "
+                "column_comments and the data contract all become unusable without hand-mapping "
+                "positions. Worse, those names are positional: an upstream column insertion "
+                "silently shifts data under the same stable '_cN' name and the write still "
+                "succeeds, because '_c0' is a perfectly legal Delta column name. Set "
+                "schema_hint_ddl to name the columns explicitly, or set csv_header=True if "
+                "the file does have a header row."
             )
         if self.write_mode not in VALID_WRITE_MODES:
             raise ValueError(

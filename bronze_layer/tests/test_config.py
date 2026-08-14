@@ -399,6 +399,110 @@ def test_shipped_config_yaml_still_constructs_unchanged(config_path):
     assert cfg.source_format == "json"
 
 
+# ---- csv_header / csv_infer_schema (#308) ----
+#
+# csv is NOT registered in formats.FORMATS yet (#310) - source_format="csv"
+# raises at the source_format check in __post_init__ before either field is
+# reachable. Tests that need source_format="csv" to actually pass that check
+# monkeypatch a throwaway FormatSpec into formats.FORMATS for the duration of
+# the test only, the pattern established in #304's
+# test_list_source_files_extension_threading_is_per_format and reused in
+# #305/#307's test_directory_ingestion.py. csv is never registered for real
+# here.
+
+
+def _fake_csv_spec():
+    return formats.FormatSpec(
+        name="csv",
+        extensions=(".csv",),
+        cloudfiles_format="csv",
+        allowed_reader_options=frozenset(),
+    )
+
+
+def test_csv_header_and_csv_infer_schema_default_to_true():
+    cfg = _cfg()
+    assert cfg.csv_header is True
+    assert cfg.csv_infer_schema is True
+
+
+def test_csv_header_and_csv_infer_schema_settable_from_config_file(tmp_path):
+    """Additive-config acceptance criterion: both fields load from a real
+    config file, not just from constructor kwargs. source_format is left at
+    the default ("json") deliberately - these fields must be settable
+    regardless of format; only the headerless-csv combination is policed."""
+    import json
+
+    path = tmp_path / "c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "source_path": "x",
+                "table": "t",
+                "csv_header": False,
+                "csv_infer_schema": False,
+            }
+        )
+    )
+
+    cfg = IngestionConfig.load(str(path))
+    assert cfg.csv_header is False
+    assert cfg.csv_infer_schema is False
+
+
+def test_headerless_csv_without_schema_hint_raises(monkeypatch):
+    monkeypatch.setitem(formats.FORMATS, "csv", _fake_csv_spec())
+
+    with pytest.raises(ValueError) as excinfo:
+        _cfg(source_format="csv", csv_header=False)
+
+    message = str(excinfo.value)
+    assert "_c0" in message
+    assert "schema_hint_ddl" in message
+
+
+def test_headerless_csv_with_schema_hint_does_not_raise(monkeypatch):
+    monkeypatch.setitem(formats.FORMATS, "csv", _fake_csv_spec())
+
+    cfg = _cfg(source_format="csv", csv_header=False, schema_hint_ddl="a INT, b STRING")
+    assert cfg.csv_header is False
+    assert cfg.schema_hint_ddl == "a INT, b STRING"
+
+
+def test_csv_header_true_needs_no_schema_hint(monkeypatch):
+    monkeypatch.setitem(formats.FORMATS, "csv", _fake_csv_spec())
+
+    cfg = _cfg(source_format="csv")
+    assert cfg.csv_header is True
+    assert cfg.schema_hint_ddl is None
+
+
+def test_non_csv_format_ignores_csv_header_false_with_no_schema_hint():
+    """csv_header is CSV-only - a headerless-csv-shaped combination on a
+    different format must not trip the check."""
+    cfg = _cfg(source_format="json", csv_header=False)
+    assert cfg.csv_header is False
+
+
+def test_bad_source_format_reports_source_format_error_not_csv_header():
+    """Ordering matters: an unregistered source_format must fail at the
+    source_format check, not at the csv_header check that follows it in
+    __post_init__ - a caller who typo'd source_format should not be told
+    about _c0 positional columns, which has nothing to do with their mistake.
+
+    Uses a name no issue will ever register. Written against "csv" this
+    passes only because csv is unregistered today, and would flip to a
+    confusing failure the moment #310 registers it - taking the only
+    ordering coverage with it, since the tempting fix is deletion."""
+    with pytest.raises(ValueError) as excinfo:
+        _cfg(source_format="not_a_format", csv_header=False)
+
+    message = str(excinfo.value)
+    assert "source_format must be one of" in message
+    assert "_c0" not in message
+    assert "schema_hint_ddl" not in message
+
+
 # ---- numeric ranges (#54) ----
 
 
@@ -736,3 +840,36 @@ def test_raw_property_remains_the_escape_hatch_on_overwrite():
     )
 
     assert cfg.resolved_table_properties["delta.enableChangeDataFeed"] == "true"
+
+
+@pytest.mark.parametrize("bad", ["false", "true", 0, 1, "", None, "n"])
+def test_csv_header_must_be_a_real_bool(bad):
+    """
+    `is False` would have made the headerless-CSV guard silently inoperative
+    for every one of these. The dangerous row is the string "false": truthy
+    in Python, false to Spark's CSV reader - so the guard would pass and the
+    read would be headerless anyway.
+
+    Not hypothetical. resources/bronze_ingest_jobs.yml ships booleans as
+    quoted strings (`multiline: "true"`, `fail_on_quality_error: "false"`),
+    and per_file_config_json reaches IngestionConfig with only its keys
+    validated.
+    """
+    with pytest.raises(ValueError, match="csv_header must be a bool"):
+        _cfg(csv_header=bad)
+
+
+@pytest.mark.parametrize("bad", ["false", 0, None])
+def test_csv_infer_schema_must_be_a_real_bool(bad):
+    with pytest.raises(ValueError, match="csv_infer_schema must be a bool"):
+        _cfg(csv_infer_schema=bad)
+
+
+def test_quoted_yaml_bool_is_rejected_by_the_loader_too(tmp_path):
+    """The realistic route: a config file, not a constructor call. YAML
+    `csv_header: "false"` parses to the string, so it must fail at load
+    rather than reaching Spark as a header-on read."""
+    p = tmp_path / "c.yaml"
+    p.write_text('source_path: "/tmp/x.json"\ntable: "t"\ncsv_header: "false"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="csv_header must be a bool"):
+        IngestionConfig.load(str(p))
