@@ -24,7 +24,13 @@ from .config import IngestionConfig
 # meant any refactor of directory ingestion broke replay silently and the
 # privacy marker was actively misleading. Quarantine replay depends on file
 # movement and retry state; it has never depended on directory ingestion.
-from .fs import RetryState, list_json_files, move_file_direct
+#
+# `list_source_files`, not `list_json_files` (#305). A quarantined file of a
+# non-JSON `source_format` was permanently unreplayable through the hardcoded
+# JSON-only lister - and silently so: the operator got {"moved": [],
+# "count": 0} and a "nothing to replay" log, indistinguishable from an
+# actually-empty quarantine.
+from .fs import RetryState, list_source_files, move_file_direct
 from .logging_utils import logger
 from .quality import split_good_bad
 
@@ -417,7 +423,7 @@ def reprocess_quarantine(
 
 
 def reprocess_quarantined_files(
-    spark, source_dir: str, pattern: Optional[str] = None
+    spark, source_dir: str, pattern: Optional[str] = None, source_format: str = "json"
 ) -> Dict[str, Any]:
     """
     Moves files from quarantine_files/ back into source_dir so the next
@@ -428,8 +434,21 @@ def reprocess_quarantined_files(
     counting against a limit it may have already exhausted once.
 
     Args:
-        pattern: optional fnmatch-style glob (e.g. "orders_*.json") to only
-            move matching files back; omit to move everything found.
+        pattern: optional fnmatch-style glob (e.g. "orders_*.csv") to only
+            move matching files back; omit to move everything found for
+            `source_format`. Applied on top of the extension filter below,
+            not instead of it - a quarantine directory holding both a
+            matching and a non-matching file of `source_format` only moves
+            the matching one; a file of a different format is never a
+            candidate regardless of `pattern`.
+        source_format: which format's files to look for in quarantine_files/
+            (#305) - must match the format the file was originally ingested
+            as. Defaults to "json" so existing callers are unaffected. Once
+            a non-JSON format is quarantined, replaying it without passing
+            the matching `source_format` here finds nothing: `list_source_files`
+            only lists that format's extensions, so the mismatch is silent -
+            {"moved": [], "count": 0}, indistinguishable from an empty
+            quarantine.
 
     Returns {"moved": [{"file", "destination", "status"} or
     {"file", "status": "failed", "error"}], "count": <successfully moved>}.
@@ -437,7 +456,7 @@ def reprocess_quarantined_files(
     quarantine_dir = f"{source_dir.rstrip('/')}/quarantine_files"
 
     try:
-        files = list_json_files(spark, quarantine_dir)
+        files = list_source_files(spark, quarantine_dir, source_format=source_format)
     except FileNotFoundError:
         logger.info(
             "No quarantine_files/ directory found under %s - nothing to replay.", source_dir
