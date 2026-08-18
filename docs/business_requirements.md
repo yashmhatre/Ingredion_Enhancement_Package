@@ -6,8 +6,8 @@ reconciled against what this repo has already decided and validated with
 Yash (Project Lead) — carried into GitHub issues using the
 existing `.github/ISSUE_TEMPLATE/feature_request.md` / `task.md` templates.
 
-Owned by the `business-analyst` agent (see `docs/agent_governance.md`'s
-"Agent org chart" — its prompt content lives in the private
+Owned by the `architect` agent (see `docs/agent_governance.md`'s
+agent roster — its prompt content lives in the private
 `ingredion-agent-config` repo, fetched via `scripts/bootstrap_agents.sh`).
 This register sits **upstream** of `docs/roadmap.md`: roadmap.md sequences
 work the team has already committed to; this register is where new
@@ -286,7 +286,7 @@ design work starts on it.
 | **Silver itself — does it exist to build this on?** | **No.** `silver_layer/` is a README and an archived flattener. The Silver epic (**#205**, filed under BR-001, children #109/#162/#163) has not started; Yash's approved P0–P4 ordering (2026-08-07) places the Silver-adjacent items (#109) in **P4 — later**, behind #112/#113/#115/#160 (P3) and #62/#61/#58 (also P4, ahead of #109). BR-002 is asking to add an AI-assist track to a layer that is not yet actively scheduled. |
 | **LLM provider / cost** | Still an open decision. #225 (merged) defaults the existing Bronze advisory job to the Anthropic SDK behind an injectable interface, but the provider choice itself was never made as a buy-vs-build decision — `docs/buy_vs_build_2026-08.md` has no verdict on it. Cost for a Silver-facing use of the same or a different model is therefore **unestimated**, not merely unstated; no number should be assumed here. |
 | **Rule profiling from data** (a related but distinct idea) | `docs/buy_vs_build_2026-08.md`'s "Follow-ups this surfaced" names *"Rule profiling — generating candidate quality rules from data, which DQX does and #109 does not propose"* as an open, unfiled idea. That follow-up profiles actual **data**; BR-002's Reading A profiles **metadata only**. They look adjacent and are not the same ask — worth flagging so the two don't get merged into one issue by accident. |
-| **Relationship to BR-001** | This ask plausibly **is not a new parent case**. It reads as a refinement of BR-001 item 2 (Silver, already #205) crossed with item 4 (AI agents, already #206/#207/#208/#209) — specifically, it is asking what BR-001 item 2 + item 4 look like once Silver exists, for the transformation (not the monitoring/remediation) half of the AI track. Registering it as BR-002 keeps this specific ask (and its "minimal metadata" constraint) traceable on its own terms, but if approved it should most likely be filed as new sub-issues under **#205**, using the same design-record pattern **#207** established, rather than as an independent epic. That relationship is itself a call for `principal-data-engineer` / Yash, not this register. |
+| **Relationship to BR-001** | This ask plausibly **is not a new parent case**. It reads as a refinement of BR-001 item 2 (Silver, already #205) crossed with item 4 (AI agents, already #206/#207/#208/#209) — specifically, it is asking what BR-001 item 2 + item 4 look like once Silver exists, for the transformation (not the monitoring/remediation) half of the AI track. Registering it as BR-002 keeps this specific ask (and its "minimal metadata" constraint) traceable on its own terms, but if approved it should most likely be filed as new sub-issues under **#205**, using the same design-record pattern **#207** established, rather than as an independent epic. That relationship is itself a call for the `architect` and Yash, not this register. |
 | **`docs/roadmap.md`** | Stale per the live P0–P4 ordering — not treated as authoritative for sequencing here. Neither #205 nor any BR-002-shaped work appears in its phase plan. |
 
 ### Recommendation
@@ -304,7 +304,7 @@ design work starts on it.
    issues, or even fully decomposed, ahead of #205 having enough shape to
    receive them — that sequencing question (does an AI-assist track get
    added to #205 now, or wait until #109/#162/#163 land) is a roadmap
-   question for `principal-data-engineer` and Yash, not a unilateral call
+   question for the `architect` and Yash, not a unilateral call
    here.
 4. **The aggregate-profiling capability is new scope**, independent of the
    AI question — nothing today computes per-column statistics on Bronze or
@@ -314,7 +314,7 @@ design work starts on it.
 
 ### Decomposition (candidate — not filed; Under review, not Approved)
 
-Sized to the shape of the ask today; a `solution-architect` design, once
+Sized to the shape of the ask today; an `architect` design, once
 attached, supersedes this sizing for the pieces it covers.
 
 1. **Decision: reading + whether a Silver-scoped write-path exception is
@@ -347,7 +347,7 @@ attached, supersedes this sizing for the pieces it covers.
 - **Sequencing:** does this become an AI-assist sub-track of #205 now (ahead
   of Silver's core rule engine landing), or wait until #109/#162/#163 ship?
   This reshapes P4 of the approved priority ordering and needs
-  `principal-data-engineer` + Yash to decide, not this register.
+  the `architect` + Yash to decide, not this register.
 - **Business owner, quantified impact, timeline** — none given in the raw
   ask. Not invented here; needed before this can move to Approved.
 - **LLM provider/cost** — still open repo-wide (see reconciliation above);

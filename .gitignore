@@ -15,6 +15,7 @@
 spark-warehouse/
 metastore_db/
 derby.log
+bronze_layer/.pytest-builder*/
 
 # Python bytecode
 __pycache__/
@@ -46,8 +47,26 @@ venv/
 # so scripts/verify.sh can catch the directory silently lagging the pin.
 .claude/agents/.fetched
 
+# The same private definitions rendered as project-scoped Codex custom agents.
+# Only the explanatory README and non-secret project config are committed.
+.codex/agents/*.toml
+.codex/agents/.fetched
+
 # The same proprietary definitions rendered a second time, as VS Code Copilot
 # chat modes, by scripts/generate_copilot_chatmodes.py. .github/ is committed,
 # so these must be ignored for the same reason .claude/agents/*.md is - never
 # commit this output either.
 .github/chatmodes/*.chatmode.md
+
+# Third-party agent skills vendored by `npx skills@latest add mattpocock/skills`.
+# Same reasoning as .claude/agents/*.md above: the bodies are fetched content,
+# not authored here, and re-fetchable on demand. skills-lock.json IS committed -
+# it pins the source repo, skill path, and content hash for all 35 skills, so
+# `npx skills` reproduces the exact set. Committing the bodies too would drop a
+# large third-party vendor tree into a repo that deliberately keeps its own
+# agent definitions out of git.
+#
+# .claude/skills/ holds directory junctions into .agents/skills/ - the second
+# path is the same content under another name, not a separate copy.
+.agents/skills/
+.claude/skills/

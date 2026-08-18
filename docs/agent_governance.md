@@ -288,8 +288,11 @@ The prompts themselves are proprietary and live in the private
 file governs behavior and approval tiers regardless of where the prompt text
 is stored, and regardless of which substrate renders it.
 
-`scripts/bootstrap_agents.sh` writes a `.claude/agents/.fetched` stamp, and
-`scripts/verify.sh` diffs it against `agents.lock`. That gate exists because
+`scripts/bootstrap_agents.sh` writes a `.claude/agents/.fetched` stamp, renders
+the same pinned roles for Codex under `.codex/agents/`, and
+`scripts/verify.sh` diffs the stamp against `agents.lock`. Codex is another
+runtime for the same roster, not an eighth role; the ownership and approval
+tiers above are unchanged. That gate exists because
 the directory silently lagged the pin by two versions once, while still
 holding a plausible number of files — "is it populated?" answered yes the
 whole time.

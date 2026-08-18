@@ -1,7 +1,8 @@
 # Keeping agent files private — architecture options and recommendation
 
-This repo is public. The AI agent definitions in `.claude/agents/` — and
-anything with real prompt content, workflow logic, or internal design
+This repo is public. The AI agent definitions rendered into
+`.claude/agents/`, `.codex/agents/`, and `.github/chatmodes/` — and anything
+with real prompt content, workflow logic, or internal design
 rationale baked into them — are proprietary and should never be readable in
 this repo's git history, including on unmerged branches (a public repo
 exposes every branch and every past commit, not just what's on `main`).
@@ -138,13 +139,15 @@ the public repo's history.
 The full recommended shape above (private repo + a published, storage-backed
 release) is the target state. Today, as a first concrete step, this repo
 implements the private-repo half: `ingredion-agent-config` is live, holds
-all 8 agent role definitions, and `agents.lock` pins a version of it
-(`v1.0.0`) that `scripts/bootstrap_agents.sh` fetches directly via a scoped
+all 7 agent role definitions, and `agents.lock` pins its release tag and
+commit. `scripts/bootstrap_agents.sh` fetches that exact commit via a scoped
 GitHub credential — the same shape as option 2 above, deliberately, as the
 fastest path to getting proprietary content out of this public repo's
 history. Layering the private-storage publish step in front of it (so
 runtime credentials never touch git directly) is the next hardening step,
-not yet built. Update this section when it is.
+not yet built. The fetched definitions are installed for Claude and rendered
+from the same source for Codex and Copilot; all generated prompt-bearing files
+remain gitignored. Update this section when the storage-backed step is built.
 
 ## Recommendation for this project
 
@@ -168,12 +171,11 @@ cannot satisfy that refspec — and then refuses to install if the tag no
 longer resolves to the pinned commit. The `sha` line is what makes the pin
 real: a tag is a movable name, and tag-protection rulesets are unavailable
 on this private repo's plan, so this check is the only thing between a
-force-moved tag and every developer's `.claude/agents/`.
+force-moved tag and every developer's generated agent configuration.
 
 This gets every property asked for: private (never in this repo's git
 history), securely loaded (a scoped credential, not a broad one), supports
 local dev and CI/CD identically (same bootstrap script, different
 credentials), versioned explicitly (`agents.lock` + git tags), and there's
-nothing to accidentally expose by forgetting to `.gitignore` a file, because
-the real content is never local to this repo's working tree at all — only
-ever fetched into a gitignored path.
+the prompt content exists locally only in the gitignored Claude, Codex, and
+Copilot output paths created by the bootstrap.

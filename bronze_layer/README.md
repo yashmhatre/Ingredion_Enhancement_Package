@@ -42,11 +42,12 @@ to the repo folder containing `bronze_ingest/` (i.e. `bronze_layer/`).
 ## Quick start (one-liner)
 
 ```python
-from bronze_ingest import ingest_json_to_bronze
+from bronze_ingest import ingest_to_bronze
 
-result = ingest_json_to_bronze(
+result = ingest_to_bronze(
     spark,
     source_path="abfss://raw@mystorage.dfs.core.windows.net/orders/",
+    source_format="json",        # "json" | "csv" | "parquet" | "xml"
     schema_name="bronze",
     table="orders_raw",
     write_mode="append",        # "append" | "overwrite" | "merge"
@@ -54,6 +55,8 @@ result = ingest_json_to_bronze(
 print(result)
 # {'table': 'bronze.orders_raw', 'row_count': 12045, 'columns': [...], ...}
 ```
+
+`ingest_json_to_bronze` remains a compatibility alias for existing callers.
 
 ## Config-driven usage (recommended for reuse across pipelines)
 
@@ -85,7 +88,9 @@ error found 40 minutes in has already been paid for.
 | `content_hash_columns` must be non-empty, and must not name a column bronze adds itself (audit/rescued/corrupt/`content_hash_key_col`) | Hashing an ingest-time column makes the hash depend on when a row was ingested, not its content — identical payloads ingested on different runs would never match |
 | `quarantine_table`, `table_properties` keys, `column_comments` keys — validated **per dot-separated part** | These are legitimately dotted (`main.bronze.x`, `delta.enableChangeDataFeed`, `customer.name`). Per-part checking accepts those and still rejects `bad-key` |
 | `reader_options` keys must be on the allowlist for the configured `source_format` (`formats.allowed_reader_options(source_format)`), or `cloudFiles.*` | `reader_options` goes verbatim to the Spark reader, and configs load from a Volume. `path` is a reader option — an unfiltered passthrough lets a config redirect the read while every log line still reports `source_path`. The allowlist is looked up per format, since not every reader option means the same thing (or exists at all) for every format, and the error names the configured `source_format`. Set `allow_unsafe_reader_options: true` to override; it logs what it let through |
-| `source_format` must be one of `formats.supported_formats()` (currently just `json`) — case-sensitive, `"JSON"` is rejected | Matches the registry key in `formats.py` exactly rather than normalizing case; fails loud instead of silently accepting a variant that only happens to work today |
+| `source_format` must be one of `json`, `csv`, `parquet`, `xml` — case-sensitive, `"JSON"` is rejected | Matches the registry key in `formats.py` exactly rather than normalizing case; fails loud instead of silently accepting a variant that only happens to work today |
+| `source_format: xml` requires a non-empty `xml_row_tag`; `reader_options` cannot set `rowTag`, `mode`, or `ignoreNamespace`; `schema_hint_ddl` is rejected | One field owns the row boundary, XML always fails fast, and canonical hints cannot silently bind to the wrong raw prefixed names |
+| `ingestion_mode: streaming` requires `source_format: json` | This release adds batch readers only; multi-format Auto Loader remains deferred under #323 |
 | `retry_attempts >= 1` | Below 1, `with_retry`'s loop body never executes and it raises `last_exc` — still `None`. You get "exceptions must derive from BaseException" and no trace of the real failure. **1 means "try once, don't retry"** |
 | `retry_delay_seconds >= 0` | A negative value reaches `time.sleep()` and raises mid-run, on a cluster |
 | `max_files_per_trigger >= 1` when set | Leave it `None` for no limit |
@@ -119,17 +124,23 @@ from bronze_ingest import ingest_directory_to_bronze
 
 results = ingest_directory_to_bronze(
     spark,
-    source_dir="/Volumes/main/default/raw_json/",
+    source_dir="/Volumes/main/default/raw/",
+    source_format="parquet",
     catalog="main",
     schema_name="bronze",
     table_name_template="{filename}_bronze",   # or "bronze_{filename}"
 )
 ```
 
-Discovers every `.json`/`.jsonl` file directly inside `source_dir` and
+Discovers every file registered for `source_format` directly inside `source_dir` and
 loads each one into its own bronze table. One bad file is logged and
 reported in the results list, but does not stop the remaining files from
 loading (`stop_on_error=False`, the default).
+
+CSV discovers `.csv`, Parquet discovers `.parquet`, and XML discovers `.xml`.
+Standalone Parquet files are individual ingestion units; an immediate subfolder
+containing Parquet part-files is one folder-as-table unit. Mixed-format folders
+and format inference from extensions are intentionally unsupported.
 
 **`.jsonl` and `.ndjson` files ignore `multiline` and are always read one
 record per line**, logging a warning if `multiline: true` was configured.
@@ -163,8 +174,13 @@ treated as one logical dataset — every file inside it is read
 individually, successfully-read files are merged (`unionByName`,
 tolerant of minor schema differences between files), and the result is
 written to a single table named after the folder (e.g. `orders/` →
-`orders_bronze`). A single malformed file inside a folder never blocks
-the rest of that folder's files from being ingested. Archival and
+`orders_bronze`). A single unreadable file inside a JSON, CSV, or Parquet
+folder never blocks the rest of that folder's files from being ingested.
+XML is atomic at this boundary: one malformed physical document fails the
+whole folder attempt, writes no sibling rows, and archives no successful
+sibling. The XML path is a draft pending the two Tier 2 decisions in
+`docs/decisions/`; its stable prefix-to-namespace-URI preflight is not yet
+implemented, so it is not merge-ready. Archival and
 retry-limit quarantine both apply per-file inside the folder, and
 preserve folder structure (`processed/{date}/orders/order1.json`, not
 flattened). Pass `schema_hint_ddl` when ingesting sources where files in
@@ -747,7 +763,9 @@ bronze_layer/
     run_ingestion.py             # parameterized Databricks notebook entrypoint (widgets)
     run_directory_ingestion.py    # directory/multi-file ingestion entrypoint
     run_quarantine_replay.py       # quarantine replay entrypoint (row + file replay)
-    validate_json_reader.py        # ADLS-based validation notebook (not part of pytest)
+    validate_json_reader.py        # ADLS-based JSON validation notebook (not part of pytest)
+    validate_csv_reader.py         # self-contained CSV workspace validation
+    validate_xml_reader.py         # XML integrity/namespace workspace validation
   docs/
     architecture.md                    # target-state architecture (multi-format + async AI layer)
     archive/testing_json_reader.md      # ARCHIVED - JSON reader validation notes
@@ -763,7 +781,7 @@ bronze_layer/
 
 **Incremental ingestion (Auto Loader).** Set `ingestion_mode: streaming` with
 `checkpoint_location` and `schema_location`, then call `job.run_streaming()`
-(or `ingest_json_to_bronze(...)`, which dispatches automatically). Auto
+(or `ingest_to_bronze(...)`, which dispatches automatically). Auto
 Loader tracks which files were already processed, so re-running a job never
 reprocesses the whole source directory. Use `trigger_mode: availableNow`
 (default) to drain the current backlog and stop - the right mode for a

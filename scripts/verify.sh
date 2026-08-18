@@ -92,6 +92,8 @@ else
   run_gate "hook lockdown tests" "$REPO_ROOT" "$PY" scripts/hooks/test_block_orchestrator_writes.py
   run_gate "path ownership tests" "$REPO_ROOT" "$PY" scripts/test_check_path_ownership.py
   run_gate "agent frontmatter" "$REPO_ROOT" "$PY" scripts/check_agent_frontmatter.py
+  run_gate "agent skill alias tests" "$REPO_ROOT" "$PY" scripts/test_configure_agent_skills.py
+  run_gate "Codex agent renderer tests" "$REPO_ROOT" "$PY" scripts/test_generate_codex_agents.py
 fi
 
 # --- Gates 2-5: lint / format / types / security -------------------------

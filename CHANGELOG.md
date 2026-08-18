@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — batch multi-format and agent-runtime parity
+
+- Added batch CSV and Parquet discovery/readers while preserving JSON defaults.
+- Drafted fail-closed XML ingestion with required `xml_row_tag`, recursive
+  prefix-preserving identifiers, and collision detection. XML cannot merge until
+  the proposed #336/#337 decision records receive named Tier 2 sign-off.
+- Added the format-neutral `ingest_to_bronze`; `ingest_json_to_bronze` remains
+  a compatibility alias.
+- Added format widgets, bundle parameters, and CSV/XML workspace-validation
+  notebooks. Multi-format streaming remains deferred under #323.
+- Renamed the third-party review skill to `two-axis-code-review`, leaving the
+  built-in `/code-review ultra` available, and added pinned seven-role Codex
+  agent generation alongside the Claude configuration.
+
+Workspace validation, reviewer verdict, and promotion approval are still
+required before release.
+
 ## 0.5.0 — the correctness wave
 
 42 commits, promoted from `dev` in one release. Every known silent

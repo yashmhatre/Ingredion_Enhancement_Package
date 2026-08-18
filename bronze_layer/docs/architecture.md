@@ -136,9 +136,9 @@ relationship to this document in one line: *"this record is the documented
 | JSON bronze ingestion, quality gate, quarantine, retries | **Shipped** |
 | Directory ingestion (folder-as-table, archival, retry-limit-before-quarantine) | **Shipped** |
 | Run-level audit trail + schema registry | **Shipped** |
-| Multi-format ingestion (CSV/XML/Parquet) | **Designed below, not built** |
-| Schema registry as AI-layer input | **Shipped** (registry); AI layer **not built** |
-| AI-assisted metadata layer (advisory) | **Designed below, not built** — gated on schema registry, which is done, so this can start. Unaffected by the write-path exception, and explicitly not gated on it |
+| Batch multi-format ingestion (CSV/XML/Parquet) | **Draft implemented**; XML decision sign-off, workspace validation, and promotion pending |
+| Schema registry as AI-layer input | **Shipped** |
+| AI-assisted metadata layer (advisory) | **Implemented**; #208 closed after code and scheduled-job evidence were reconciled |
 | Autonomous remediation (the write-path exception) | **Not built, and blocked.** `docs/decisions/2026-08_autonomous_remediation.md` is draft pending the Project Lead's named sign-off; its eligible fix-class set is empty, and the kill switch, rollback path and fail-closed remediation record it requires do not exist |
 | Silver layer | **Not built** — see `docs/bronze_silver_contract.md` for what it will be handed |
 
@@ -173,6 +173,11 @@ source_format: parquet  ->  discovers .parquet         ->  parquet_reader
 - **Everything downstream of the reader is already format-agnostic** — the
   quality gate, audit columns, retry logic, archival, and audit trail all
   operate on a DataFrame and need no changes for this to ship.
+- **XML fails closed before Spark parsing.** Every physical document must be
+  well formed; Spark then reads in `FAILFAST` mode. Namespace-prefix spelling is
+  preserved by recursively canonicalizing `:` to `__`, with collisions
+  rejected before a write. The governing decisions remain proposed until
+  their required Tier 2 sign-off.
 
 ## Metadata: three tables, facts kept separate from opinion
 
@@ -291,8 +296,9 @@ source fidelity. The working `flattener.py` and its tests are archived at
 **Target-state build, in the order each piece unblocks the next:**
 
 1. **Schema registry** — cheapest, unblocks the most (AI drift summaries need schema history to exist first). **Done.**
-2. **Multi-format ingestion** — independent of the AI layer, can run in parallel with it.
-3. **AI metadata layer** — depends on the audit trail (done) and schema registry (done) as its inputs. Can start now; this is the advisory layer and is not gated on the write-path exception.
+2. **Batch multi-format ingestion** — CSV and Parquet are implemented. XML is a draft pending
+   stable namespace-binding preflight, Tier 2 sign-off, workspace validation, and promotion.
+3. **AI metadata layer** — implemented; #208 is closed with its acceptance evidence recorded.
 
 **What Bronze owes Silver**, from `docs/bronze_silver_contract.md`, in dependency order:
 

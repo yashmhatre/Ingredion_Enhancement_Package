@@ -335,7 +335,7 @@ jobs:
           # Notebooks ARE watched here, unlike the test job. They are the
           # deployed entrypoints, and #157 records that both known live
           # defects were in that layer precisely because nothing looked at it.
-          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^scripts/hooks/|^\.github/workflows/ci\.yml$'
+          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^scripts/(hooks/|configure_agent_skills\.py$|generate_codex_agents\.py$|test_configure_agent_skills\.py$|test_generate_codex_agents\.py$)|^\.codex/|^\.github/workflows/ci\.yml$'
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -400,6 +400,14 @@ jobs:
       - name: path ownership tests
         if: '!cancelled()'
         run: python3 scripts/test_check_path_ownership.py
+
+      - name: agent skill alias tests
+        if: '!cancelled()'
+        run: python3 scripts/test_configure_agent_skills.py
+
+      - name: Codex agent renderer tests
+        if: '!cancelled()'
+        run: python3 scripts/test_generate_codex_agents.py
 
       - name: path ownership check
         if: "!cancelled() && github.event_name == 'pull_request'"

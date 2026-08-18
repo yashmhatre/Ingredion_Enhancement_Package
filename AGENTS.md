@@ -42,10 +42,9 @@ and `bronze_layer/docs/testing_end_to_end_deployment.md` now live at
 ask, start at `docs/overview.md`** — a plain-language companion doc aimed at
 non-engineers, and the front door for anyone who isn't already fluent in this
 repo's architecture. New business asks belong in `docs/business_requirements.md`
-(owned by the `business-analyst` subagent below), not as a silent addition to
-the roadmap. If there's no real ask on hand yet, `business-stakeholder` can
-research a sourced candidate — but even then, `business-analyst` is the only
-path from candidate to validated case.
+(owned by the `architect` subagent below), not as a silent addition to the
+roadmap. The architect reconciles candidates into validated cases before they
+become implementation work.
 
 ## Agent roster and approval tiers
 
@@ -70,12 +69,12 @@ Prefer the matching subagent over general-purpose editing when one fits.
 
 **The actual agent definitions — prompts, tool grants, workflow
 instructions — are proprietary and are not stored in this repo, including in
-its git history.** They live in the private `ingredion-agent-config` repo
-and are fetched into the gitignored `.claude/agents/` directory by
-`scripts/bootstrap_agents.sh` — run it once after cloning, per
-`.claude/agents/README.md`. `agents.lock` pins which version is currently in
-use. See `docs/private_agent_architecture.md` for the full reasoning and the
-options considered.
+its git history.** They live in the private `ingredion-agent-config` repo.
+`scripts/bootstrap_agents.sh` fetches the pinned source into gitignored
+`.claude/agents/` and renders the Codex and Copilot equivalents — run it once
+after cloning, per `.claude/agents/README.md`. `agents.lock` pins which version
+is currently in use. See `docs/private_agent_architecture.md` for the full
+reasoning and the options considered.
 
 **`docs/agent_governance.md` owns what any agent (subagent or not) may do
 without a human sign-off versus what requires the Project Lead's explicit
@@ -85,13 +84,78 @@ of which agent is doing the work, or which one is coordinating it. Read it
 before touching anything in `databricks.yml`, `bronze_layer/resources/*.yml`,
 or `azure_setup.md`.
 
+## Agent skills
+
+This repo has the [`mattpocock/skills`](https://github.com/mattpocock/skills) pack installed
+(35 skills, in the gitignored `.agents/skills/`, pinned by the committed `skills-lock.json`;
+restore with `npx skills@latest add mattpocock/skills` and then
+`python scripts/configure_agent_skills.py`). Those skills read the three files
+below for their per-repo configuration. All three are hand-editable — re-run
+`/setup-matt-pocock-skills` only to switch issue trackers or start over.
+
+### Issue tracker
+
+GitHub issues on `yashmhatre/Ingredion_Enhancement_Package`, via the `gh` CLI; prefer the
+`context-scout` MCP server for reads. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, label strings unchanged: `needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, `wontfix`. All five now exist, and they stack on the
+existing area/kind/priority/stage labels rather than replacing them. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. Decision records live in **`docs/decisions/`, not `docs/adr/`** — do not
+create the latter. Records there are binding and Tier 2, so a skill may **draft** one marked
+`Proposed — awaiting Tier 2 sign-off` but must never write a sign-off line itself. See
+`docs/agents/domain.md`.
+
+### Skills vs. the roster
+
+The pack ships skills that duplicate roles the 7-agent roster above already owns. **The
+roster wins.** A skill is a way of doing the work; it does not reassign who owns it or
+change an approval tier.
+
+| Pack skill | Defers to | Rule |
+| --- | --- | --- |
+| `two-axis-code-review` | `reviewer` | Exploratory reads only. The pre-merge verdict on an escalation path is `reviewer`'s, and `reviewer` never reviews its own work. This is the pack's upstream `code-review`, renamed locally. |
+| `implement`, `tdd`, `prototype` | `builder`, `notebook-qa` | Code in `bronze_ingest/` is `builder`'s; `notebooks/` and `tests/test_notebooks.py` are `notebook-qa`'s. |
+| `to-tickets`, `to-spec`, `to-questionnaire`, `triage`, `wayfinder` | `orchestrator`, `architect` | `orchestrator` routes work; `architect` owns intake into `docs/business_requirements.md`. A skill may produce tickets — it does not decide who picks them up. |
+| `git-guardrails-claude-code`, `setup-pre-commit` | `platform` | Touch CI, hooks, and deploy config. Drafts only; Tier 2 sign-off applies. |
+| `research`, `grilling`, `grill-with-docs`, `domain-modeling`, `codebase-design`, `diagnosing-bugs`, `handoff`, `teach`, `writing-*` | — | No roster equivalent. Use freely. |
+
+Two standing cautions:
+
+- **Four skills are TypeScript/Node-only and inert here** — `migrate-to-shoehorn`,
+  `setup-ts-deep-modules`, `scaffold-exercises`, and `setup-pre-commit` (Husky + lint-staged).
+  This is a Python/Databricks repo. Don't spend a session trying to apply them.
+- **The pack's upstream `code-review` is installed here as
+  `two-axis-code-review`**, leaving Claude Code's built-in `/code-review` and
+  `/code-review ultra` unshadowed. Re-run `scripts/configure_agent_skills.py`
+  after restoring or updating the pack.
+
+### Codex agent team
+
+`scripts/bootstrap_agents.sh` renders the same seven private, pinned role
+definitions into `.codex/agents/*.toml`. Codex uses `orchestrator` as the front
+door and delegates to `architect`, `reviewer`, `builder`, `notebook-qa`,
+`platform`, and `scout` according to `docs/agent_governance.md`. Generated TOML
+contains proprietary prompt content and is gitignored; `.codex/agents/README.md`
+documents setup. Custom agents do not change approval tiers or path ownership.
+
+No skill overrides `docs/agent_governance.md`. Deploys, `GRANT`/`DROP`/`VACUUM`, credential
+handling, and promotion PRs need the Project Lead's named sign-off no matter which skill or
+agent is driving.
+
 ## Where to find things (don't duplicate — go read the owner)
 
 | Question | Owning doc |
 | --- | --- |
 | I'm not an engineer — where do I start? | `docs/overview.md` |
 | Where do new business asks/feature requests get captured and reconciled? | `docs/business_requirements.md` |
-| Why don't I see the actual agent prompts in this repo? | `docs/private_agent_architecture.md` (and `.claude/agents/README.md`) |
+| Why don't I see the actual agent prompts in this repo? | `docs/private_agent_architecture.md` (plus `.claude/agents/README.md` and `.codex/agents/README.md`) |
 | How do I set up, configure, run the bronze package? | `bronze_layer/README.md` |
 | How do I set up my local dev environment (Java/Python/Spark/Windows prereqs), find an issue, branch, commit, open a PR? | `CONTRIBUTING.md` |
 | What changed in a release, and what do I need to do before deploying it? | `CHANGELOG.md` |
@@ -187,11 +251,11 @@ service principals) is deliberate and has a documented known gap (source
 volumes aren't isolated per environment — see `databricks.yml`'s header). Don't
 "fix" that gap as a drive-by; it's tracked (#160).
 
-**Never commit real agent-config content.** `.claude/agents/*.md` (other
-than `README.md`) is gitignored on purpose — it's populated by
-`scripts/bootstrap_agents.sh` from the private `ingredion-agent-config` repo.
-If `git status` ever shows one of those files as untracked-and-stageable
-with real prompt content in it, that's a sign the gitignore or the fetch
+**Never commit real agent-config content.** `.claude/agents/*.md` and
+`.codex/agents/*.toml` (other than their `README.md` files) are gitignored on
+purpose — they are populated by `scripts/bootstrap_agents.sh` from the private
+`ingredion-agent-config` repo. If `git status` ever shows one of those files as
+untracked-and-stageable with real prompt content in it, the gitignore or fetch
 script has drifted — fix that before committing anything else.
 
 **A brief is not a finding.** `scout` runs on a small local model, which

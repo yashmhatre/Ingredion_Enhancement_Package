@@ -1,189 +1,203 @@
-# Roadmap — where the package stands and what is left
+# Roadmap — rebaseline from code and live issues
 
-Audit of all **14 open issues** against `dev` @ `79fefbe`, August 2026. Every
-"already done?" claim below was checked by reading the code, not by reading
-the issue.
+Re-audited on 2026-08-18 against committed `dev` @ `9e0dbea` and the **52 issues
+open at the start of the audit**. The rebaseline created umbrella #354 and
+closed #208, #248, #264, and #324 from verified evidence, leaving 49 open.
+Code is the evidence for what exists; an issue is not complete merely because
+a commit mentions its number.
 
-This is a living document: phases and ordering change as decisions are made.
-The open GitHub issues are the source of truth for *what* is left; this
-document is the source of truth for *what order* and *why*.
+This document owns sequence and gates. GitHub issues own acceptance criteria,
+and `docs/agent_governance.md` owns approval tiers.
 
 ---
 
-## Where we stand
+## Where the repository stands
 
-**The bronze layer's correctness work is complete and shipped.** Every known
-silent-data-loss and silent-corruption defect is closed, and — as of
-`#187` → `#189` — all of it is on `main`.
+- **Bronze is the only implemented pipeline layer.** Its JSON path is deployed
+  and mature: governed Delta writes, audit, retry and quarantine, CDF, schema
+  drift, catalog metadata, AI metadata, lifecycle machinery, profiling,
+  candidate-key detection, and data-contract foundations exist in code.
+- **Batch multi-format is in flight.** The format-aware foundation (#302–#309)
+  is merged. The current draft registers CSV and Parquet and implements the
+  XML path, notebooks, and bundle wiring; XML remains uncommittable until the
+  #336/#337 decision records receive named Tier 2 sign-off.
+- **Silver is not a pipeline.** `silver_layer/` remains documentation plus an
+  archived flattener. The #298 foundations now present in `bronze_ingest`
+  should not be mistaken for a working Bronze→Silver execution plane.
+- **Gold does not exist.** #228 is therefore a real gate for #210 and #211.
+- **Deployment evidence lags code.** Provisioning, grants, environment
+  isolation, and several workspace-only acceptance checks remain open.
+- **No promotion is implied by a green `dev`.** Every `dev → staging` and
+  `staging → main` transition is a separate PR and requires the Project
+  Lead's named approval.
 
-| Class | Issues | What it was |
+### Issue reconciliation result
+
+Four stale issues were closed after their full acceptance criteria were checked:
+
+| Issue | Closure evidence |
 | --- | --- | --- |
-| Silent data loss | #146, #147 | `.jsonl` read as one record; the quality gate's split not being a partition of its input |
-| Silent duplication | #148 | Quarantine keyed on `uuid()`, so a retry inserted beside the original |
-| Meaningless audit data | #149, #156 | `row_count` meaning something different per write mode; streaming rewriting per-run metadata every micro-batch |
-| Unsafe SQL construction | #154, #54 | Config values interpolated into `spark.sql()` unescaped and unvalidated |
-| Destructive at scale | #155 | Replay collecting every id to the driver and building one giant `IN (...)` |
-| Structural | #150, #151, #183 | Three copies of the orchestration body; four modules in one file; two competing failure policies |
-| Engineering hygiene | #158, #157, #74, #152 | No lint/types/security/coverage in CI; untested notebook layer; Windows; retrying failures that can never succeed |
+| #208 | Async AI metadata implementation, job wiring, tests, and two real workspace runs producing 15/15 drafts. |
+| #248 | Six real `availableNow` runs plus the merged #294/#295 fixes. |
+| #264 | Structural contract implementation, worked source contract, and tests; value ranges remain #109/Silver. |
+| #324 | `MetadataStore`, vocabularies, fillability, safe replacement, profiling integration, and tests. |
 
-### Audit result: nothing to close
+#256 remains open: structured drift reaches audit rows, but rescued-data
+visibility and one real post-fix drift run are still missing.
 
-All 14 open issues were checked against the code. **None is already
-resolved** — every one is genuinely outstanding. Specifically verified as
-absent: `enable_change_data_feed` (#58), any `volume_check` config (#61),
-`dashboards/` or `sql/` (#62), `table_tags`/`column_tags` (#64), any
-UniForm/`universalFormat` setting (#65), `merge_key_strategy`/`hash_columns`
-(#84), any silver pipeline (#109 — `silver_layer/` is still a README plus
-`_archive/`), any deploy workflow or OIDC reference (#113), any secret
-resolution (#115), any maintenance job or retention config (#159),
-`docs/bronze_silver_contract.md` (#162), and any buy-vs-build evaluation
-(#163).
-
-**#112 is the one partial.** Service principals are registered and Step 12
-of `azure_setup.md` is written with six `GRANT` statements recorded, but the
-issue's own acceptance criteria — a *verified-denied* cross-environment
-read, and a real file ingested in each environment — are not met. It stays
-open, correctly.
+Partial work stays open with only the unmet criteria retained. In particular,
+**#64** still needs governed-tag permissions and workspace proof; #159 has code
+and decisions but an undeployed, paused maintenance job; #250 still needs real
+business invariants; and #112 still needs Phase B provisioning and isolation
+evidence.
 
 ---
 
-## Phase 0 — Promote what is built ✅ **DONE**
+## Phase 1 — finish batch multi-format Bronze
 
-`dev` had drifted 38 commits ahead of `staging`, with `staging` identical to
-`main`: every correctness fix existed only on `dev` and production was
-running the code from before all of it. Promoted via `#187` (dev → staging)
-and `#189` (staging → main), with a consolidated 0.5.0 CHANGELOG covering
-the behaviour changes that would otherwise look like breakages.
+This is the active delivery chain under #301. Keep each format as a vertical
+slice so the registry never advertises a reader that does not exist.
 
-Worth keeping the lesson attached: this was the highest-value action
-available and it was tracked on no issue. **#113 is the fix for the cause**,
-not just this instance.
+### CSV
 
----
+1. **#310** — register CSV in the format registry, reader dispatch, option
+   dispatch, and tests.
+2. **#311** — validate CSV on Databricks, including `/Volumes` discovery,
+   `_metadata.file_path`, illegal headers, malformed rows, and DBR rescue
+   behavior.
 
-## Phase 1 — Finish what is in flight ✅ **DONE**
+### Parquet
 
-#183 (one failure → retry-count → quarantine policy) merged in PR #184.
+3. **#312** — implement the Parquet batch reader without flattening nested
+   structures. Treat standalone `.parquet` files and immediate Parquet
+   dataset folders as valid source shapes; ignore marker files.
+4. **#313** — register Parquet and prove dispatch, discovery, retry, metadata,
+   and folder-as-table behavior.
 
-Two Dependabot PRs are open and are pure housekeeping: **#190** (5 GitHub
-Actions) and **#191** (setuptools floor → 83.0.0, which is the CVE the
-`quality` job already flagged). Merge or dismiss; neither blocks anything.
+### XML decisions and implementation
 
----
+5. **#336 and #337** — obtain Tier 2 sign-off on the proposed XML integrity
+   and namespace-identifier records before reader implementation.
+6. **#314 and #315** — raise only the local/dev PySpark floor to 4.x and add
+   the XML row-tag contract. The explicit `xml_row_tag` field is authoritative;
+   a competing generic `rowTag` option is rejected.
+7. **#316 and #317** — implement and register the XML reader under the signed
+   integrity and identifier policies.
+8. **#318** — complete serverless Databricks validation. Force an action
+   because `.load()` is lazy; cover malformed documents, namespace collisions,
+   nested content, attributes, and `_metadata.file_path`.
 
-## Phase 2 — Decide before building
+### Public wiring
 
-Two issues are **decisions, not tasks**. Both are cheap to answer now and
-expensive to answer after the thing they govern has been built. Neither
-needs a workspace, so both can run in parallel with Phase 3.
-
-### #163 — Buy-vs-build checkpoint (DQX, Lakeflow Declarative Pipelines)
-
-Gates **#109**, the largest remaining item, and touches #61, #62, #64, #159.
-If Databricks Labs DQX covers the silver rule engine, building one is a
-straight loss. Answer before #109 starts.
-
-The issue is explicit that "build anyway" is a fine outcome — the point is
-that it be written down with its reasoning, as every other significant
-decision in this repo is.
-
-### #162 — Define the Bronze→Silver contract
-
-The medallion is one layer deep, and "that belongs in Silver" has been
-deferring to something with no design, no owner and no schedule. Gates
-**#58** and **#109**, and settles the retention number #159 needs.
-
-**This is the unblocking move for the only item whose value decays** — see
-#58 below.
+9. **#319** — add the format-neutral API with a compatibility alias; **#320**
+   and **#321** wire notebook and bundle parameters; **#322** updates the
+   owning documentation. Close #301 only after workspace evidence is recorded.
+10. **#323** remains explicitly deferred: this phase is batch-only and does
+    not widen Auto Loader beyond JSON.
 
 ---
 
-## Phase 3 — Provisioning, and the deploy path
+## Phase 2 — establish the platform boundary
 
-A chain, in strict order. Azure/Databricks work rather than package work,
-and the only phase that needs a real workspace.
+Run this chain after multi-format, or sooner if Azure credits or workspace
+availability impose a deadline:
 
 ```
-#112  Phase B provisioning (grants, verification, Key Vault)   ← partially done
-  ├── #113  CI/CD: deploy the bundle from GitHub Actions via OIDC
-  ├── #115  Databricks secret scopes for source credentials
-  └── #160  Per-environment Volumes
+#112  Phase B grants, Key Vault, staging/prod deploys, isolation proof
+  ├── #113  OIDC bundle deployment
+  ├── #115  secret scopes
+  └── #160  per-environment Volumes
+              └── #64 governed tag application → #238 ABAC enforcement
 ```
 
-**#113 has compounding value.** Phase 0 existed because promotion is manual
-and drifted 38 commits. Automated deployment fixes the cause.
-
-**#160 closes a gap no grant can close.** All three environments read
-subpaths of one Volume (`ext-ingredion-dev`), and Unity Catalog grants
-`READ VOLUME` at *volume* granularity — there is no sub-path grant. Any
-principal that can read its own subpath can read `PROD/Raw/`. Tables, audit
-and registry are isolated by schema; source files are isolated by nothing.
-Verified still true in `databricks.yml`. Cheap now, expensive once prod
-holds real data.
-
-> **Timing note.** #112 flags that the Azure trial credit or 30-day window
-> may bind. If that clock is real, this phase jumps the queue — everything
-> else in this document can be done later; a lapsed workspace cannot.
+All SQL grants, credentials, deploys, resource changes, and promotions follow
+their Tier 2/3 gates. #64 cannot be called complete until the required tag
+permission and manual integration evidence exist.
 
 ---
 
-## Phase 4 — Operational maturity
+## Phase 3 — make Bronze operable
 
-Bronze is now *correct*. This phase makes it *operable*.
-
-| Issue | Why now |
-| --- | --- |
-| **#159** — lifecycle: OPTIMIZE, VACUUM, retention, small files | No table this package creates has any lifecycle policy. The audit table writes one row as its own commit — ~18k tiny files/year for a daily 50-unit run, ~1M/year for a 30-second stream. Costs compound silently. Do the **measurement** first; it is an afternoon and it sets the urgency |
-| **#62** — dashboard + SQL alerts over the audit table | **Newly viable.** #149 and #156 made the audit trail mean one consistent thing; before that a dashboard would have plotted numbers not comparable across write modes. Its tiles should read `table_name`, `row_count`, `write_mode` and `stream_batch_id` as they now exist |
-| **#61** — volume anomaly detection from audit baselines | After #62. Its rolling median is only meaningful on the corrected `row_count` |
-
----
-
-## Phase 5 — Features and interoperability
-
-| Issue | Gate | Notes |
-| --- | --- | --- |
-| **#84** — sha2 row-hash as a merge-key strategy | none | **Cheapest item on the board.** `sql_utils.row_content_hash` already exists, is tested, and is used as a window tie-break; this is exporting it and wiring a config strategy |
-| **#58** — Change Data Feed on by default | #162, #159 | **The only item whose value strictly decays** — CDF captures nothing retroactively, so every day it is off is history no silver job can ever read incrementally. Ship it *with* #159's retention floor: enabling a feature whose data VACUUM deletes creates a guarantee that looks real and is not |
-| **#109** — silver-layer business-rule quality engine | #163, #162 | Largest remaining item. Do not start before the buy-vs-build answer |
-| **#64** — Unity Catalog TAGS | #112 | The COMMENT half shipped. Tags are DBR-only and raise `ParseException` on OSS Delta, so the local suite cannot validate them — needs a real workspace or it ships unverified. Also needs `APPLY TAG` adding to #112's grant list |
-| **#65** — Delta UniForm / Iceberg interop | — | **Recommend parking.** No stated consumer. Speculative until an external engine needs to read these tables |
+1. **#159** — deploy and deliberately activate the maintenance policy. The
+   batch audit buffering and streaming-compaction decision exist; operational
+   proof does not.
+2. **#62 → #61** — build operational dashboards and alerts over the corrected
+   audit model, then use that history for volume anomaly baselines.
+3. **#250** — obtain business-owned required-column invariants. Remove any
+   dead sample override rather than fabricating a source contract. #248 is
+   closed from six documented real Auto Loader runs.
+4. **#258 → #259 → #260** — resume FinOps only when billing-system access
+   exists, then add per-run cost and cost-anomaly signals.
+5. **#261** — add the first freshness SLA after the alerting surface exists.
 
 ---
 
-## Carried findings — not yet issues
+## Phase 4 — build the deterministic Bronze→Silver path
 
-Small items surfaced during the correctness wave that have no home. None is
-urgent; all are cheap, and each will otherwise be rediscovered.
+Reconcile #205, #298, and #109 before creating more overlapping work. #298's
+issue text predates implemented profiling, `MetadataStore`, and candidate-key
+detection, so begin from code rather than replaying completed foundation work.
 
-| Finding | Origin |
-| --- | --- |
-| ~~`databricks bundle validate` runs in CI but is **non-blocking**. It has passed on every run since. Drop `continue-on-error` and make it a real gate~~ **Wrong, and resolved.** It had passed on *no* run: it failed on every one, for auth, never for a bundle error. `validate` calls `scim/v2/Me` and cannot run credential-free on any target or CLI version. Step removed (#244); the real gate needs a CI credential and lands with #113 | #157, #244 |
-| Coverage is reported, not enforced. The number is now known and stable (**~86.5%**), so a floor can be set from evidence rather than guessed | #158 |
-| `python_requires>=3.8` pins `ruff target-version` to `py38`, which blocks PEP 604/585 annotations. If the real floor is the Databricks runtime's Python, raising it unlocks ~83 modernisations | #158 |
-| The README retry-safety matrix still does not cover the **quarantine** write, though the MERGE-on-content-hash behaviour has shipped | #148 |
-| Local Spark on Windows starts intermittently even with all five prerequisites set; a re-run clears it. Cause unknown | #74 |
-| Whether Python 3.14 works now that `PYSPARK_PYTHON` is set is **untested** — #74's claim that 3.14 is incompatible was disproven, but 3.11 is what is verified | #74 |
-| `directory_ingestion.py` is 498 lines against #151's ~300 target. The duplication it was really about is gone; the number needs a *reason* before chasing it | #151, #183 |
+1. Use the now-closed **#324** storage boundary as the common foundation for
+   the remaining #298 work.
+2. Build **#265** on the now-closed #264 structural contract, without moving
+   Silver-owned value/range rules into Bronze.
+3. Build the remaining deterministic inference-to-execution boundary under
+   **#298**, with **#205** as the medallion delivery parent and **#109** as the
+   business-rule quality workstream.
+4. Re-home **#255** in Silver per its proposed layer-placement record. Bronze
+   retains source versions; Silver owns SCD2 interval bookkeeping.
+
+The canonical Silver output remains atomic, standardized, and lossless.
+Dimensional, Data Vault, and other business projections are generated outputs,
+not alternate meanings of canonical Silver.
+
+---
+
+## Phase 5 — product and serving layers
+
+The business case **#213** remains the parent for the product outcome, not
+evidence that its layers exist.
+
+1. With **#208 closed**, deliver **#206 → #209** within the signed autonomous-
+   remediation bounds. Eligible automatic fix classes start empty and expand
+   only through named approval.
+2. Build **#228** before **#210** or **#211**. Genie and the executive dashboard
+   require curated Gold entities and human-authored measures.
+3. Keep operational dashboard #62 separate from executive dashboard #211:
+   one runs the pipeline; the other explains business outcomes.
+
+---
+
+## Phase 6 — self-service and public surface
+
+Proceed only after one source can traverse the implemented Bronze→Silver path:
+
+```
+#266 config design → #267 minimal registration UI
+                   └── #268 connector contract and example
+                          └── #269 capability matrix and measured benchmarks
+```
+
+Park **#65** until a named external-engine consumer requires UniForm. A format
+flag without a consumer is compatibility surface with no demonstrated value.
 
 ---
 
 ## Suggested order
 
 ```
-Phase 0   promote dev → staging → main                    ✅ done
-Phase 1   #183                                            ✅ done
-          #190 / #191 dependabot                          ← housekeeping, 5 min
-
-Phase 2   #163, #162            ← decisions; no workspace needed
-Phase 3   #112 → #113, #115, #160   ← Azure; jumps the queue if trial expiring
-Phase 4   #159, then #62 → #61
-Phase 5   #84 (quick win), then #58 / #109 / #64 per Phase 2 and 3 outcomes
+1. #301: #310–#322, with #336/#337 signed before XML implementation
+2. Resolve #256's rescued-data contract and record one real drift run
+3. #112 → #113/#115/#160 → #64/#238
+4. #159 → #62 → #61; then #250 and #258–#261
+5. #298/#205/#109 → #265/#255
+6. #213: #206/#209 and #228 → #210/#211
+7. #266 → #267/#268 → #269
+8. #65 and #323 stay deferred until their named consumers exist
 ```
 
-Phases 2 and 3 run in parallel — one is a decision, the other is
-provisioning, and neither blocks the other.
-
-**If only one thing happens next: #162.** It is a document, it needs no
-workspace, and it unblocks #58 — the single item that gets more expensive
-every day it waits.
+After Phase 1, assemble a promotion sign-off packet with CI results, reviewer
+verdict, Databricks evidence, blast radius, rollback notes, and the exact
+commits proposed for `dev → staging`. Promotion itself remains a separate,
+named Project Lead decision.

@@ -2,9 +2,9 @@
 # scripts/bootstrap_agents.sh
 #
 # Fetches this project's real agent definitions (prompts, workflows,
-# configs) from the private ingredion-agent-config repo into .claude/agents/
-# locally. .claude/agents/*.md (other than README.md) is gitignored — this
-# script is the only thing that populates it. Never commit its output.
+# configs) from the private ingredion-agent-config repo and renders them for
+# Claude, Copilot, and Codex. Generated prompt content is gitignored on every
+# substrate. Never commit its output.
 #
 # Requires: git, and a GitHub token with read access to the private repo,
 # in AGENT_CONFIG_TOKEN. This script reads that variable and nothing else:
@@ -130,4 +130,16 @@ if [[ -n "$PY_BIN" ]]; then
   "$PY_BIN" "$(dirname "${BASH_SOURCE[0]}")/generate_copilot_chatmodes.py" ||     echo "warning: Copilot chat mode generation failed; the Claude lane is unaffected." >&2
 else
   echo "warning: no python interpreter - skipped Copilot chat mode generation." >&2
+fi
+
+# Codex supports project-scoped custom subagents as standalone TOML files in
+# .codex/agents/. Render every role from the same pinned source so governance
+# and role boundaries cannot drift between Claude and Codex.
+if [[ -n "$PY_BIN" ]]; then
+  "$PY_BIN" "$(dirname "${BASH_SOURCE[0]}")/generate_codex_agents.py" || {
+    echo "error: Codex agent generation failed." >&2
+    exit 1
+  }
+else
+  echo "warning: no python interpreter - skipped Codex agent generation." >&2
 fi
