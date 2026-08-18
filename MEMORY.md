@@ -56,28 +56,10 @@ place as conventions prove wrong or new ones emerge, the same way
 
 ## Projects — active work, current tasks, status
 
-- **Bronze layer** — built, deployed, tested. The only layer that's real
-  today.
-- **Silver / Gold layers** — not built. Treat anything under
-  `silver_layer/` as aspirational, not working code.
-- **Agent setup + docs refresh (PR #197, `docs/agent-setup` → `dev`)** —
-  `AGENTS.md`, `docs/agent_governance.md`, role-based subagents
-  (`data-engineer`, `qa-engineer`, `devops-engineer`, `platform-engineer`),
-  the archive pass, and the new `docs/overview.md` /
-  `bronze_layer/docs/architecture.md` split. Merged.
-- **Business-analyst subagent (PR #198, `docs/business-analyst-agent` →
-  `dev`)** — `business-analyst.md` + `docs/business_requirements.md`
-  (BR-001 intake). Merged.
-- **Private agent-config architecture (PR #199)** — moved real agent
-  definitions to the private `ingredion-agent-config` repo, added the
-  lockfile/bootstrap fetch mechanism. Merged.
-- **Business-stakeholder role (PR #200)** — added the sourced-candidate
-  origination agent. Merged.
-- **Project Lead rename + `principal-data-engineer` role** — Yash's title
-  renamed everywhere; new managerial/senior-technical agent inserted above
-  `business-stakeholder`, `business-analyst`+`solution-architect`, and
-  `devops-lead`, with standing Tier 1 merge authority and a
-  Pending/In-progress/Future status-report duty to Yash. In review.
+- **Bronze layer** — production-ready, deployed, tested. The only working layer today.
+- **Silver / Gold layers** — not built. Treat anything under `silver_layer/` as aspirational, not working code.
+- **Multi-format batch ingestion** — CSV, Parquet, XML readers implemented and tested. Streaming multi-format support deferred.
+- **Agent infrastructure** — seven-role functional roster with private agent-config architecture and pinned bootstrap mechanism in place.
 
 ## Output — formats, naming, delivery preferences
 

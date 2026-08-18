@@ -18,23 +18,24 @@ The framework is designed to be:
 
 ## Implemented
 
-- JSON ingestion with nested structure preservation
+- **JSON** ingestion with nested structure preservation
+- **CSV, Parquet, and XML** batch ingestion (streaming multi-format deferred)
 - Unity Catalog integration
 - Required-column validation and row-level quarantine
 - Retry with exponential backoff
 - Lineage columns: `_ingested_at`, `_source_file`, `_batch_id`
-- Directory ingestion
-- Folder-as-table ingestion
+- Directory ingestion and folder-as-table ingestion
 - Automatic processed-file archival
 - Retry-limit-based quarantine
 - Run-level audit trail
-- Auto Loader streaming ingestion
+- Auto Loader streaming (JSON only)
 - GitHub Actions CI
 - Databricks Asset Bundle deployment
 
 ## Planned
 
-- CSV, XML, Parquet, and Excel support
+- Multi-format streaming ingestion
+- Excel support
 - Control-table-driven configuration
 - Concurrency locking
 - Configuration governance and allowlists

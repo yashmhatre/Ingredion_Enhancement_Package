@@ -149,26 +149,9 @@ No skill overrides `docs/agent_governance.md`. Deploys, `GRANT`/`DROP`/`VACUUM`,
 handling, and promotion PRs need the Project Lead's named sign-off no matter which skill or
 agent is driving.
 
-## Where to find things (don't duplicate — go read the owner)
+## Where to find things
 
-| Question | Owning doc |
-| --- | --- |
-| I'm not an engineer — where do I start? | `docs/overview.md` |
-| Where do new business asks/feature requests get captured and reconciled? | `docs/business_requirements.md` |
-| Why don't I see the actual agent prompts in this repo? | `docs/private_agent_architecture.md` (plus `.claude/agents/README.md` and `.codex/agents/README.md`) |
-| How do I set up, configure, run the bronze package? | `bronze_layer/README.md` |
-| How do I set up my local dev environment (Java/Python/Spark/Windows prereqs), find an issue, branch, commit, open a PR? | `CONTRIBUTING.md` |
-| What changed in a release, and what do I need to do before deploying it? | `CHANGELOG.md` |
-| What's the deployment target/variable/run-as layout? | `databricks.yml` (header comments — the file *is* the source of truth) |
-| Design rationale for the bronze architecture and remaining hardening phases? | `bronze_layer/docs/architecture.md` |
-| What order is the remaining work in, and why? | `docs/roadmap.md` — **check this before picking up any task** |
-| First-time Azure/Databricks environment setup? | `azure_setup.md` |
-| What does bronze promise silver, and what must silver be built to expect? | `docs/bronze_silver_contract.md` |
-| Build-vs-buy decisions already made (DQX, Lakeflow, etc.)? | `docs/buy_vs_build_2026-08.md` |
-
-The full index, with the "living vs. point-in-time" distinction, is
-`docs/README.md`. If two docs disagree, that file's ownership table decides
-which one wins; if that's still ambiguous, open GitHub issues are the tiebreak.
+See `docs/README.md` for the authoritative ownership table — which document is the single source of truth for each subject. That table is the final authority if two docs disagree; open issues are the tiebreak.
 
 ## Fast path to running things
 
