@@ -303,8 +303,20 @@ def test_blank_optional_widgets_become_none_or_are_omitted(run_notebook):
     assert kwargs["required_columns"] == []
     # Blank id overrides are omitted entirely rather than passed as "",
     # so the package's own defaults apply.
-    for key in ("batch_id", "run_id", "audit_schema_name", "registry_schema_name"):
+    for key in ("batch_id", "run_id", "audit_schema_name", "registry_schema_name", "xml_row_tag"):
         assert key not in kwargs
+
+
+def test_directory_source_format_and_xml_row_tag_reach_ingestion(run_notebook):
+    fake = _fake_ingest([])
+    run_notebook(
+        "run_directory_ingestion",
+        widgets={**BASE_WIDGETS, "source_format": "xml", "xml_row_tag": "order"},
+        patches=[(bronze_ingest, "ingest_directory_to_bronze", fake)],
+    )
+
+    assert fake.calls[0]["source_format"] == "xml"
+    assert fake.calls[0]["xml_row_tag"] == "order"
 
 
 def test_comma_separated_widgets_split_and_strip(run_notebook):
@@ -477,6 +489,34 @@ def test_every_bundle_parameter_has_a_matching_widget():
     assert problems == [], "\n".join(problems)
 
 
+def test_every_bundle_dropdown_value_is_an_allowed_widget_choice():
+    """A job parameter may bypass the UI dropdown, so validate the bundle
+    value against the notebook's declared choices before deployment."""
+    problems = []
+    for notebook, params in _bundle_notebook_tasks():
+        source = open(os.path.join(NOTEBOOK_DIR, notebook), encoding="utf-8").read()
+        for node in ast.walk(ast.parse(source)):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "dropdown"
+                and len(node.args) >= 3
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[2], (ast.List, ast.Tuple))
+            ):
+                continue
+            name = node.args[0].value
+            if name not in params:
+                continue
+            choices = [item.value for item in node.args[2].elts if isinstance(item, ast.Constant)]
+            if str(params[name]) not in choices:
+                problems.append(
+                    f"{notebook}: bundle value {params[name]!r} for {name!r} "
+                    f"is not one of {choices!r}"
+                )
+    assert problems == [], "\n".join(problems)
+
+
 def test_every_required_widget_is_supplied_by_the_bundle():
     """
     The other direction. A widget with a blank default that the bundle does
@@ -586,6 +626,155 @@ def test_run_ingestion_builds_config_from_widgets(run_notebook):
     assert seen["config"].table == "t"
     assert seen["config"].schema_name == "sch"
     assert "row_count" in run.exit_value
+
+
+def test_run_ingestion_threads_format_specific_widgets(run_notebook):
+    seen = {}
+
+    class _FakeJob:
+        def __init__(self, spark, config):
+            seen["config"] = config
+
+        def run(self):
+            return {"table": "sch.t", "row_count": 1}
+
+    run_notebook(
+        "run_ingestion",
+        widgets={
+            "source_path": "/Volumes/c/s/v/orders.xml",
+            "schema_name": "sch",
+            "table": "t",
+            "source_format": "xml",
+            "xml_row_tag": "order",
+        },
+        patches=[(bronze_ingest, "BronzeIngestion", _FakeJob)],
+        spark=FakeSpark(),
+    )
+
+    assert seen["config"].source_format == "xml"
+    assert seen["config"].xml_row_tag == "order"
+
+
+def test_run_ingestion_does_not_replace_config_file_format_with_widget_default(
+    run_notebook,
+):
+    seen = {}
+    loaded = IngestionConfig(
+        source_path="/Volumes/c/s/v/orders.xml",
+        schema_name="sch",
+        table="t",
+        source_format="xml",
+        xml_row_tag="order",
+    )
+
+    class _FakeJob:
+        def __init__(self, spark, config):
+            seen["config"] = config
+
+        def run(self):
+            return {"table": "sch.t", "row_count": 1}
+
+    run_notebook(
+        "run_ingestion",
+        widgets={"config_path": "/Volumes/c/s/v/config.yaml"},
+        patches=[
+            (IngestionConfig, "load", lambda _path: loaded),
+            (bronze_ingest, "BronzeIngestion", _FakeJob),
+        ],
+        spark=FakeSpark(),
+    )
+
+    assert seen["config"].source_format == "xml"
+    assert seen["config"].xml_row_tag == "order"
+
+
+@pytest.mark.parametrize("notebook", ["validate_csv_reader", "validate_xml_reader"])
+def test_format_validation_notebooks_require_a_volume_scratch_path(run_notebook, notebook):
+    with pytest.raises(ValueError, match=r"scratch_path.*writable /Volumes/"):
+        run_notebook(notebook, widgets={"scratch_path": "/tmp/validation"})
+
+
+class _ValidationSelection:
+    def __init__(self, value):
+        self.value = value
+
+    def first(self):
+        return (self.value,)
+
+
+class _ValidationRow(dict):
+    pass
+
+
+class _ValidationFrame:
+    def __init__(self, filename):
+        self.filename = filename
+        if filename == "header.csv":
+            self.columns = ["id", "name", "amount", "_input_file_name"]
+        elif filename == "headerless.csv":
+            self.columns = ["id", "name", "_input_file_name"]
+        elif filename == "illegal_header.csv":
+            self.columns = ["order id", "total(amount)", "_input_file_name"]
+        elif filename == "valid.xml":
+            self.columns = ["_id", "customer", "items", "_input_file_name"]
+        elif filename == "namespaced.xml":
+            self.columns = ["a__id", "b__id", "_input_file_name"]
+        else:
+            self.columns = ["id", "amount", "_corrupt_record", "_rescued_data"]
+
+    def count(self):
+        return 2 if self.filename in {"header.csv", "headerless.csv", "malformed.csv"} else 1
+
+    def select(self, _column):
+        return _ValidationSelection(f"/Volumes/c/s/v/{self.filename}")
+
+    def filter(self, _condition):
+        return self
+
+    def first(self):
+        return _ValidationRow(amount=None, _corrupt_record="bad", _rescued_data=None)
+
+
+def _fake_validation_read_source(_spark, config):
+    filename = config.source_path.rsplit("/", 1)[-1]
+    if filename == "collision.xml":
+        raise ValueError("XML identifier collision")
+    if filename == "truncated.xml":
+        raise ValueError("XML document is not well-formed")
+    return _ValidationFrame(filename)
+
+
+@pytest.mark.parametrize(
+    "notebook,expected_cases",
+    [("validate_csv_reader", 4), ("validate_xml_reader", 4)],
+)
+def test_format_validation_notebooks_execute_all_cases(
+    run_notebook, monkeypatch, notebook, expected_cases
+):
+    from bronze_ingest import readers
+
+    # pytest loads the fixture's conftest module under an environment-specific
+    # module name. Patch the class the returned fixture actually closes over,
+    # rather than importing a second copy of conftest under `tests.conftest`.
+    fake_fs = run_notebook.__globals__["FakeFs"]
+    monkeypatch.setattr(
+        fake_fs, "put", lambda self, *args: self._record("put", *args), raising=False
+    )
+    run = run_notebook(
+        notebook,
+        widgets={"scratch_path": "/Volumes/c/s/v/validation"},
+        patches=[(readers, "read_source", _fake_validation_read_source)],
+        spark=FakeSpark(),
+    )
+
+    assert run.exit_value == f"SUCCESS: all {expected_cases} " + (
+        "CSV cases passed" if notebook == "validate_csv_reader" else "XML cases passed"
+    )
+    assert len([call for call in run.dbutils.fs.calls if call[0] == "put"]) == expected_cases
+    rows, schema = run.spark.created[0]
+    assert schema == "case STRING, status STRING, detail STRING"
+    assert len(rows) == expected_cases
+    assert {row[1] for row in rows} == {"PASS"}
 
 
 # ---------------------------------------------------------------------------

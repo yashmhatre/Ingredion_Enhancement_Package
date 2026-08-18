@@ -4,7 +4,7 @@
 # environment_version = "2"
 # ///
 # MAGIC %md
-# MAGIC # Bronze JSON Ingestion - Job Entrypoint
+# MAGIC # Bronze Ingestion - Job Entrypoint
 # MAGIC Parameterized entrypoint meant to be run as a Databricks Job task
 # MAGIC (scheduled, or triggered via file arrival). Reads all parameters from
 # MAGIC job/task parameters (widgets), so the same notebook works for every
@@ -33,6 +33,13 @@ dbutils.widgets.text("source_path", "", "Source path (overrides config)")
 dbutils.widgets.text("catalog", "", "Catalog (optional)")
 dbutils.widgets.text("schema_name", "bronze", "Target schema")
 dbutils.widgets.text("table", "", "Target table")
+dbutils.widgets.dropdown(
+    "source_format",
+    "",
+    ["", "json", "csv", "parquet", "xml"],
+    "Source format (blank = config/default)",
+)
+dbutils.widgets.text("xml_row_tag", "", "XML row tag (required for XML)")
 dbutils.widgets.dropdown("write_mode", "append", ["append", "overwrite", "merge"], "Write mode")
 dbutils.widgets.dropdown("ingestion_mode", "batch", ["batch", "streaming"], "Ingestion mode")
 dbutils.widgets.text("checkpoint_location", "", "Checkpoint location (streaming only)")
@@ -59,6 +66,8 @@ for key in (
     "catalog",
     "schema_name",
     "table",
+    "source_format",
+    "xml_row_tag",
     "write_mode",
     "ingestion_mode",
     "checkpoint_location",
