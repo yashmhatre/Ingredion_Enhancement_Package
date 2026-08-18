@@ -3,7 +3,7 @@ from .config import IngestionConfig
 from .contract import ContractError, DataContract, validate_dataframe, validate_schema
 from .directory_ingestion import build_table_name, ingest_directory_to_bronze, sanitize_table_name
 from .logging_utils import get_logger
-from .pipeline import BronzeIngestion, ingest_json_to_bronze
+from .pipeline import BronzeIngestion, ingest_json_to_bronze, ingest_to_bronze
 from .profiling import ProfileConfig, profile_table, profile_tables
 from .quality import DataQualityError
 from .replay import reprocess_quarantine, reprocess_quarantined_files
@@ -17,6 +17,7 @@ __all__ = [
     "validate_dataframe",
     "BronzeIngestion",
     "ingest_json_to_bronze",
+    "ingest_to_bronze",
     "ingest_directory_to_bronze",
     "sanitize_table_name",
     "build_table_name",

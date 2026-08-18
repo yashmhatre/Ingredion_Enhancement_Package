@@ -98,6 +98,60 @@ _JSON_ONLY_READER_OPTIONS = frozenset(
     }
 )
 
+_CSV_ONLY_READER_OPTIONS = frozenset(
+    {
+        "sep",
+        "delimiter",
+        "quote",
+        "escape",
+        "comment",
+        "ignoreLeadingWhiteSpace",
+        "ignoreTrailingWhiteSpace",
+        "nullValue",
+        "emptyValue",
+        "nanValue",
+        "positiveInf",
+        "negativeInf",
+        "maxColumns",
+        "maxCharsPerColumn",
+        "unescapedQuoteHandling",
+    }
+)
+
+_PARQUET_READER_OPTIONS = frozenset(
+    {
+        "mergeSchema",
+        "datetimeRebaseMode",
+        "int96RebaseMode",
+        "recursiveFileLookup",
+        "pathGlobFilter",
+        "modifiedBefore",
+        "modifiedAfter",
+    }
+)
+
+_XML_READER_OPTIONS = frozenset(
+    {
+        "samplingRatio",
+        "excludeAttribute",
+        "attributePrefix",
+        "valueTag",
+        "wildcardColName",
+        "rowValidationXSDPath",
+        "dateFormat",
+        "timestampFormat",
+        "timestampNTZFormat",
+        "timeZone",
+        "locale",
+        "encoding",
+        "charset",
+        "recursiveFileLookup",
+        "pathGlobFilter",
+        "modifiedBefore",
+        "modifiedAfter",
+    }
+)
+
 
 @dataclass(frozen=True)
 class FormatSpec:
@@ -142,6 +196,12 @@ class FormatSpec:
 
 #: The registry. Order is not significant; `supported_formats()` sorts.
 FORMATS: Dict[str, FormatSpec] = {
+    "csv": FormatSpec(
+        name="csv",
+        extensions=(".csv",),
+        cloudfiles_format="csv",
+        allowed_reader_options=_COMMON_READER_OPTIONS | _CSV_ONLY_READER_OPTIONS,
+    ),
     "json": FormatSpec(
         name="json",
         # `.json` and `.jsonl` only - NOT `.ndjson`, even though
@@ -153,6 +213,18 @@ FORMATS: Dict[str, FormatSpec] = {
         extensions=(".json", ".jsonl"),
         cloudfiles_format="json",
         allowed_reader_options=_COMMON_READER_OPTIONS | _JSON_ONLY_READER_OPTIONS,
+    ),
+    "parquet": FormatSpec(
+        name="parquet",
+        extensions=(".parquet",),
+        cloudfiles_format="parquet",
+        allowed_reader_options=_PARQUET_READER_OPTIONS,
+    ),
+    "xml": FormatSpec(
+        name="xml",
+        extensions=(".xml",),
+        cloudfiles_format="xml",
+        allowed_reader_options=_XML_READER_OPTIONS,
     ),
 }
 

@@ -13,7 +13,10 @@ import pytest
 from bronze_ingest import formats as formats_module
 from bronze_ingest import readers
 from bronze_ingest.config import IngestionConfig
+from bronze_ingest.csv_reader import read_csv
 from bronze_ingest.json_reader import read_json
+from bronze_ingest.parquet_reader import read_parquet
+from bronze_ingest.xml_reader import read_xml
 
 
 def _cfg(**kwargs) -> IngestionConfig:
@@ -22,11 +25,11 @@ def _cfg(**kwargs) -> IngestionConfig:
     return IngestionConfig(**base)
 
 
-def _fake_csv_spec():
+def _fake_avro_spec():
     return formats_module.FormatSpec(
-        name="csv",
-        extensions=(".csv",),
-        cloudfiles_format="csv",
+        name="avro",
+        extensions=(".avro",),
+        cloudfiles_format="avro",
         allowed_reader_options=frozenset(),
     )
 
@@ -64,12 +67,12 @@ def test_every_registered_format_has_reader_options():
     assert not missing, f"formats registered with no reader-options builder: {missing}"
 
 
-def test_json_is_the_only_registered_reader_so_far():
-    """Guards the two invariant tests above from passing vacuously, and is
-    the deliberate tripwire for #310/#313/#317 - registering a format should
-    require touching this file on purpose."""
-    assert sorted(readers._BATCH_READERS) == ["json"]
+def test_batch_formats_have_registered_readers():
+    assert sorted(readers._BATCH_READERS) == ["csv", "json", "parquet", "xml"]
+    assert readers._BATCH_READERS["csv"] is read_csv
     assert readers._BATCH_READERS["json"] is read_json
+    assert readers._BATCH_READERS["parquet"] is read_parquet
+    assert readers._BATCH_READERS["xml"] is read_xml
 
 
 # ---- a half-wired format must fail loudly, not fall through --------------
@@ -85,16 +88,16 @@ def test_read_source_raises_for_a_registered_format_with_no_reader(monkeypatch):
     reader would make a format that reads nothing look like it works, for
     exactly as long as nobody checks the columns it produced.
     """
-    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
-    cfg = _cfg(source_path="/tmp/x.csv", source_format="csv")
+    monkeypatch.setitem(formats_module.FORMATS, "avro", _fake_avro_spec())
+    cfg = _cfg(source_path="/tmp/x.avro", source_format="avro")
 
     with pytest.raises(ValueError, match="No registered batch reader"):
         readers.read_source(object(), cfg)
 
 
 def test_batch_reader_options_raises_for_a_registered_format_with_no_builder(monkeypatch):
-    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
-    cfg = _cfg(source_path="/tmp/x.csv", source_format="csv")
+    monkeypatch.setitem(formats_module.FORMATS, "avro", _fake_avro_spec())
+    cfg = _cfg(source_path="/tmp/x.avro", source_format="avro")
 
     with pytest.raises(ValueError, match="No registered reader options"):
         readers.batch_reader_options(cfg)
@@ -103,13 +106,13 @@ def test_batch_reader_options_raises_for_a_registered_format_with_no_builder(mon
 def test_read_source_error_names_what_is_registered(monkeypatch):
     """The message has to be actionable - naming the bad format alone doesn't
     tell you whether you typo'd or hit an unimplemented format."""
-    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
-    cfg = _cfg(source_path="/tmp/x.csv", source_format="csv")
+    monkeypatch.setitem(formats_module.FORMATS, "avro", _fake_avro_spec())
+    cfg = _cfg(source_path="/tmp/x.avro", source_format="avro")
 
     with pytest.raises(ValueError) as exc:
         readers.read_source(object(), cfg)
 
-    assert "csv" in str(exc.value)
+    assert "avro" in str(exc.value)
     assert "json" in str(exc.value)
 
 
@@ -182,3 +185,26 @@ def test_batch_reader_options_multiline_follows_effective_multiline():
     assert not readers.batch_reader_options(_cfg(source_path="/tmp/x.jsonl", multiline=True))[
         "multiLine"
     ]
+
+
+def test_csv_batch_reader_options_match_the_public_config_contract():
+    cfg = _cfg(source_path="/tmp/x.csv", source_format="csv", csv_infer_schema=False)
+    assert readers.batch_reader_options(cfg) == {
+        "header": True,
+        "inferSchema": False,
+        "mode": "PERMISSIVE",
+    }
+
+
+def test_parquet_batch_reader_options_are_only_explicit_overrides():
+    cfg = _cfg(
+        source_path="/tmp/x.parquet",
+        source_format="parquet",
+        reader_options={"mergeSchema": "true"},
+    )
+    assert readers.batch_reader_options(cfg) == {"mergeSchema": "true"}
+
+
+def test_xml_batch_reader_options_pin_row_tag_and_failfast():
+    cfg = _cfg(source_path="/tmp/x.xml", source_format="xml", xml_row_tag="record")
+    assert readers.batch_reader_options(cfg) == {"rowTag": "record", "mode": "FAILFAST"}

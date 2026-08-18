@@ -24,16 +24,18 @@ validate clean, discover files, and read nothing, silently. See
 `test_readers.py::test_every_registered_format_has_a_batch_reader` for the
 test that makes the claim enforced rather than merely written down.
 
-Today `_BATCH_READERS` has exactly one entry. This is a #306 change only -
-`read_json` is unmodified and still does all the work for "json"; nothing
-here reshapes or reinterprets what it reads. csv/parquet/xml are #310/#313/
-#317, not this issue.
+The dispatch is deliberately explicit: adding registry data without its
+reader is caught by the parity tests rather than silently falling back to a
+different parser.
 """
 
 from typing import Any, Callable, Dict
 
 from .config import IngestionConfig
+from .csv_reader import read_csv
 from .json_reader import effective_multiline, read_json
+from .parquet_reader import read_parquet
+from .xml_reader import read_xml
 
 #: `source_format` -> the batch reader for it. `config.__post_init__`
 #: already restricts `source_format` to `formats.supported_formats()`, so in
@@ -43,7 +45,10 @@ from .json_reader import effective_multiline, read_json
 #: for the moment (see both docstrings) where `formats.FORMATS` gains an
 #: entry this dict has not caught up with yet.
 _BATCH_READERS: Dict[str, Callable[[Any, IngestionConfig], Any]] = {
+    "csv": read_csv,
     "json": read_json,
+    "parquet": read_parquet,
+    "xml": read_xml,
 }
 
 
@@ -106,6 +111,30 @@ def _json_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
     return options
 
 
+def _csv_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
+    options: Dict[str, Any] = {
+        "header": config.csv_header,
+        "inferSchema": config.csv_infer_schema,
+        "mode": "PERMISSIVE",
+    }
+    if config.schema_hint_ddl:
+        options["columnNameOfCorruptRecord"] = config.corrupt_record_column
+        options["rescuedDataColumn"] = config.rescued_data_column
+    if config.reader_options:
+        options.update(config.reader_options)
+    return options
+
+
+def _parquet_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
+    return dict(config.reader_options or {})
+
+
+def _xml_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
+    options = dict(config.reader_options or {})
+    options.update({"rowTag": config.xml_row_tag, "mode": "FAILFAST"})
+    return options
+
+
 #: `source_format` -> the pure function computing that format's batch
 #: reader options. Kept as its own table, parallel to `_BATCH_READERS`
 #: rather than folded into it, because `batch_reader_options` answers a
@@ -113,7 +142,10 @@ def _json_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
 #: ("read the data") - the two can be tested independently, and the second
 #: needs no SparkSession to do it.
 _BATCH_READER_OPTIONS: Dict[str, Callable[[IngestionConfig], Dict[str, Any]]] = {
+    "csv": _csv_batch_reader_options,
     "json": _json_batch_reader_options,
+    "parquet": _parquet_batch_reader_options,
+    "xml": _xml_batch_reader_options,
 }
 
 

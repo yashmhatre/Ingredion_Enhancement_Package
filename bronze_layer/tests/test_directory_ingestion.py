@@ -4,7 +4,6 @@ import uuid
 
 import pytest
 
-from bronze_ingest import formats as formats_module
 from bronze_ingest.directory_ingestion import (
     build_table_name,
     list_json_files,
@@ -132,16 +131,14 @@ def test_list_source_files_missing_dir_raises(spark, json_test_dir):
 
 
 def test_list_source_files_unregistered_format_raises(spark, json_test_dir):
-    # csv is not in the format registry yet - that's #310. list_source_files
-    # must fail the same way config validation does today (a ValueError
-    # naming what IS supported), not silently return nothing and not
-    # hardcode a .csv extension ahead of the registry existing.
+    # Use a name no planned issue registers so the error contract remains
+    # covered as real formats are added.
     _, source_dir = json_test_dir
     with pytest.raises(ValueError, match="source_format must be one of"):
-        list_source_files(spark, source_dir, source_format="csv")
+        list_source_files(spark, source_dir, source_format="avro")
 
 
-def test_list_source_files_extension_threading_is_per_format(spark, json_test_dir, monkeypatch):
+def test_list_source_files_extension_threading_is_per_format(spark, json_test_dir):
     """
     #304's acceptance criteria: given a directory with a.json, b.jsonl,
     c.csv and notes.txt, source_format="json" returns exactly the two JSON
@@ -149,25 +146,14 @@ def test_list_source_files_extension_threading_is_per_format(spark, json_test_di
     errors on the other's files (architecture.md: "files of other formats
     are invisible, not an error").
 
-    csv isn't registered in `formats.py` yet (#310), so a throwaway spec is
-    registered in `formats.FORMATS` for the duration of this test only, via
-    monkeypatch (auto-reverted). This proves the extensions tuple is
-    resolved per-call through `formats.extensions_for` rather than
-    hardcoded, without landing real csv support ahead of its own issue.
+    This proves the extensions tuple is resolved per-call through
+    `formats.extensions_for` rather than hardcoded.
     """
     write_dir, source_dir = json_test_dir
     _write(write_dir, "a.json", json.dumps({"x": 1}))
     _write(write_dir, "b.jsonl", json.dumps({"x": 2}))
     _write(write_dir, "c.csv", "x,y\n1,2\n")
     _write(write_dir, "notes.txt", "ignore me")
-
-    fake_csv_spec = formats_module.FormatSpec(
-        name="csv",
-        extensions=(".csv",),
-        cloudfiles_format="csv",
-        allowed_reader_options=frozenset(),
-    )
-    monkeypatch.setitem(formats_module.FORMATS, "csv", fake_csv_spec)
 
     json_files = list_source_files(spark, source_dir, source_format="json")
     csv_files = list_source_files(spark, source_dir, source_format="csv")
@@ -462,6 +448,46 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     assert good_result["status"] == "success"
     assert bad_result["status"] == "failed"
     assert bad_result["attempts"] == 1
+
+
+def test_xml_folder_with_one_malformed_document_writes_and_archives_nothing(
+    spark, json_test_dir, monkeypatch
+):
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "records"), exist_ok=True)
+    _write(write_dir, "records/good.xml", "<records><record><id>1</id></record></records>")
+    _write(write_dir, "records/bad.xml", "<records><record><id>2</id></record>")
+
+    writes = []
+    archives = []
+
+    from bronze_ingest.pipeline import BronzeIngestion
+
+    monkeypatch.setattr(
+        BronzeIngestion,
+        "run_on_dataframe",
+        lambda self, df: writes.append((self, df)),
+    )
+    monkeypatch.setattr(
+        di,
+        "archive_files_parallel",
+        lambda *args, **kwargs: archives.append((args, kwargs)),
+    )
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        source_format="xml",
+        xml_row_tag="record",
+        max_ingestion_retries=3,
+        catalog=None,
+        schema_name="default",
+    )
+
+    folder_result = next(result for result in results if result["table"].endswith("records_bronze"))
+    assert folder_result["status"] == "failed"
+    assert writes == []
+    assert archives == []
 
 
 def test_folder_as_table_archives_files_with_folder_name_preserved(
@@ -841,29 +867,17 @@ def test_both_paths_produce_the_same_shape_for_the_same_failure(tmp_path):
         assert per_file[key] == folder_inner[key]
 
 
-# ---- #307: discovery is format-aware end to end -------------------------
+# ---- #307/#310: discovery is format-aware end to end --------------------
 
 
-def _fake_csv_spec():
-    return formats_module.FormatSpec(
-        name="csv",
-        extensions=(".csv",),
-        cloudfiles_format="csv",
-        allowed_reader_options=frozenset(),
-    )
-
-
-def test_skipped_reason_names_the_configured_format(spark, json_test_dir, monkeypatch):
+def test_skipped_reason_names_the_configured_format(spark, json_test_dir):
     """
     #307's acceptance criterion. Before this, a CSV config found nothing and
     reported it as a JSON problem - the operator is told the wrong thing
     about why their run did nothing, which is worse than an unhelpful
     message because it sends them looking at the wrong files.
 
-    csv is not registered yet (#310), so a throwaway FormatSpec is installed
-    for this test only.
     """
-    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
     write_dir, source_dir = json_test_dir
     os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
     # A folder holding only JSON, discovered under source_format="csv".
@@ -888,12 +902,9 @@ def test_source_format_discovers_and_ingests_only_that_format(spark, json_test_d
     error (architecture.md: "files of other formats are invisible, not an
     error").
 
-    Needs a csv *reader* as well as a csv FormatSpec - #306's `read_source`
-    raises for a registered format with no reader, by design. Both are
-    monkeypatched for this test only; neither lands real csv support.
+    The reader is replaced with a spy because this test targets discovery
+    and routing, not CSV parsing.
     """
-    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
-
     read_calls = []
 
     def fake_csv_reader(spark_, config):
@@ -930,13 +941,12 @@ def test_source_format_discovers_and_ingests_only_that_format(spark, json_test_d
     assert results[0]["status"] == "success"
 
 
-def test_explicit_source_format_beats_base_config(spark, json_test_dir, monkeypatch):
+def test_explicit_source_format_beats_base_config(spark, json_test_dir):
     """
     The two routes must never be silently followed at once. The explicit
     parameter wins - the same "explicit kwarg beats base_config" precedence
     every other field already has.
     """
-    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
     write_dir, source_dir = json_test_dir
     os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
     _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
@@ -954,12 +964,9 @@ def test_explicit_source_format_beats_base_config(spark, json_test_dir, monkeypa
     assert results[0]["reason"] == "no csv files in folder"
 
 
-def test_base_config_source_format_applies_when_the_parameter_is_omitted(
-    spark, json_test_dir, monkeypatch
-):
+def test_base_config_source_format_applies_when_the_parameter_is_omitted(spark, json_test_dir):
     """Leaving the parameter None must leave base_config's value untouched -
     the pre-#307 behaviour for callers who already set it that way."""
-    monkeypatch.setitem(formats_module.FORMATS, "csv", _fake_csv_spec())
     write_dir, source_dir = json_test_dir
     os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
     _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))

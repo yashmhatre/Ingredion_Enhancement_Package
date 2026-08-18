@@ -1,11 +1,14 @@
 # Sample config for bronze_ingest
 # Any Spark-readable path works: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/
 source_path: "/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/orders.json"
-# source_format: "json"  # must be one of formats.supported_formats() (currently just "json");
-                          # drives both what discovery lists and which reader_options are valid.
-                          # Case-sensitive - "JSON" is rejected, not normalized.
+# source_format: "json"  # json | csv | parquet | xml;
+                           # drives both what discovery lists and which reader_options are valid.
+                           # Case-sensitive - "JSON" is rejected, not normalized.
+# xml_row_tag: "order"   # required only for XML; reader_options.rowTag is rejected
+# csv_header: true       # CSV only
+# csv_infer_schema: true # CSV only
 multiline: true
-# schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
+# schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"  # not XML v1
 reader_options: {}
 # reader_options passes keys straight to the Spark reader, so keys are
 # checked against ALLOWED_READER_OPTIONS at config load (#154). Parsing and

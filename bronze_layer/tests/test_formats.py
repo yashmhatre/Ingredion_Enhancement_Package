@@ -106,8 +106,31 @@ def test_config_and_the_registry_agree_on_what_json_accepts():
 # --- lookups --------------------------------------------------------------
 
 
-def test_json_is_registered_and_is_the_only_format_so_far():
-    assert supported_formats() == ("json",)
+def test_batch_formats_are_registered():
+    assert supported_formats() == ("csv", "json", "parquet", "xml")
+
+
+def test_csv_format_contract():
+    spec = spec_for("csv")
+    assert spec.extensions == (".csv",)
+    assert spec.cloudfiles_format == "csv"
+    assert {"sep", "quote", "escape", "multiLine"} <= spec.allowed_reader_options
+
+
+def test_parquet_format_contract():
+    spec = spec_for("parquet")
+    assert spec.extensions == (".parquet",)
+    assert spec.cloudfiles_format == "parquet"
+    assert {"mergeSchema", "datetimeRebaseMode", "int96RebaseMode"} <= (spec.allowed_reader_options)
+
+
+def test_xml_format_contract_keeps_safety_options_out_of_generic_overrides():
+    spec = spec_for("xml")
+    assert spec.extensions == (".xml",)
+    assert spec.cloudfiles_format == "xml"
+    assert "rowTag" not in spec.allowed_reader_options
+    assert "mode" not in spec.allowed_reader_options
+    assert "ignoreNamespace" not in spec.allowed_reader_options
 
 
 def test_spec_for_unregistered_format_names_what_is_supported():
@@ -117,10 +140,10 @@ def test_spec_for_unregistered_format_names_what_is_supported():
     a typo or a format that is designed but not built yet.
     """
     with pytest.raises(ValueError) as excinfo:
-        spec_for("csv")
+        spec_for("avro")
 
     message = str(excinfo.value)
-    assert "csv" in message
+    assert "avro" in message
     assert "json" in message
 
 
@@ -128,7 +151,7 @@ def test_spec_for_unregistered_format_names_what_is_supported():
 def test_every_lookup_rejects_an_unregistered_format(lookup):
     """All three go through `spec_for`, so none can quietly return a default."""
     with pytest.raises(ValueError):
-        lookup("parquet")
+        lookup("avro")
 
 
 def test_json_discovers_the_two_extensions_discovery_has_always_listed():

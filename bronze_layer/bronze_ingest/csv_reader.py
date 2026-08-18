@@ -2,13 +2,9 @@
 Reads CSV from any Spark-readable location.
 
 Peer of `json_reader.read_json`: same option ordering, the same
-`@with_retry` wrapper, the same `_metadata.file_path` lineage select. Not
-wired into anything yet - `readers._BATCH_READERS` has no "csv" entry and
-`formats.FORMATS` has no "csv" spec, so nothing reaches this module today.
-Registering the format is #310, deliberately a separate change: adding a
-reader with nothing dispatching to it is inert, the same reasoning
-`readers.py`'s module docstring gives for why an entry in `formats.FORMATS`
-and a line in `_BATCH_READERS` are two edits rather than one.
+`@with_retry` wrapper, and the same `_metadata.file_path` lineage select.
+`formats.FORMATS` and `readers._BATCH_READERS` register it as the batch CSV
+implementation.
 """
 
 from typing import Any

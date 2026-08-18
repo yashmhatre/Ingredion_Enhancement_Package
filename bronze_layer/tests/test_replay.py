@@ -2,7 +2,6 @@ import json
 import os
 import uuid
 
-from bronze_ingest import formats as formats_module
 from bronze_ingest.bronze_writer import add_audit_columns
 from bronze_ingest.config import IngestionConfig
 from bronze_ingest.fs import RetryState
@@ -183,9 +182,7 @@ def test_reprocess_quarantined_files_pattern_filter(spark, json_test_dir):
     assert os.path.exists(os.path.join(qdir, "customers_1.json"))
 
 
-def test_reprocess_quarantined_files_source_format_selects_only_that_format(
-    spark, json_test_dir, monkeypatch
-):
+def test_reprocess_quarantined_files_source_format_selects_only_that_format(spark, json_test_dir):
     """
     #305: reprocess_quarantined_files previously always called
     list_json_files, so a quarantined file of any non-JSON source_format was
@@ -196,26 +193,14 @@ def test_reprocess_quarantined_files_source_format_selects_only_that_format(
     source_format="csv" must find and move back only the CSV; the default
     (source_format="json") must find and move back only the JSON.
 
-    csv is not in the format registry yet (#310) - a throwaway FormatSpec is
-    registered in formats.FORMATS for the duration of this test only, via
-    monkeypatch (auto-reverted), the same approach #304 used in
-    test_directory_ingestion.py's
-    test_list_source_files_extension_threading_is_per_format. This does not
-    land real csv support.
+    CSV is a shipped registry format, so replay uses its real discovery
+    contract.
     """
     write_dir, source_dir = json_test_dir
     qdir = os.path.join(write_dir, "quarantine_files")
     os.makedirs(qdir, exist_ok=True)
     _write(qdir, "bad.json", json.dumps({"id": 1}))
     _write(qdir, "bad.csv", "id\n1\n")
-
-    fake_csv_spec = formats_module.FormatSpec(
-        name="csv",
-        extensions=(".csv",),
-        cloudfiles_format="csv",
-        allowed_reader_options=frozenset(),
-    )
-    monkeypatch.setitem(formats_module.FORMATS, "csv", fake_csv_spec)
 
     csv_result = reprocess_quarantined_files(spark, source_dir, source_format="csv")
 
@@ -234,9 +219,7 @@ def test_reprocess_quarantined_files_source_format_selects_only_that_format(
     assert not os.path.exists(os.path.join(qdir, "bad.json"))
 
 
-def test_reprocess_quarantined_files_pattern_composes_with_source_format(
-    spark, json_test_dir, monkeypatch
-):
+def test_reprocess_quarantined_files_pattern_composes_with_source_format(spark, json_test_dir):
     """
     pattern still filters WITHIN the source_format-selected set, not instead
     of it: a .json file matching `pattern` textually is never a candidate
@@ -249,14 +232,6 @@ def test_reprocess_quarantined_files_pattern_composes_with_source_format(
     _write(qdir, "orders_1.csv", "id\n1\n")
     _write(qdir, "customers_1.csv", "id\n2\n")
     _write(qdir, "orders_1.json", json.dumps({"id": 3}))
-
-    fake_csv_spec = formats_module.FormatSpec(
-        name="csv",
-        extensions=(".csv",),
-        cloudfiles_format="csv",
-        allowed_reader_options=frozenset(),
-    )
-    monkeypatch.setitem(formats_module.FORMATS, "csv", fake_csv_spec)
 
     result = reprocess_quarantined_files(
         spark, source_dir, pattern="orders_*.csv", source_format="csv"

@@ -16,30 +16,9 @@ Split deliberately into two halves:
 
 import time
 
-import pytest
-
 from bronze_ingest import csv_reader as cr
-from bronze_ingest import formats as formats_module
 from bronze_ingest.config import IngestionConfig
 from tests.conftest import file_uri
-
-
-@pytest.fixture
-def csv_format(monkeypatch):
-    """csv is not in the registry until #310, so `source_format="csv"` is
-    rejected at config validation. Install a throwaway spec for the test -
-    the pattern #304 established and #305/#307/#308 reuse. This does not
-    land real csv support."""
-    monkeypatch.setitem(
-        formats_module.FORMATS,
-        "csv",
-        formats_module.FormatSpec(
-            name="csv",
-            extensions=(".csv",),
-            cloudfiles_format="csv",
-            allowed_reader_options=frozenset({"multiLine", "sep", "quote", "escape", "mode"}),
-        ),
-    )
 
 
 class _RecordingReader:
@@ -110,7 +89,7 @@ def _capture(config, monkeypatch) -> dict:
     return sink
 
 
-def _cfg(csv_format_installed=True, **kw):
+def _cfg(**kw):
     base = {"source_path": "/tmp/x.csv", "table": "t", "source_format": "csv"}
     base.update(kw)
     return IngestionConfig(**base)
@@ -119,7 +98,7 @@ def _cfg(csv_format_installed=True, **kw):
 # ---- the rule this module exists to enforce -----------------------------
 
 
-def test_config_multiline_never_reaches_the_csv_reader(csv_format, monkeypatch):
+def test_config_multiline_never_reaches_the_csv_reader(monkeypatch):
     """
     CSV's `multiLine` means "a quoted field may contain a newline" - an
     unrelated meaning to JSON's "this file is one document". The deployed
@@ -133,7 +112,7 @@ def test_config_multiline_never_reaches_the_csv_reader(csv_format, monkeypatch):
     assert "multiLine" not in sink["option_dict"], sink["options"]
 
 
-def test_multiline_still_reachable_explicitly_through_reader_options(csv_format, monkeypatch):
+def test_multiline_still_reachable_explicitly_through_reader_options(monkeypatch):
     """The escape hatch must remain: a source whose quoted fields genuinely
     contain newlines sets it deliberately, and that value is what applies."""
     sink = _capture(_cfg(multiline=False, reader_options={"multiLine": "true"}), monkeypatch)
@@ -143,7 +122,7 @@ def test_multiline_still_reachable_explicitly_through_reader_options(csv_format,
 # ---- option shape --------------------------------------------------------
 
 
-def test_fixed_options(csv_format, monkeypatch):
+def test_fixed_options(monkeypatch):
     sink = _capture(_cfg(), monkeypatch)
     assert sink["format"] == "csv"
     assert sink["option_dict"]["header"] is True
@@ -151,7 +130,7 @@ def test_fixed_options(csv_format, monkeypatch):
     assert sink["option_dict"]["mode"] == "PERMISSIVE"
 
 
-def test_header_and_infer_schema_follow_their_config_fields(csv_format, monkeypatch):
+def test_header_and_infer_schema_follow_their_config_fields(monkeypatch):
     sink = _capture(
         _cfg(csv_header=False, csv_infer_schema=False, schema_hint_ddl="a STRING"), monkeypatch
     )
@@ -159,7 +138,7 @@ def test_header_and_infer_schema_follow_their_config_fields(csv_format, monkeypa
     assert sink["option_dict"]["inferSchema"] is False
 
 
-def test_corrupt_record_options_only_with_a_schema_hint(csv_format, monkeypatch):
+def test_corrupt_record_options_only_with_a_schema_hint(monkeypatch):
     """Not style: Spark only materialises columnNameOfCorruptRecord for CSV
     when the column is declared in the read schema. Setting it against an
     inferred schema would imply a capture that does not happen."""
@@ -173,7 +152,7 @@ def test_corrupt_record_options_only_with_a_schema_hint(csv_format, monkeypatch)
     assert with_hint["option_dict"]["rescuedDataColumn"] == cfg.rescued_data_column
 
 
-def test_reader_options_are_applied_last_so_an_override_wins(csv_format, monkeypatch):
+def test_reader_options_are_applied_last_so_an_override_wins(monkeypatch):
     """Same precedence as read_json - config.reader_options runs after the
     fixed options, so an explicit value beats the default."""
     sink = _capture(_cfg(reader_options={"mode": "FAILFAST"}), monkeypatch)
@@ -182,12 +161,12 @@ def test_reader_options_are_applied_last_so_an_override_wins(csv_format, monkeyp
     assert keys.index("mode") < len(keys) - 1 or keys.count("mode") == 2
 
 
-def test_schema_applied_only_when_ddl_is_set(csv_format, monkeypatch):
+def test_schema_applied_only_when_ddl_is_set(monkeypatch):
     assert _capture(_cfg(), monkeypatch)["schema"] is None
     assert _capture(_cfg(schema_hint_ddl="id INT"), monkeypatch)["schema"] == "id INT"
 
 
-def test_lineage_column_is_selected(csv_format, monkeypatch):
+def test_lineage_column_is_selected(monkeypatch):
     sink = _capture(_cfg(), monkeypatch)
     assert sink["loaded"] == "/tmp/x.csv"
     assert any("_input_file_name" in s for s in sink["selected"]), sink["selected"]
@@ -196,7 +175,7 @@ def test_lineage_column_is_selected(csv_format, monkeypatch):
 # ---- behaviour a fake cannot prove --------------------------------------
 
 
-def test_read_csv_infers_numeric_types_not_strings(spark, tmp_path, csv_format):
+def test_read_csv_infers_numeric_types_not_strings(spark, tmp_path):
     """#308's whole reason for csv_infer_schema defaulting True: an
     all-string `amount` is the format-dependent-schema trap already
     documented in config/contracts/orders.yaml."""
@@ -213,7 +192,7 @@ def test_read_csv_infers_numeric_types_not_strings(spark, tmp_path, csv_format):
     assert df.count() == 2
 
 
-def test_read_csv_honours_csv_header_false_with_a_schema(spark, tmp_path, csv_format):
+def test_read_csv_honours_csv_header_false_with_a_schema(spark, tmp_path):
     p = tmp_path / "noheader.csv"
     p.write_text("1,alpha\n2,beta\n", encoding="utf-8")
 
@@ -229,7 +208,7 @@ def test_read_csv_honours_csv_header_false_with_a_schema(spark, tmp_path, csv_fo
     assert "id" in df.columns and "name" in df.columns
 
 
-def test_read_csv_retries_transient_load_failure(spark, tmp_path, monkeypatch, csv_format):
+def test_read_csv_retries_transient_load_failure(spark, tmp_path, monkeypatch):
     """The read path retries transient failures with backoff, same as the
     write path (#81). Mirrors test_json_reader's equivalent."""
     p = tmp_path / "orders.csv"

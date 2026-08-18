@@ -10,6 +10,14 @@ from bronze_ingest.quality import DataQualityError
 from tests.conftest import file_uri
 
 
+def test_json_entry_point_is_a_true_alias_for_format_neutral_entry_point():
+    import bronze_ingest
+    from bronze_ingest.pipeline import ingest_json_to_bronze, ingest_to_bronze
+
+    assert ingest_json_to_bronze is ingest_to_bronze
+    assert bronze_ingest.ingest_json_to_bronze is bronze_ingest.ingest_to_bronze
+
+
 def _write_json(path, rows):
     with open(path, "w") as fh:
         for row in rows:

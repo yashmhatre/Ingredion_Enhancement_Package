@@ -370,18 +370,78 @@ def test_source_format_defaults_to_json():
 
 def test_source_format_accepts_every_registered_format():
     for fmt in formats.supported_formats():
-        cfg = _cfg(source_format=fmt)
+        kwargs = {"xml_row_tag": "record"} if fmt == "xml" else {}
+        cfg = _cfg(source_format=fmt, **kwargs)
         assert cfg.source_format == fmt
 
 
 def test_source_format_rejects_an_unregistered_format():
     with pytest.raises(ValueError) as excinfo:
-        _cfg(source_format="xml")
+        _cfg(source_format="avro")
 
     message = str(excinfo.value)
-    assert "xml" in message
+    assert "avro" in message
     for fmt in formats.supported_formats():
         assert fmt in message
+
+
+def test_xml_requires_a_non_blank_row_tag():
+    with pytest.raises(ValueError, match="xml_row_tag is required"):
+        _cfg(source_format="xml")
+    with pytest.raises(ValueError, match="xml_row_tag must be non-empty"):
+        _cfg(source_format="xml", xml_row_tag="   ")
+
+
+def test_xml_row_tag_is_the_only_row_tag_source():
+    with pytest.raises(ValueError, match="reader_options.*rowTag"):
+        _cfg(
+            source_format="xml",
+            xml_row_tag="order",
+            reader_options={"rowTag": "other"},
+            allow_unsafe_reader_options=True,
+        )
+
+
+def test_xml_rejects_schema_hint_until_canonical_mapping_is_defined():
+    with pytest.raises(ValueError, match="schema_hint_ddl is not supported"):
+        _cfg(
+            source_format="xml",
+            xml_row_tag="order",
+            schema_hint_ddl="a__id STRING",
+        )
+
+
+def test_xml_safety_options_cannot_be_overridden_even_when_unsafe_is_enabled():
+    for key, value in (("mode", "PERMISSIVE"), ("ignoreNamespace", "true")):
+        with pytest.raises(ValueError, match=key):
+            _cfg(
+                source_format="xml",
+                xml_row_tag="order",
+                reader_options={key: value},
+                allow_unsafe_reader_options=True,
+            )
+
+
+def test_row_tag_option_remains_a_normal_unknown_option_for_non_xml_formats():
+    cfg = _cfg(reader_options={"rowTag": "ignored"}, allow_unsafe_reader_options=True)
+    assert cfg.reader_options == {"rowTag": "ignored"}
+
+
+def test_non_xml_format_does_not_require_xml_row_tag():
+    assert _cfg().xml_row_tag is None
+
+
+@pytest.mark.parametrize("source_format", ["csv", "parquet", "xml"])
+def test_non_json_streaming_is_deferred(source_format):
+    kwargs = {"xml_row_tag": "record"} if source_format == "xml" else {}
+    with pytest.raises(ValueError, match="streaming.*JSON"):
+        _cfg(
+            source_format=source_format,
+            ingestion_mode="streaming",
+            checkpoint_location="/tmp/checkpoint",
+            schema_location="/tmp/schema",
+            **kwargs,
+        )
 
 
 def test_there_is_at_least_one_shipped_config_to_check():
@@ -399,25 +459,7 @@ def test_shipped_config_yaml_still_constructs_unchanged(config_path):
     assert cfg.source_format == "json"
 
 
-# ---- csv_header / csv_infer_schema (#308) ----
-#
-# csv is NOT registered in formats.FORMATS yet (#310) - source_format="csv"
-# raises at the source_format check in __post_init__ before either field is
-# reachable. Tests that need source_format="csv" to actually pass that check
-# monkeypatch a throwaway FormatSpec into formats.FORMATS for the duration of
-# the test only, the pattern established in #304's
-# test_list_source_files_extension_threading_is_per_format and reused in
-# #305/#307's test_directory_ingestion.py. csv is never registered for real
-# here.
-
-
-def _fake_csv_spec():
-    return formats.FormatSpec(
-        name="csv",
-        extensions=(".csv",),
-        cloudfiles_format="csv",
-        allowed_reader_options=frozenset(),
-    )
+# ---- csv_header / csv_infer_schema (#308/#310) ----
 
 
 def test_csv_header_and_csv_infer_schema_default_to_true():
@@ -450,9 +492,7 @@ def test_csv_header_and_csv_infer_schema_settable_from_config_file(tmp_path):
     assert cfg.csv_infer_schema is False
 
 
-def test_headerless_csv_without_schema_hint_raises(monkeypatch):
-    monkeypatch.setitem(formats.FORMATS, "csv", _fake_csv_spec())
-
+def test_headerless_csv_without_schema_hint_raises():
     with pytest.raises(ValueError) as excinfo:
         _cfg(source_format="csv", csv_header=False)
 
@@ -461,17 +501,13 @@ def test_headerless_csv_without_schema_hint_raises(monkeypatch):
     assert "schema_hint_ddl" in message
 
 
-def test_headerless_csv_with_schema_hint_does_not_raise(monkeypatch):
-    monkeypatch.setitem(formats.FORMATS, "csv", _fake_csv_spec())
-
+def test_headerless_csv_with_schema_hint_does_not_raise():
     cfg = _cfg(source_format="csv", csv_header=False, schema_hint_ddl="a INT, b STRING")
     assert cfg.csv_header is False
     assert cfg.schema_hint_ddl == "a INT, b STRING"
 
 
-def test_csv_header_true_needs_no_schema_hint(monkeypatch):
-    monkeypatch.setitem(formats.FORMATS, "csv", _fake_csv_spec())
-
+def test_csv_header_true_needs_no_schema_hint():
     cfg = _cfg(source_format="csv")
     assert cfg.csv_header is True
     assert cfg.schema_hint_ddl is None
@@ -490,10 +526,8 @@ def test_bad_source_format_reports_source_format_error_not_csv_header():
     __post_init__ - a caller who typo'd source_format should not be told
     about _c0 positional columns, which has nothing to do with their mistake.
 
-    Uses a name no issue will ever register. Written against "csv" this
-    passes only because csv is unregistered today, and would flip to a
-    confusing failure the moment #310 registers it - taking the only
-    ordering coverage with it, since the tempting fix is deletion."""
+    Uses a name no issue will ever register so this remains ordering coverage
+    as real formats are added."""
     with pytest.raises(ValueError) as excinfo:
         _cfg(source_format="not_a_format", csv_header=False)
 

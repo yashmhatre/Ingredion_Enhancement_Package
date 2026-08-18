@@ -362,14 +362,14 @@ class BronzeIngestion:
         return query
 
 
-def ingest_json_to_bronze(
+def ingest_to_bronze(
     spark, config: Optional[Dict[str, Any]] = None, config_path: Optional[str] = None, **kwargs
 ) -> Dict[str, Any]:
     """
     One-shot convenience function for the simplest plug-and-play usage:
 
-        from bronze_ingest import ingest_json_to_bronze
-        ingest_json_to_bronze(
+        from bronze_ingest import ingest_to_bronze
+        ingest_to_bronze(
             spark,
             source_path="abfss://raw@mystorage.dfs.core.windows.net/orders/",
             schema_name="bronze",
@@ -387,3 +387,8 @@ def ingest_json_to_bronze(
     if cfg.ingestion_mode == "streaming":
         return job.run_streaming()
     return job.run()
+
+
+# Compatibility alias for every existing JSON caller. A direct alias, not a
+# wrapper, so introspection and future behavior cannot diverge between names.
+ingest_json_to_bronze = ingest_to_bronze

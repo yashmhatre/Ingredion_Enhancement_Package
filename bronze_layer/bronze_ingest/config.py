@@ -1,9 +1,9 @@
 """
-Configuration schema for the bronze JSON ingestion package.
+Configuration schema for the multi-format bronze ingestion package.
 
-A single IngestionConfig object drives the whole pipeline: where the JSON
-comes from, how nested fields should be handled, and where/how the result
-is written as a Delta bronze table.
+A single IngestionConfig object drives the whole pipeline: where source data
+comes from, how it is parsed, and where/how the result is written as a Delta
+bronze table.
 """
 
 import json
@@ -74,7 +74,13 @@ class IngestionConfig:
     # format-dependent-schema trap documented for batch JSON inference in
     # bronze_layer/config/contracts/orders.yaml.
     csv_infer_schema: bool = True
-    # optional DDL string to enforce a read schema instead of inferring it
+    # XML-only. Spark's XML data source cannot infer the repeated record
+    # element safely; there is deliberately no second rowTag source in
+    # reader_options.
+    xml_row_tag: Optional[str] = None
+    # optional DDL string to enforce a read schema instead of inferring it.
+    # XML v1 rejects this because Spark binds raw prefixed names before this
+    # package canonicalizes them; accepting canonical hints can yield nulls.
     schema_hint_ddl: Optional[str] = None
     # extra options passed straight to spark.read.options();
     # keys must be on the allowlist for this source_format
@@ -299,6 +305,34 @@ class IngestionConfig:
                 f"source_format must be one of {formats.supported_formats()}, "
                 f"got {self.source_format!r}"
             )
+        if self.source_format == "xml" and "rowTag" in (self.reader_options or {}):
+            raise ValueError(
+                "reader_options must not contain 'rowTag'; xml_row_tag is the sole "
+                "source for the XML record element, including when "
+                "allow_unsafe_reader_options=True."
+            )
+        if self.source_format == "xml":
+            if "mode" in (self.reader_options or {}):
+                raise ValueError(
+                    "reader_options must not contain 'mode' for XML; XML ingestion "
+                    "always uses FAILFAST, including when allow_unsafe_reader_options=True."
+                )
+            if "ignoreNamespace" in (self.reader_options or {}):
+                raise ValueError(
+                    "reader_options must not contain 'ignoreNamespace' for XML; namespace "
+                    "prefixes are preserved and canonicalized deterministically."
+                )
+            if self.xml_row_tag is None:
+                raise ValueError("xml_row_tag is required when source_format='xml'")
+            if not isinstance(self.xml_row_tag, str) or not self.xml_row_tag.strip():
+                raise ValueError("xml_row_tag must be non-empty when source_format='xml'")
+            if self.schema_hint_ddl:
+                raise ValueError(
+                    "schema_hint_ddl is not supported for source_format='xml': Spark "
+                    "binds schemas before namespace-prefix canonicalization, which can "
+                    "silently return nulls. Use inference until the XML name-mapping "
+                    "contract is signed off."
+                )
         # Type-checked before the guard below reads them. Both are plain
         # `bool` with no meaningful third state, so - unlike the
         # `Optional[bool]` fields that use `is True` to tell "user said so"
@@ -415,6 +449,11 @@ class IngestionConfig:
             raise ValueError(
                 f"ingestion_mode must be one of {VALID_INGESTION_MODES}, "
                 f"got {self.ingestion_mode!r}"
+            )
+        if self.ingestion_mode == "streaming" and self.source_format != "json":
+            raise ValueError(
+                "streaming ingestion currently supports JSON only; batch multi-format "
+                "support does not enable CSV, Parquet, or XML Auto Loader reads."
             )
         if self.schema_evolution_mode not in VALID_SCHEMA_EVOLUTION_MODES:
             raise ValueError(

@@ -32,11 +32,12 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "pyyaml>=5.1",
+        "defusedxml>=0.7.1",
     ],
     extras_require={
         # pyspark/delta-spark are provided by the Databricks runtime already;
         # only needed if you want to run/test this package outside Databricks.
-        "local": ["pyspark>=3.3.0", "delta-spark>=2.3.0"],
+        "local": ["pyspark>=4.0.0", "delta-spark>=2.3.0"],
         # databricks-sdk is deliberately NOT in install_requires: the
         # Databricks runtime ships its own copy, and pinning a second one
         # risks a version conflict on job compute. databricks_fs.py imports
@@ -67,7 +68,7 @@ setup(
         # `build` backs the wheel that Asset Bundles uploads and installs onto
         # job compute (see the `artifacts:` block in databricks.yml).
         "dev": [
-            "pyspark>=3.3.0", "delta-spark>=2.3.0", "pytest>=7.0.0",
+            "pyspark>=4.0.0", "delta-spark>=2.3.0", "pytest>=7.0.0",
             "build>=1.0.0", "databricks-sdk>=0.30.0",
         ],
     },

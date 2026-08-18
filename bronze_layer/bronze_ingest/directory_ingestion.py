@@ -225,6 +225,23 @@ def _ingest_folder_as_table(
 
     retry_state.flush()
 
+    # XML document integrity is atomic at the folder ingestion-unit boundary:
+    # one malformed member invalidates the whole attempt. Other formats retain
+    # their established per-file isolation semantics.
+    if source_format == "xml" and file_results:
+        logger.error(
+            "At least one XML file in folder %s failed validation - no table will be "
+            "written and no successfully validated sibling will be archived.",
+            folder_path,
+        )
+        return {
+            "file": folder_path,
+            "table": table,
+            "status": "failed",
+            "error": "one or more XML documents failed validation",
+            "file_results": file_results,
+        }
+
     if not validated_dataframes:
         logger.error("All files in folder %s failed to read - no table written.", folder_path)
         return {
