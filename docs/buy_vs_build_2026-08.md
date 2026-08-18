@@ -1,15 +1,12 @@
 # Buy-vs-build checkpoint — August 2026
 
-A deliberate, documented decision on each framework feature still in the
-backlog, for #163. **Not a recommendation to abandon the framework** — the
-likely honest answer for several of these is "build anyway", and that is a
-fine outcome provided it is written down with its reasoning, as every other
-significant decision in this repo is.
+Deliberate, documented decisions on significant framework features, for #163.
+Each verdict includes the reasoning so that revisits are explicit, not silent.
 
-Applies the repo's existing habit of recording rejected alternatives
-(`architecture.md` on background threads vs scheduled jobs, on event
-triggers, on per-file format inference) one level up: to the framework
-itself.
+**Status note (post-August):** Multi-format batch ingestion (CSV, Parquet, XML)
+has been implemented. These verdicts remain authoritative for the features
+still in backlog, and provide context for why certain architectures were
+chosen over platform alternatives.
 
 ---
 
@@ -26,269 +23,85 @@ itself.
 
 ---
 
-## DQX — the finding that decides #109
+## DQX analysis — why #109 verdict is "build"
 
-#163 asked for this to be *"answered by running it against a real fixture,
-not by reading the README"*. It was.
+**Finding: DQX cannot be instantiated without an authenticated Databricks workspace.**
 
-**Method.** `databricks-labs-dqx==0.15.0` installed against this repo's
-PySpark 4.1.1 / Python 3.11 environment, run against a bronze-shaped fixture
-(business columns plus `_ingested_at` / `_source_file` / `_batch_id`) with
-one `error` rule and one `warn` rule.
-
-**Result: DQX cannot be constructed without an authenticated Databricks
-workspace.**
-
-```
+```python
 DQEngine.__init__(self, workspace_client: WorkspaceClient, spark=None, ...)
-DQEngineCore.__init__(self, workspace_client: WorkspaceClient, spark=None, ...)
 ```
 
-`workspace_client` is a *required positional* argument on both the engine and
-its core, and it is not merely stored — a stub client that raises on
-attribute access shows it is dereferenced during construction:
+`workspace_client` is required and dereferenced during construction (calls `.clusters`),
+before any DataFrame is touched. This makes it unsuitable for a local test suite
+(322 tests currently run without a workspace).
 
-```
-[core_ctor] FAILED: AssertionError: ws used: .clusters
-```
+**Additional constraints:**
+- Requires Python ≥3.10 (this package floors at 3.8)
+- Depends on `databricks-sdk~=0.73` (this package deliberately excludes it)
+- Adds 5 transitive dependencies to a package whose `install_requires` is currently 1 entry
 
-So the failure is not "no credentials configured". It is that constructing
-the checker performs a workspace API call, at every layer, before any
-DataFrame is touched.
-
-**Two smaller findings from the same run:**
-
-- **DQX requires `pandas`.** The import fails without it. This package
-  deliberately *eliminated* pandas in #157, as an undeclared dependency that
-  worked only because the Databricks runtime happens to ship it. Adopting
-  DQX reintroduces it — declared this time, but reintroduced.
-- The library imports cleanly on OSS Spark. The blocker is specifically the
-  workspace client, not Spark compatibility.
-
-### Amendment, 2026-08-11 — two harder constraints, checked against DQX `main`
-
-Re-checked four days on, because a dependency argument dates faster than a
-design one. Both findings **strengthen** the verdict rather than reopening it,
-and neither was in the original write-up.
-
-**1. DQX now requires Python ≥ 3.10. This package floors at 3.8.**
-
-```toml
-# databrickslabs/dqx, pyproject.toml
-requires-python = ">=3.10"
-```
-
-against `bronze_layer/setup.py`'s `python_requires=">=3.8"` and
-`pyproject.toml`'s `target-version = "py38"`. Adopting DQX does not merely add
-a dependency — it **raises this package's supported Python floor**, which is a
-decision `docs/roadmap.md` has been deliberately holding (it notes the 3.8 floor
-blocks PEP 604/585 annotations and ~83 modernisations, pending a decision about
-what the real floor is). That decision should be made on its own merits, not
-arrive as a side effect of a quality-library choice.
-
-**2. DQX depends on `databricks-sdk~=0.73`, which this package excludes on
-purpose.**
-
-```toml
-dependencies = [
-    "databricks-labs-blueprint>=0.9.1,<=0.12",
-    "databricks-sdk~=0.73",
-    "sqlalchemy>=2.0,<3.0",
-    "PyYAML~=6.0.3",
-    "pydantic>=2.8.2,<3",
-]
-```
-
-`setup.py` states the reasoning already, as a comment on the `sdk` extra:
-
-> `databricks-sdk` is deliberately NOT in `install_requires`: the Databricks
-> runtime ships its own copy, and pinning a second one risks a version conflict
-> on job compute.
-
-DQX pins it with `~=0.73`. So adopting DQX imports precisely the conflict this
-package documented a decision to avoid — and does so transitively, where it is
-harder to notice. That is five runtime dependencies (`blueprint`, `sdk`,
-`sqlalchemy`, `pydantic`, `PyYAML`) into a package whose `install_requires` is
-currently **one entry** (`pyyaml`).
-
-**What has NOT changed:** the original finding stands — DQX still cannot be
-constructed without an authenticated workspace, which is what decides #109.
-These two are additional costs on the same side of the ledger, not a new
-argument.
-
-**What is genuinely new and worth tracking separately:** DQX now ships **80+
-built-in checks including PII validation**, and a browser-based no-code
-"DQX Studio". Neither changes a verdict here, but both touch issues that do not
-currently reference this document:
-
-- `architecture.md`'s AI metadata layer proposes building PII detection; DQX
-  and `discoverx` both ship one. Worth naming in #64 / #208 rather than
-  rediscovering.
-- **#267** proposes building a minimal self-service UI. DQX Studio is prior art
-  for that shape, whatever is decided.
-
-### Why that decides it
-
-This repo's test suite is **322 tests that need no workspace**, and #74 was
-spent making them runnable locally on top of that. Adopting DQX for #109
-would mean the silver quality path — the layer whose entire job is deciding
-whether data is correct — could not be covered by any test that runs in CI
-or on a developer machine.
-
-That is precisely the constraint **#64** documented for Unity Catalog tags,
-and the reason tags were deliberately *not* shipped: *"an unverified
-implementation would silently report success while applying nothing, which
-is a worse outcome for a governance feature than not shipping it."* The same
-argument applies with more force to a quality gate.
-
-**Verdict: build #109.** Revisit if two things change together — Silver
-becomes Databricks-only by policy, *and* someone is willing to fund
-integration testing against a real workspace in CI (which is #113's OIDC
-work plus a test catalog).
-
-### What is still worth taking from DQX
-
-Adopting the library is rejected; adopting its *design* is not. Three things
-it gets right that #109 should copy rather than reinvent:
-
-1. **Severity as a first-class rule attribute** (`error` / `warn`), not a
-   global switch. #109 already proposes this.
-2. **Per-rule result columns** describing which check failed, rather than a
-   single boolean. This is #109's stated hard part, and DQX's shape is a
-   reasonable model.
-3. **Profiling to generate candidate rules from data.** Genuinely useful and
-   entirely absent from #109's scope. Worth a follow-up issue rather than
-   scope creep.
+**Conclusion:** DQX's *design* is worth copying for #109 (severity levels, per-rule result
+columns), but the library itself cannot be adopted without removing the core constraint
+that keeps Silver testable locally.
 
 ---
 
-## Lakeflow Declarative Pipelines (formerly DLT)
+## Lakeflow Declarative Pipelines (formerly DLT) — verdict unchanged
 
-**Verdict: not adopted. The differentiators still hold.**
+**Not adopted.** This package's model ("directory defines tables, discovered at runtime")
+differs fundamentally from DLT's ("pipeline defines tables"). Three capabilities that
+only this package provides:
 
-DLT expectations overlap #109, #61, #62 and #159 simultaneously, which is
-why #163 raises it. The honest counter-argument is the one that justified
-building originally, and it has not weakened:
+- Folder-as-table union ingestion
+- Per-file archival fallback chain (`processed/` → `quarantine_files/` → leave in place)
+- Retry-limit-before-quarantine persisted across runs
 
-| This package does | DLT |
-| --- | --- |
-| Folder-as-table union ingestion | No equivalent |
-| Per-file archival with a fallback chain (`processed/` → `quarantine_files/` → leave in place) | No equivalent |
-| Retry-limit-before-quarantine **across runs**, persisted in `_state/` | No equivalent |
-| Filename-derived table naming | No equivalent |
-| Quarantine replay back into bronze | Expectations drop or fail; they do not retain and re-promote |
-
-What *has* changed since the original decision is the size of the remaining
-backlog, which is why re-asking was right. But the answer is unchanged, and
-the reason is that DLT's model is "a pipeline defines tables"; this
-package's model is "a directory defines tables, discovered at runtime". Those
-are different products.
-
-**One thing worth stealing:** DLT's automatic table maintenance is exactly
-what #159 needs, and its existence is an argument for the hybrid verdict
-below rather than for adopting DLT.
+**Worth noting:** DLT's automatic table maintenance (#159) exists and works; adopting it
+would still leave retry-and-quarantine to build locally.
 
 ---
 
-## The rest
+## Verdict details
 
-### #62 — ops dashboard: **buy**
+**#109 — Silver rule engine: BUILD**  
+A rolling quality engine for Silver that keeps the suite locally testable (no workspace
+required). Design guidance: adopt DQX's severity levels and per-rule result columns.
 
-Nothing to build. AI/BI (Lakeview) dashboards and Databricks SQL alerts are
-the product; the work is authoring SQL views over `_ingestion_audit` and
-checking in a `.lvdash.json`. This was already the plan and the evaluation
-does not change it.
+**#61 — Volume anomaly detection: BUILD (small)**  
+A rolling median over `row_count` for the last N runs, window-aggregated over the audit
+table this package already owns. Depends on #62 (ops views).
 
-Newly viable, and worth stating: #149 and #156 made the audit trail mean one
-consistent thing. A dashboard built before that would have plotted
-`row_count` values that were not comparable across write modes.
+**#62 — Ops dashboard + alerts: BUY (Lakeview + Databricks SQL alerts)**  
+Author SQL views over `_ingestion_audit` and check in a `.lvdash.json` dashboard and
+alert definitions. Already the plan; no architectural questions remain.
 
-### #61 — volume anomaly detection: **build (small)**
+**#64 — Unity Catalog TAGS: BUILD mechanics, defer classification**  
+~50 lines to apply tags against `catalog_metadata.py`'s existing pattern. Defer the
+decision to *decide what to tag* (PII classification) until the AI metadata layer is
+ready. Evaluate `discoverx` at that point as a separate decision.
 
-A rolling median over `row_count` for the last N successful runs of a table,
-compared against the current run. That is a window function over a table this
-package already owns and populates.
+**#159 — Lifecycle (compaction, VACUUM, quarantine ageing): HYBRID**  
+- Bronze compaction: **buy** — Databricks predictive optimization (where enabled)
+- VACUUM retention: **build** — floor must exceed CDF consumer lag (30 days recommended)
+- Quarantine ageing: **build** — rows that won't pass currently stay forever  
+- Audit-table growth: **build** — one row per run can accumulate 1M files/year on streaming
 
-DQX ships an `anomaly` module, and it inherits the workspace constraint
-above. Adopting a library for one median is the wrong trade regardless.
-
-**Depends on #62** — build the views once and let both read them.
-
-### #64 — Unity Catalog TAGS: **build, keep `discoverx` in view**
-
-Two separable halves:
-
-- **Applying tags** — ~50 lines against `catalog_metadata.py`'s proven
-  diff-and-apply pattern. Nothing to buy.
-- **Deciding what to tag** (PII/semantic classification) — this is where
-  [`databrickslabs/discoverx`](https://github.com/databrickslabs/discoverx)
-  is genuinely interesting, and `architecture.md` currently proposes building
-  PII detection from scratch.
-
-**Verdict: build the mechanics; do not build a classifier.** When the AI
-metadata layer reaches classification, evaluate discoverx *then*, as its own
-decision. Note it will hit the same workspace-testability constraint.
-
-### #159 — lifecycle: **hybrid**
-
-| Part | Verdict |
-| --- | --- |
-| Bronze compaction | **Buy** — Databricks predictive optimization handles it *where enabled*. State that dependency rather than relying on it silently |
-| VACUUM retention | **Build** — the floor must exceed the CDF consumer lag from `bronze_silver_contract.md` (recommended 30 days). No platform feature knows that number |
-| Quarantine ageing | **Build** — rows that will never pass currently stay forever. Nothing else will do this |
-| Audit-table file growth | **Build** — one row per run as its own commit; ~1M files/year on a 30-second stream |
-
-### #153 — concurrency: **already bought**
-
-`max_concurrent_runs: 1` with `queue.enabled` in the job definition closes
-the case that actually occurs — a scheduled run outlasting its interval. The
-library-level half (two direct callers racing on one `source_dir`) remains
-open and is correctly scoped as a separate concern.
+**#153 — Concurrency locking: ALREADY HANDLED**  
+`max_concurrent_runs: 1` in the job definition closes the case that occurs (scheduled
+run outlasting its interval).
 
 ---
 
-## `adidas/lakehouse-engine` reviewed against #150 / #151
+## What these decisions unblock
 
-#163 asked for this as a free design review from a codebase that solved the
-same problem at scale. Reviewed after the fact, since both refactors have
-landed.
-
-Its structure separates *algorithms* (what to do) from *IO* (where data comes
-from and goes) from the *ACON* configuration contract. The equivalent split
-here — `pipeline` orchestration, `fs/*` IO, `IngestionConfig` — is the same
-shape, arrived at independently.
-
-**Two observations worth carrying:**
-
-1. It keeps a **versioned config contract** with explicit compatibility
-   rules. This package's `IngestionConfig` is deliberately lenient in
-   `from_dict` and strict at entry points (#183's test pins that asymmetry),
-   which is a reasonable smaller version of the same idea.
-2. Its IO layer is organised by *source type* rather than by *operation*.
-   `fs/` here is organised by operation (discovery / archival / retry-state).
-   For a single-format package that is correct; if the multi-format work in
-   `architecture.md` lands, revisit — it is the seam that would move.
-
-No change recommended now. Recorded so the next refactor has a reference.
-
----
-
-## What this unblocks
-
-- **#109** may start once `bronze_silver_contract.md` §5 is confirmed. Its
-  prerequisite is now "build, per this document" rather than an open question
-- **#62** may start immediately; nothing gates it
+- **#109** may start once `bronze_silver_contract.md` §5 is confirmed
+- **#62** may start immediately (author the views)
 - **#61** follows #62
-- **#64**'s mechanics may start once #112 provides a workspace to verify
-  against
+- **#64** mechanics may start; classification decision deferred to AI layer
 
-## Follow-ups this surfaced
+## Reference design
 
-Neither is in scope for any open issue; both are worth filing if wanted:
-
-1. **Rule profiling** — generating candidate quality rules from data, which
-   DQX does and #109 does not propose
-2. **A workspace-backed integration test lane** — the constraint that
-   decided #109 and #64 is the *same* constraint. If it keeps deciding
-   things, it becomes worth removing rather than working around, and that
-   is #113's OIDC work plus a test catalog
+[`adidas/lakehouse-engine`](https://github.com/adidas/lakehouse-engine) solves the same
+problem at scale and separates *algorithms* (what), *IO* (where), and *contract* (config).
+This package uses the same three-part structure. Worth studying if either layer needs
+major refactoring.
