@@ -451,9 +451,14 @@
             <td><code>volumes list</code> on the schema returns empty — this is the blocker</td>
           </tr>
           <tr>
+            <td>Read path to STG/Raw</td>
+            <td class="st yes">Live</td>
+            <td><code>USE_SCHEMA</code> on <code>ingredion_dev</code> + <code>READ_VOLUME</code> on <code>ext-ingredion-dev</code>, and <code>STG/Raw</code> exists — readable today, no grant needed</td>
+          </tr>
+          <tr>
             <td>WRITE VOLUME anywhere</td>
             <td class="st no">Missing</td>
-            <td>Staging SP holds <code>READ_VOLUME</code> only, on the dev volume — see Phase 02</td>
+            <td>Held by neither principal, on any volume. Required for archival — see Phase 02</td>
           </tr>
         </tbody>
       </table>
@@ -546,6 +551,47 @@ databricks bundle validate -t staging --profile bronze-json-loader-dev</code></p
           The volume root is <code>STG/</code> and the bundle appends <code>Raw/</code>, resolving to
           <code>abfss://…/STG/Raw/</code>. Landing the Phase 04 fixtures creates that path; there is nothing
           to pre-create by hand.
+        </div>
+
+        <h3>Why not just point staging at the dev volume?</h3>
+        <p>
+          A fair question, because that path already works. <code>ext-ingredion-dev</code> spans the
+          container root, <code>STG/Raw</code> already exists inside it, and the staging SP already holds
+          both <code>USE_SCHEMA</code> on <code>ingredion_dev</code> and <code>READ_VOLUME</code> on the
+          volume. Reading <code>/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/STG/Raw/</code> needs
+          <strong>no new grant at all</strong> today.
+        </p>
+        <p>
+          It still fails, because the missing privilege is <code>WRITE_VOLUME</code> — held nowhere, by
+          either principal. So either way it comes down to one grant. What differs is where you point it.
+        </p>
+
+        <div class="tbl-scroll">
+          <table>
+            <thead>
+              <tr><th>&nbsp;</th><th>Grant write on the dev volume</th><th>Create ext-ingredion-stg</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>SQL</td><td>1 statement</td><td>2 statements</td></tr>
+              <tr><td>Bundle change</td><td><code>databricks.yml</code> repointed — a guarded path needing an <code>Agent: platform</code> trailer, and it reverts 187ee33</td><td>None. The bundle already points here</td></tr>
+              <tr><td>Write blast radius</td><td>The whole container — <strong>including <code>PROD/Raw/</code></strong></td><td><code>STG/</code> only</td></tr>
+              <tr><td>Effect on #160</td><td>Upgrades the gap from cross-environment <em>read</em> to cross-environment <em>write</em></td><td>Leaves the read gap; closes nothing until Phase B</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note warn">
+          <strong>Take the second.</strong> The saving is one SQL statement, and it buys a state where
+          staging can overwrite production source files. A misconfigured <code>source_dir</code> is then a
+          data-loss event rather than a failed run. The whole reason the bundle points at a volume that does
+          not exist yet is to avoid granting exactly that.
+        </div>
+
+        <div class="note">
+          <strong>A free dry run either way.</strong> Because <code>STG/Raw</code> is already readable, you
+          can land the Phase 04 fixtures there now and confirm discovery finds them — the format-aware
+          listing, the <code>.jsonl</code> handling, the ignored <code>.csv</code> — before creating
+          anything. Read-only, reversible, and it de-risks the volume decision rather than pre-empting it.
         </div>
 
         <h3>Verify rather than assume</h3>
