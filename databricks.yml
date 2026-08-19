@@ -1,8 +1,15 @@
 # Root Asset Bundle for the whole repository.
 #
 #   databricks bundle deploy -t dev        # deploys as you, schedules paused
-#   databricks bundle deploy -t staging    # requires --var overrides, see below
-#   databricks bundle deploy -t prod       # requires --var overrides, see below
+#   databricks bundle deploy -t staging    # runs as the staging service principal
+#   databricks bundle deploy -t prod       # runs as the prod service principal
+#
+# No --var overrides are needed for any target. Every variable declared below
+# is pinned per target in the `targets:` block, which is the point: a value
+# that must be passed on the command line is a value someone can pass wrongly,
+# and run_as_service_principal in particular decides which identity a deploy
+# runs under. This said "requires --var overrides" long after that stopped
+# being true.
 #
 # One bundle, not one per layer. bronze_layer and silver_layer previously
 # carried their own databricks.yml, which meant the workspace host, the
