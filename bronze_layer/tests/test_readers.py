@@ -205,6 +205,6 @@ def test_parquet_batch_reader_options_are_only_explicit_overrides():
     assert readers.batch_reader_options(cfg) == {"mergeSchema": "true"}
 
 
-def test_xml_batch_reader_options_pin_row_tag_and_failfast():
+def test_xml_batch_reader_options_pin_row_tag_and_failfast(xml_signed_off):
     cfg = _cfg(source_path="/tmp/x.xml", source_format="xml", xml_row_tag="record")
     assert readers.batch_reader_options(cfg) == {"rowTag": "record", "mode": "FAILFAST"}

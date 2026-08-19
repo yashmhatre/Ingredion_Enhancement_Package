@@ -136,7 +136,8 @@ relationship to this document in one line: *"this record is the documented
 | JSON bronze ingestion, quality gate, quarantine, retries | **Shipped** |
 | Directory ingestion (folder-as-table, archival, retry-limit-before-quarantine) | **Shipped** |
 | Run-level audit trail + schema registry | **Shipped** |
-| Batch multi-format ingestion (CSV/XML/Parquet) | **Draft implemented**; XML decision sign-off, workspace validation, and promotion pending |
+| Batch multi-format ingestion (CSV/Parquet) | **Shipped**; workspace validation outstanding (#311) |
+| Batch XML ingestion | **Implemented, and refused at config load.** `formats._PENDING_SIGNOFF` blocks `source_format="xml"` until #336 and #337 are signed off; the notebooks do not offer it, and `notebooks/validate_xml_reader.py` is the only caller that lifts the gate |
 | Schema registry as AI-layer input | **Shipped** |
 | AI-assisted metadata layer (advisory) | **Implemented**; #208 closed after code and scheduled-job evidence were reconciled |
 | Autonomous remediation (the write-path exception) | **Not built, and blocked.** `docs/decisions/2026-08_autonomous_remediation.md` is draft pending the Project Lead's named sign-off; its eligible fix-class set is empty, and the kill switch, rollback path and fail-closed remediation record it requires do not exist |
@@ -176,8 +177,15 @@ source_format: parquet  ->  discovers .parquet         ->  parquet_reader
 - **XML fails closed before Spark parsing.** Every physical document must be
   well formed; Spark then reads in `FAILFAST` mode. Namespace-prefix spelling is
   preserved by recursively canonicalizing `:` to `__`, with collisions
-  rejected before a write. The governing decisions remain proposed until
-  their required Tier 2 sign-off.
+  rejected before a write.
+- **XML is refused at config load until its decisions are signed.** The two
+  records governing it are proposed, not signed, so `formats._PENDING_SIGNOFF`
+  makes `source_format="xml"` raise in `IngestionConfig.__post_init__` and both
+  ingestion notebooks build their dropdown from `formats.approved_formats()`
+  instead of the full registry. This exists because the block was previously
+  written only here and in the CHANGELOG while the code offered the format
+  anyway — a block that lives in prose is not a block. Lifting it is deleting
+  one dict entry; the reader, its tests and its allowlist do not move.
 
 ## Metadata: three tables, facts kept separate from opinion
 
@@ -296,8 +304,9 @@ source fidelity. The working `flattener.py` and its tests are archived at
 **Target-state build, in the order each piece unblocks the next:**
 
 1. **Schema registry** — cheapest, unblocks the most (AI drift summaries need schema history to exist first). **Done.**
-2. **Batch multi-format ingestion** — CSV and Parquet are implemented. XML is a draft pending
-   stable namespace-binding preflight, Tier 2 sign-off, workspace validation, and promotion.
+2. **Batch multi-format ingestion** — CSV and Parquet are implemented and reachable.
+   XML is implemented and gated: the code is complete and tested, and config load
+   refuses it until #336 and #337 are signed off.
 3. **AI metadata layer** — implemented; #208 is closed with its acceptance evidence recorded.
 
 **What Bronze owes Silver**, from `docs/bronze_silver_contract.md`, in dependency order:

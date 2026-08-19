@@ -368,11 +368,29 @@ def test_source_format_defaults_to_json():
     assert cfg.source_format == "json"
 
 
-def test_source_format_accepts_every_registered_format():
-    for fmt in formats.supported_formats():
+def test_source_format_accepts_every_approved_format():
+    for fmt in formats.approved_formats():
         kwargs = {"xml_row_tag": "record"} if fmt == "xml" else {}
         cfg = _cfg(source_format=fmt, **kwargs)
         assert cfg.source_format == fmt
+
+
+def test_source_format_refuses_a_registered_format_awaiting_signoff():
+    """A registered format is not automatically a usable one. The refusal
+    names the decision records so the operator can see what is pending
+    rather than reading it as a defect."""
+    for fmt in formats.supported_formats():
+        if fmt in formats.approved_formats():
+            continue
+        with pytest.raises(ValueError) as excinfo:
+            _cfg(source_format=fmt, xml_row_tag="record")
+        assert "sign-off" in str(excinfo.value)
+
+
+def test_the_signoff_gate_is_not_vacuous():
+    """Guards the test above: it must not pass by finding zero gated
+    formats. Delete this together with the last _PENDING_SIGNOFF entry."""
+    assert set(formats.supported_formats()) - set(formats.approved_formats())
 
 
 def test_source_format_rejects_an_unregistered_format():
@@ -385,14 +403,14 @@ def test_source_format_rejects_an_unregistered_format():
         assert fmt in message
 
 
-def test_xml_requires_a_non_blank_row_tag():
+def test_xml_requires_a_non_blank_row_tag(xml_signed_off):
     with pytest.raises(ValueError, match="xml_row_tag is required"):
         _cfg(source_format="xml")
     with pytest.raises(ValueError, match="xml_row_tag must be non-empty"):
         _cfg(source_format="xml", xml_row_tag="   ")
 
 
-def test_xml_row_tag_is_the_only_row_tag_source():
+def test_xml_row_tag_is_the_only_row_tag_source(xml_signed_off):
     with pytest.raises(ValueError, match="reader_options.*rowTag"):
         _cfg(
             source_format="xml",
@@ -402,7 +420,7 @@ def test_xml_row_tag_is_the_only_row_tag_source():
         )
 
 
-def test_xml_rejects_schema_hint_until_canonical_mapping_is_defined():
+def test_xml_rejects_schema_hint_until_canonical_mapping_is_defined(xml_signed_off):
     with pytest.raises(ValueError, match="schema_hint_ddl is not supported"):
         _cfg(
             source_format="xml",
@@ -411,7 +429,7 @@ def test_xml_rejects_schema_hint_until_canonical_mapping_is_defined():
         )
 
 
-def test_xml_safety_options_cannot_be_overridden_even_when_unsafe_is_enabled():
+def test_xml_safety_options_cannot_be_overridden_even_when_unsafe_is_enabled(xml_signed_off):
     for key, value in (("mode", "PERMISSIVE"), ("ignoreNamespace", "true")):
         with pytest.raises(ValueError, match=key):
             _cfg(
@@ -432,7 +450,7 @@ def test_non_xml_format_does_not_require_xml_row_tag():
 
 
 @pytest.mark.parametrize("source_format", ["csv", "parquet", "xml"])
-def test_non_json_streaming_is_deferred(source_format):
+def test_non_json_streaming_is_deferred(source_format, xml_signed_off):
     kwargs = {"xml_row_tag": "record"} if source_format == "xml" else {}
     with pytest.raises(ValueError, match="streaming.*JSON"):
         _cfg(

@@ -32,7 +32,7 @@ mergeable PRs without ever being half-wired.
 """
 
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Tuple
+from typing import Dict, FrozenSet, Optional, Tuple
 
 #: Reader options that mean the same thing regardless of format, and are safe
 #: for all of them. Split out of the single JSON-era allowlist that lived in
@@ -229,10 +229,64 @@ FORMATS: Dict[str, FormatSpec] = {
 }
 
 
+#: Formats that are registered, implemented and tested, but whose governing
+#: decision records have not been signed off yet. `config.py` refuses them; the
+#: notebooks do not offer them.
+#:
+#: This exists because "blocked" was previously written only in prose.
+#: `CHANGELOG.md` and `architecture.md` both said XML was blocked pending the
+#: Tier 2 sign-off on #336/#337, while `FORMATS` registered it, `readers`
+#: dispatched it, and both notebook dropdowns offered it - so a promoted build
+#: shipped the drafted path to any operator who picked it from the widget. A
+#: block that lives in prose is not a block.
+#:
+#: The gate is here rather than in `config.py` for the same reason the rest of
+#: this module is here: it is a fact about a format, and facts about a format
+#: live in one place or they drift. Keeping it beside `FORMATS` also means the
+#: reader, its tests and its allowlist stay exactly where they are - lifting
+#: the gate is deleting an entry from this dict, not re-landing the format.
+#:
+#: The value is the operator-facing reason, so the error names what is pending
+#: rather than only saying no.
+_PENDING_SIGNOFF: Dict[str, str] = {
+    "xml": (
+        "XML ingestion is implemented but not yet approved for use: "
+        "docs/decisions/2026-08_xml_integrity_policy.md (#336) and "
+        "docs/decisions/2026-08_xml_namespace_identifiers.md (#337) are both "
+        "proposed and awaiting Tier 2 sign-off. Remove the 'xml' entry from "
+        "formats._PENDING_SIGNOFF once they are signed."
+    ),
+}
+
+
 def supported_formats() -> Tuple[str, ...]:
     """Registered `source_format` values, sorted, for error messages and for
     pinning the notebooks' format dropdown to the registry."""
     return tuple(sorted(FORMATS))
+
+
+def approved_formats() -> Tuple[str, ...]:
+    """
+    Registered formats an operator may actually select, sorted.
+
+    `supported_formats()` answers "what does this package know how to read?"
+    and stays the right answer for parity tests and for the reader dispatch.
+    This answers the narrower question the notebooks and the bundle need:
+    "what may be run today?" The two differ only while a format is awaiting
+    sign-off, which is exactly when offering the wider set is wrong.
+    """
+    return tuple(f for f in supported_formats() if f not in _PENDING_SIGNOFF)
+
+
+def signoff_blocker(source_format: str) -> Optional[str]:
+    """
+    Why `source_format` may not be used yet, or `None` when it is approved.
+
+    Returns `None` for an unregistered format too: that is `spec_for`'s error
+    to raise, and reporting a sign-off blocker for a typo would name the wrong
+    problem.
+    """
+    return _PENDING_SIGNOFF.get(source_format)
 
 
 def spec_for(source_format: str) -> FormatSpec:

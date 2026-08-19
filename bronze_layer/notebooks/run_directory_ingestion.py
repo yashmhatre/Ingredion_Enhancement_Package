@@ -18,7 +18,7 @@
 # the same wheel into the session first:
 #   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
-from bronze_ingest import get_logger, ingest_directory_to_bronze
+from bronze_ingest import approved_formats, get_logger, ingest_directory_to_bronze
 
 logger = get_logger()
 
@@ -28,9 +28,7 @@ dbutils.widgets.text("source_dir", "", "Directory containing source files")
 dbutils.widgets.text("catalog", "workspace", "Catalog")
 dbutils.widgets.text("schema_name", "default", "Target schema")
 dbutils.widgets.text("table_name_template", "{filename}_bronze", "Table name template")
-dbutils.widgets.dropdown(
-    "source_format", "json", ["json", "csv", "parquet", "xml"], "Source format"
-)
+dbutils.widgets.dropdown("source_format", "json", list(approved_formats()), "Source format")
 dbutils.widgets.text("xml_row_tag", "", "XML row tag (required for XML)")
 dbutils.widgets.dropdown("write_mode", "append", ["append", "overwrite", "merge"], "Write mode")
 dbutils.widgets.dropdown("multiline", "true", ["true", "false"], "Multiline JSON")

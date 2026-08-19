@@ -305,6 +305,15 @@ class IngestionConfig:
                 f"source_format must be one of {formats.supported_formats()}, "
                 f"got {self.source_format!r}"
             )
+        # Refused at config load, before a cluster starts, for the same reason
+        # every other config defect is: this repo's 96%-compute-cost finding
+        # makes a late failure the expensive one. The format is registered and
+        # its reader is tested - what is missing is the Tier 2 sign-off on the
+        # decision records that govern it, so the block belongs at the point an
+        # operator selects it rather than anywhere downstream.
+        blocker = formats.signoff_blocker(self.source_format)
+        if blocker:
+            raise ValueError(blocker)
         if self.source_format == "xml" and "rowTag" in (self.reader_options or {}):
             raise ValueError(
                 "reader_options must not contain 'rowTag'; xml_row_tag is the sole "
