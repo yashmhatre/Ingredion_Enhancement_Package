@@ -396,24 +396,22 @@
   </header>
 
   <section class="stop">
-    <h2>Read this first — one object stands between you and a deploy</h2>
+    <h2>Read this first — one grant stands between you and a deploy</h2>
     <p>
       The repo says staging is unprovisioned. <strong>The repo is out of date.</strong> Queried against the
       workspace on 2026-08-19, the schema exists, the catalog grant exists, and all four schema privileges
-      are already on the staging service principal. What is missing is the volume, and only the volume.
+      are already on the staging service principal.
     </p>
     <p>
-      The bundle points staging at
-      <code>/Volumes/ingredion_en/ingredion_stg/ext-ingredion-stg/Raw/</code>. Until that volume exists,
-      <code>bundle deploy -t staging</code> fails — deliberately, because a deploy that cannot find its own
-      source volume should stop rather than silently read another environment's files. Creating it is
-      <strong>Tier 3</strong>: you execute it, no agent does.
+      Staging reads <code>STG/Raw/</code> under the existing <code>ext-ingredion-dev</code> volume rather
+      than getting a volume of its own — decided 2026-08-19, and the bundle points there. That folder
+      exists and the staging principal can already read it, so <strong>nothing needs creating</strong>.
     </p>
     <p>
-      The good news is that it is <strong>two statements, not a provisioning project</strong>. The external
-      location <code>ext-ingredion-dev</code> already spans the container root
-      (<code>abfss://ingredion@…/</code>) under credential <code>cred-ingredion-storage</code>, so
-      <code>STG/</code> is already covered. No new external location and no new storage credential.
+      What is missing is <strong>one privilege</strong>: <code>WRITE VOLUME</code>, held by neither
+      principal on any volume. The package archives ingested files into <code>processed/</code> and failed
+      ones into <code>quarantine_files/</code>, so without it a run ingests correctly and then fails at
+      archival. Granting it is <strong>Tier 3</strong>: you execute it, no agent does.
     </p>
   </section>
 
@@ -446,9 +444,9 @@
             <td>Confirms 0.5.0's <code>table</code> → <code>table_name</code> backfill does not apply here</td>
           </tr>
           <tr>
-            <td>ext-ingredion-stg volume</td>
-            <td class="st no">Missing</td>
-            <td><code>volumes list</code> on the schema returns empty — this is the blocker</td>
+            <td>Source volume</td>
+            <td class="st yes">Decided</td>
+            <td>Staging uses <code>STG/</code> under <code>ext-ingredion-dev</code>; no per-environment volume, per the 2026-08-19 decision</td>
           </tr>
           <tr>
             <td>Read path to STG/Raw</td>
@@ -518,88 +516,60 @@ databricks bundle validate -t staging --profile bronze-json-loader-dev</code></p
       <div class="phase-head">
         <div class="chips">
           <span class="chip tier3">Tier 3 · you only</span>
-          <span class="chip neutral">Sole blocker · 2 statements</span>
+          <span class="chip neutral">Sole blocker · 1 grant</span>
         </div>
-        <h2>Create the staging volume</h2>
+        <h2>Grant the one missing privilege</h2>
         <p class="lede">
-          The schema and every grant are already in place — verified, not assumed. This phase is what is
-          genuinely left: Phase A of the per-environment volumes plan, for staging only.
+          The schema and every grant on it are already in place — verified, not assumed. Staging reads
+          <code>STG/Raw/</code> under the shared <code>ext-ingredion-dev</code> volume, which it can already
+          reach. This phase is the single privilege that is not yet there.
         </p>
       </div>
 
       <div class="phase-body">
-        <h3>The two statements</h3>
-        <pre><code><span class="c">-- The existing ext-ingredion-dev external location spans the container</span>
-<span class="c">-- root, so STG/ is already covered. Nothing new to create beneath it.</span>
-<span class="k">CREATE EXTERNAL VOLUME</span> ingredion_en.ingredion_stg.<span class="s">`ext-ingredion-stg`</span>
-  <span class="k">LOCATION</span> <span class="s">'abfss://ingredion@ingredionenpkgdev.dfs.core.windows.net/STG/'</span>;
-
-<span class="c">-- WRITE is required, not optional: the package archives ingested files</span>
-<span class="c">-- into processed/ and quarantine_files/ under the same root.</span>
-<span class="k">GRANT READ VOLUME, WRITE VOLUME</span>
-  <span class="k">ON VOLUME</span> ingredion_en.ingredion_stg.<span class="s">`ext-ingredion-stg`</span>
+        <h3>The one statement</h3>
+        <pre><code><span class="c">-- Staging already holds USE_SCHEMA on ingredion_dev and READ_VOLUME on</span>
+<span class="c">-- this volume, so reading STG/Raw/ works today. Write is what is missing.</span>
+<span class="k">GRANT WRITE VOLUME</span>
+  <span class="k">ON VOLUME</span> ingredion_en.ingredion_dev.<span class="s">`ext-ingredion-dev`</span>
   <span class="k">TO</span> <span class="s">`6ea945e0-2b4f-4746-b8f7-e7be51adc35a`</span>;</code></pre>
 
         <div class="note warn">
-          <strong>Do not skip the <code>WRITE VOLUME</code> half.</strong> Today the staging SP holds
-          <code>READ_VOLUME</code> and nothing else, on the dev volume. Read alone gets you a green ingestion
-          run that then fails at archival — the files never move to <code>processed/</code>, and the next run
-          re-ingests them. Grant both in the same statement so they cannot drift apart.
+          <strong>Without it you get a run that looks like a pipeline bug.</strong> The package archives
+          ingested files into <code>processed/</code> and failed ones into <code>quarantine_files/</code>.
+          Read alone ingests every row correctly and then fails at archival — the files never move, and the
+          next run re-ingests them. Nothing in that error points at permissions.
         </div>
 
-        <div class="note">
-          The volume root is <code>STG/</code> and the bundle appends <code>Raw/</code>, resolving to
-          <code>abfss://…/STG/Raw/</code>. Landing the Phase 04 fixtures creates that path; there is nothing
-          to pre-create by hand.
-        </div>
-
-        <h3>Why not just point staging at the dev volume?</h3>
+        <h3>What this grant conveys</h3>
         <p>
-          A fair question, because that path already works. <code>ext-ingredion-dev</code> spans the
-          container root, <code>STG/Raw</code> already exists inside it, and the staging SP already holds
-          both <code>USE_SCHEMA</code> on <code>ingredion_dev</code> and <code>READ_VOLUME</code> on the
-          volume. Reading <code>/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/STG/Raw/</code> needs
-          <strong>no new grant at all</strong> today.
+          <code>ext-ingredion-dev</code> spans the storage container root and Unity Catalog has no sub-path
+          grant, so this is write access to <strong>everything under the container</strong> —
+          <code>DEV/</code>, <code>STG/</code> and <code>PROD/Raw/</code> alike.
         </p>
-        <p>
-          It still fails, because the missing privilege is <code>WRITE_VOLUME</code> — held nowhere, by
-          either principal. So either way it comes down to one grant. What differs is where you point it.
-        </p>
-
-        <div class="tbl-scroll">
-          <table>
-            <thead>
-              <tr><th>&nbsp;</th><th>Grant write on the dev volume</th><th>Create ext-ingredion-stg</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>SQL</td><td>1 statement</td><td>2 statements</td></tr>
-              <tr><td>Bundle change</td><td><code>databricks.yml</code> repointed — a guarded path needing an <code>Agent: platform</code> trailer, and it reverts 187ee33</td><td>None. The bundle already points here</td></tr>
-              <tr><td>Write blast radius</td><td>The whole container — <strong>including <code>PROD/Raw/</code></strong></td><td><code>STG/</code> only</td></tr>
-              <tr><td>Effect on #160</td><td>Upgrades the gap from cross-environment <em>read</em> to cross-environment <em>write</em></td><td>Leaves the read gap; closes nothing until Phase B</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="note warn">
-          <strong>Take the second.</strong> The saving is one SQL statement, and it buys a state where
-          staging can overwrite production source files. A misconfigured <code>source_dir</code> is then a
-          data-loss event rather than a failed run. The whole reason the bundle points at a volume that does
-          not exist yet is to avoid granting exactly that.
-        </div>
-
         <div class="note">
-          <strong>A free dry run either way.</strong> Because <code>STG/Raw</code> is already readable, you
-          can land the Phase 04 fixtures there now and confirm discovery finds them — the format-aware
-          listing, the <code>.jsonl</code> handling, the ignored <code>.csv</code> — before creating
-          anything. Read-only, reversible, and it de-risks the volume decision rather than pre-empting it.
+          Separation of <em>source files</em> between environments is therefore a naming convention rather
+          than a control, in both directions and not only for reads. Tables, the audit trail and the schema
+          registry are unaffected — those are isolated by schema, which is a real boundary. Accepted
+          deliberately on 2026-08-19; the reasoning, and the way back, are in
+          <code>docs/decisions/2026-08_per_environment_volumes.md</code>.
+        </div>
+
+        <h3>A free dry run first, if you want one</h3>
+        <div class="note">
+          <code>STG/Raw</code> is already readable, so you can land the Phase 04 fixtures and confirm
+          discovery finds them — the format-aware listing, the <code>.jsonl</code> handling, the ignored
+          <code>.csv</code> — before granting anything. Read-only and reversible. Ingestion itself will
+          fail at archival until the grant lands, which is the expected result rather than a defect.
         </div>
 
         <h3>Verify rather than assume</h3>
         <ul class="checks">
           <li><label><input type="checkbox" id="p1a"><span class="txt">As the staging SP, <code>SELECT</code> against anything in <code>ingredion_prd</code> is <strong>denied</strong>. A grant that looks right and a grant that works are different things — and the prd schema is real, so this is a live boundary, not a hypothetical one.</span></label></li>
-          <li><label><input type="checkbox" id="p1b"><span class="txt">As the staging SP, <code>LIST</code> on <code>ext-ingredion-stg</code> succeeds and a scratch <code>CREATE TABLE</code> in <code>ingredion_stg</code> succeeds.</span></label></li>
-          <li><label><input type="checkbox" id="p1c"><span class="txt">Known and accepted: staging keeps <code>READ_VOLUME</code> on the root-scoped dev volume, so it can still read <code>PROD/Raw/</code>. Phase A does not close #160 — only narrowing the dev volume (Phase B) does. Do not report #160 as closed.</span></label></li>
-          <li><label><input type="checkbox" id="p1d"><span class="txt">Consider revoking the staging and prod SPs' <code>READ_VOLUME</code> on <code>ext-ingredion-dev</code> once their own volumes exist — that grant was the interim path to their subfolders and outlives its purpose here.</span></label></li>
+          <li><label><input type="checkbox" id="p1b"><span class="txt">As the staging SP, a <code>LIST</code> of <code>STG/Raw/</code> succeeds and a scratch <code>CREATE TABLE</code> in <code>ingredion_stg</code> succeeds.</span></label></li>
+          <li><label><input type="checkbox" id="p1c"><span class="txt">As the staging SP, writing a throwaway file under <code>STG/</code> succeeds — that is the grant actually working, which is the only thing the deploy cares about. Delete it afterwards.</span></label></li>
+          <li><label><input type="checkbox" id="p1d"><span class="txt">Do not report #160 as closed. Declining per-environment volumes leaves its gap open and widens it to writes; the issue should be updated to reflect the decision rather than resolved.</span></label></li>
+          <li><label><input type="checkbox" id="p1e"><span class="txt">Grant prod's <code>WRITE VOLUME</code> only when prod actually deploys. There is no reason for an unused principal to hold write over the container in the meantime.</span></label></li>
         </ul>
       </div>
     </div>
@@ -853,7 +823,7 @@ databricks bundle validate -t staging --profile bronze-json-loader-dev</code></p
         <ul class="checks">
           <li><label><input type="checkbox" id="p7a"><span class="txt">Write <code>docs/staging_validation_2026-08.md</code> in the shape of the dev record: environment table, results table, what the evidence actually shows, and the limits.</span></label></li>
           <li><label><input type="checkbox" id="p7b"><span class="txt">Record every check that ran, including failures. A run that stops tells you about one defect; a run that completes tells you about all of them.</span></label></li>
-          <li><label><input type="checkbox" id="p7c"><span class="txt">Fix the stale <code>--var overrides</code> comment in <code>databricks.yml</code>, and update the Phase A status in <code>docs/decisions/2026-08_per_environment_volumes.md</code> from <em>proposed</em> to executed.</span></label></li>
+          <li><label><input type="checkbox" id="p7c"><span class="txt">Update #160 to record that per-environment volumes were declined and the gap now extends to writes — rather than closing it, which would lose the tradeoff.</span></label></li>
           <li><label><input type="checkbox" id="p7d"><span class="txt"><strong>Correct <code>azure_setup.md</code>.</strong> Its “Still to do” section claims the <code>ingredion_stg</code> / <code>ingredion_prd</code> schemas and their grants “are not yet created”. Both schemas exist and every grant it prescribes is already applied — the doc has been wrong for long enough that it was about to send this deploy down a phantom provisioning path.</span></label></li>
           <li><label><input type="checkbox" id="p7e"><span class="txt">Re-scope #112 to what is actually left (Key Vault, secret scopes, verification) rather than closing or reopening it wholesale — the grants half is done.</span></label></li>
         </ul>
