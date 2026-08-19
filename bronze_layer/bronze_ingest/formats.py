@@ -233,16 +233,12 @@ FORMATS: Dict[str, FormatSpec] = {
 #: decision records have not been signed off yet. `config.py` refuses them; the
 #: notebooks do not offer them.
 #:
-#: Empty here on purpose: this change ships the mechanism, not a gated format.
-#: The consumers land next (the notebooks build their dropdown from
-#: `approved_formats()`), and the first entry goes in after them, so no
-#: intermediate commit leaves a format half-gated - refused by config while a
-#: widget still offers it.
-#:
-#: It exists because "blocked" has been written only in prose. `CHANGELOG.md`
-#: and `architecture.md` both say XML is blocked pending Tier 2 sign-off on
-#: #336/#337, while `FORMATS` registers it, `readers` dispatches it, and both
-#: notebook dropdowns offer it. A block that lives in prose is not a block.
+#: This exists because "blocked" was previously written only in prose.
+#: `CHANGELOG.md` and `architecture.md` both said XML was blocked pending the
+#: Tier 2 sign-off on #336/#337, while `FORMATS` registered it, `readers`
+#: dispatched it, and both notebook dropdowns offered it - so a promoted build
+#: shipped the drafted path to any operator who picked it from the widget. A
+#: block that lives in prose is not a block.
 #:
 #: The gate is here rather than in `config.py` for the same reason the rest of
 #: this module is here: it is a fact about a format, and facts about a format
@@ -252,7 +248,15 @@ FORMATS: Dict[str, FormatSpec] = {
 #:
 #: The value is the operator-facing reason, so the error names what is pending
 #: rather than only saying no.
-_PENDING_SIGNOFF: Dict[str, str] = {}
+_PENDING_SIGNOFF: Dict[str, str] = {
+    "xml": (
+        "XML ingestion is implemented but not yet approved for use: "
+        "docs/decisions/2026-08_xml_integrity_policy.md (#336) and "
+        "docs/decisions/2026-08_xml_namespace_identifiers.md (#337) are both "
+        "proposed and awaiting Tier 2 sign-off. Remove the 'xml' entry from "
+        "formats._PENDING_SIGNOFF once they are signed."
+    ),
+}
 
 
 def supported_formats() -> Tuple[str, ...]:
