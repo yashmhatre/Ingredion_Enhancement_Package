@@ -2,6 +2,7 @@ from .catalog_metadata import apply_catalog_metadata
 from .config import IngestionConfig
 from .contract import ContractError, DataContract, validate_dataframe, validate_schema
 from .directory_ingestion import build_table_name, ingest_directory_to_bronze, sanitize_table_name
+from .formats import approved_formats, supported_formats
 from .logging_utils import get_logger
 from .pipeline import BronzeIngestion, ingest_json_to_bronze, ingest_to_bronze
 from .profiling import ProfileConfig, profile_table, profile_tables
@@ -11,6 +12,8 @@ from .streaming_reader import JsonLinesTruncationError
 
 __all__ = [
     "IngestionConfig",
+    "approved_formats",
+    "supported_formats",
     "DataContract",
     "ContractError",
     "validate_schema",
