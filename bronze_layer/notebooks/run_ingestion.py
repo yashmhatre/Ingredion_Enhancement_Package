@@ -22,7 +22,7 @@
 # the same wheel into the session first:
 #   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
-from bronze_ingest import BronzeIngestion, IngestionConfig, get_logger
+from bronze_ingest import BronzeIngestion, IngestionConfig, approved_formats, get_logger
 
 logger = get_logger()
 
@@ -36,7 +36,7 @@ dbutils.widgets.text("table", "", "Target table")
 dbutils.widgets.dropdown(
     "source_format",
     "",
-    ["", "json", "csv", "parquet", "xml"],
+    ["", *approved_formats()],
     "Source format (blank = config/default)",
 )
 dbutils.widgets.text("xml_row_tag", "", "XML row tag (required for XML)")
