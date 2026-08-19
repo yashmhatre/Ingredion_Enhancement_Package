@@ -4,8 +4,39 @@ The provisioning design for **#160**: source-file isolation is a naming
 convention, not a control. #160 already recommends three Volumes; this records
 *how*, in what order, and one measured finding that changes its cost estimate.
 
-**Status: proposed. Not executed.** Creating volumes and external locations,
-and granting on them, is **Tier 3** under `docs/agent_governance.md`.
+**Status: declined, 2026-08-19.** Staging and prod will use subpaths of the
+existing `ext-ingredion-dev` volume — `STG/` and `PROD/`, which already exist —
+rather than getting volumes of their own. The bundle points there. Everything
+below is retained as the analysis that informed the decision, not as a plan
+awaiting execution.
+
+### What that costs, recorded so it is not rediscovered later
+
+The plan below treats this as a *read* gap: any principal holding `READ VOLUME`
+on the root-scoped volume can read every environment's files. Declining it makes
+the gap symmetric, because reading is not all the package does.
+
+`bronze_ingest` archives ingested files into `processed/` and failed ones into
+`quarantine_files/`, under the source root. That needs `WRITE VOLUME`, and Unity
+Catalog grants it at volume granularity. So the staging principal — and, when it
+deploys, the prod principal — can **write anywhere under the storage container**,
+including each other's `Raw/` folders. A misconfigured `source_dir` or
+`table_name_template` is then a data-loss event in another environment rather
+than a failed run in its own.
+
+Two things follow, and both are cheap:
+
+- **Source-file separation is a naming convention, not a control.** Say so
+  wherever isolation is described, rather than implying schema-level isolation
+  extends to files. It does not.
+- **The door stays open.** Nothing here is one-way. Creating
+  `ext-ingredion-stg` later and repointing `source_volume_path` is the same two
+  statements it always was, and no data has to move — the folders keep their
+  paths inside the container either way.
+
+**Original status: proposed. Not executed.** Creating volumes and external
+locations, and granting on them, is **Tier 3** under
+`docs/agent_governance.md`.
 
 Written against `dev` @ `c983d52`, verified against the workspace 2026-08-12.
 

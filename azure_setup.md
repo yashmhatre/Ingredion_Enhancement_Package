@@ -66,10 +66,13 @@ schemas exist, and each principal holds `USE CATALOG` on the catalog plus
 `USE SCHEMA` / `CREATE TABLE` / `MODIFY` / `SELECT` on its own schema. Step 12
 carries the applied statements and the commands to re-verify them.
 
-**What is left is the Volumes.** `ext-ingredion-stg` and `ext-ingredion-prd` do
-not exist, and the bundle already points staging and prod at them, so
-`bundle deploy -t staging` fails until they are created. That is Phase A of
-`docs/decisions/2026-08_per_environment_volumes.md`.
+**What is left is one grant.** Staging and prod do **not** get volumes of their
+own — decided 2026-08-19, see
+`docs/decisions/2026-08_per_environment_volumes.md`. They read subpaths of the
+existing `ext-ingredion-dev` volume (`STG/Raw/` and `PROD/Raw/`, both of which
+already exist), and the bundle points there. Reading already works; the missing
+privilege is `WRITE VOLUME`, which the package needs to archive processed and
+quarantined files. See Step 12.
 
 > This section previously read "the schemas and their scoped grants are not yet
 > created", long after they were. Provisioning done by hand in Catalog Explorer
@@ -656,20 +659,35 @@ looks right and a grant that works are different things.
 job.** The package archives ingested files into `processed/` and failed ones
 into `quarantine_files/`, both under the source root, so a principal with read
 alone produces a run that ingests correctly and then fails at archival — the
-files never move, and the next run re-ingests them. Whichever volume an
-environment ends up reading, grant both in one statement so they cannot drift
-apart:
+files never move, and the next run re-ingests them. It reads as a pipeline bug
+rather than a permissions gap, which is the expensive kind of failure.
+
+Staging and prod read subpaths of `ext-ingredion-dev` rather than volumes of
+their own (decided 2026-08-19), so write is granted on that volume:
 
 ```sql
-GRANT READ VOLUME, WRITE VOLUME ON VOLUME <the environment's own volume>
-  TO `<that environment's service principal>`;
+-- Staging. Needed before the first bronze_directory_ingestion_stg run.
+GRANT WRITE VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
+  TO `6ea945e0-2b4f-4746-b8f7-e7be51adc35a`;
+
+-- Prod. Not needed until prod actually deploys; grant it then, not now.
+GRANT WRITE VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
+  TO `8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9`;
 ```
 
-Write is deliberately **not** granted on `ext-ingredion-dev` above. That volume
-spans the storage container root, so write on it would let staging and prod
-overwrite each other's source files — and `PROD/Raw/`. Read-only is the most
-that root-scoped volume should ever carry; write belongs on the per-environment
-volumes of #160.
+**Know what that grant conveys.** `ext-ingredion-dev` spans the storage
+container root and Unity Catalog has no sub-path grant, so `WRITE VOLUME` on it
+is write access to *everything* under the container — `DEV/`, `STG/` and
+`PROD/Raw/` alike. Each environment can therefore overwrite the others' source
+files. Directory separation between environments is a naming convention, not a
+control, and this is true in both directions rather than only for reads.
+
+Tables, the audit trail and the schema registry are unaffected — those are
+isolated by schema, which is a real boundary. It is source files, and only
+source files, that are shared.
+
+The tradeoff was accepted deliberately; the reasoning and the way back are in
+`docs/decisions/2026-08_per_environment_volumes.md`.
 
 **Re-verifying, rather than trusting this file.** Everything above is a snapshot
 of a live system, and hand-provisioning leaves no trace here. Four commands
