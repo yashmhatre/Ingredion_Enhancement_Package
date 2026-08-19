@@ -25,6 +25,15 @@ Two rules, both deterministic:
    reviewed as two changes -- see docs/agent_governance.md, and #320/#321 for
    why a bundle parameter and its widget ship sequenced rather than together.
 
+Neither rule is about a promotion. Both ask "who authored this, and did the
+right role review it?" -- a question already answered, per role, when the work
+merged into `dev`. A `dev` -> `staging` or `staging` -> `main` PR re-asks it of
+the accumulated diff, where the honest answer is "every role, over weeks", and
+rule 2 then fails a release for being a release. So a release base is exempt:
+see RELEASE_BASES. The exemption is narrow on purpose -- it keys on the base
+branch, not on a flag anyone can pass, so it cannot be used to land authorship
+that skipped review on the way to `dev`.
+
 Usage:
     check_path_ownership.py --commit-msg .git/COMMIT_EDITMSG   # commit-msg hook
     check_path_ownership.py --base origin/dev                  # CI
@@ -46,6 +55,11 @@ OWNERSHIP: list[tuple[str, str]] = [
     ("bronze_layer/resources/", "platform"),
     ("databricks.yml", "platform"),
 ]
+
+#: Branches that receive already-reviewed work rather than new authorship.
+#: A PR based on one of these is a promotion, and both rules above are
+#: answered by the per-role PRs that built the diff, not by the promotion.
+RELEASE_BASES = {"staging", "main"}
 
 # Roles that may never author a change to a guarded path at all. These are the
 # orchestration/planning/read-only layer; the whole point of them is that they
@@ -93,11 +107,33 @@ def commit_messages(base: str | None, msg_file: str | None) -> str:
     return ""
 
 
+def is_release_base(base: str | None) -> bool:
+    """
+    True when `base` names a branch that receives promotions.
+
+    Matches on the last path segment so `staging`, `origin/staging` and
+    `refs/heads/staging` all resolve the same way -- CI passes
+    `origin/${{ github.base_ref }}`, the commit-msg hook passes nothing, and a
+    human debugging locally types whichever they remember.
+    """
+    if not base:
+        return False
+    return base.replace("\\", "/").rsplit("/", 1)[-1] in RELEASE_BASES
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--commit-msg", dest="msg_file")
     ap.add_argument("--base")
     args = ap.parse_args()
+
+    if is_release_base(args.base):
+        print(
+            f"path-ownership: skipped - {args.base} is a release base. "
+            "A promotion carries work every role already had reviewed on its "
+            "way into dev."
+        )
+        return 0
 
     files = changed_files(args.base)
     guarded = {}
