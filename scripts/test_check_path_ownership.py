@@ -23,11 +23,16 @@ PASS, FAIL = 0, 1
 
 
 def check(files, message):
-    """Run main() with git reads stubbed out."""
-    mod.changed_files = lambda base: files
-    mod.commit_messages = lambda base, msg_file: message
+    """Run main() with git reads stubbed out, against a dev base."""
+    return check_base(files, message, "origin/dev")
+
+
+def check_base(files, message, base):
+    """Run main() with git reads stubbed out, against an explicit base."""
+    mod.changed_files = lambda b: files
+    mod.commit_messages = lambda b, msg_file: message
     argv = sys.argv
-    sys.argv = ["check_path_ownership.py", "--base", "origin/dev"]
+    sys.argv = ["check_path_ownership.py", "--base", base]
     try:
         return mod.main()
     finally:
@@ -90,6 +95,42 @@ CASES = [
     ("a guarded path plus unguarded files is fine when declared",
      lambda: check(["bronze_layer/bronze_ingest/config.py", "docs/roadmap.md"],
                    "feat: x\n\nAgent: builder\n") == PASS),
+
+    # Release bases. A promotion PR spans every role by construction, so the
+    # rules that ask "who authored this" are answered by the PRs that built
+    # the diff, not by the promotion. Without this the gate fails a release
+    # for being a release, and the only way through is an admin override --
+    # which defeats the gate everywhere, not just here.
+    ("a dev -> staging promotion is exempt",
+     lambda: check_base(["bronze_layer/bronze_ingest/config.py",
+                         "bronze_layer/notebooks/run_ingestion.py",
+                         "bronze_layer/resources/bronze_ingest_jobs.yml"],
+                        "release: promote dev to staging\n",
+                        "origin/staging") == PASS),
+    ("a staging -> main promotion is exempt",
+     lambda: check_base(["bronze_layer/bronze_ingest/config.py",
+                         "bronze_layer/notebooks/run_ingestion.py"],
+                        "release: promote staging to main\n",
+                        "origin/main") == PASS),
+    ("the exemption reads the branch, not the remote prefix",
+     lambda: check_base(["bronze_layer/bronze_ingest/config.py",
+                         "bronze_layer/notebooks/run_ingestion.py"],
+                        "release: x\n", "staging") == PASS),
+
+    # The exemption must key on the base branch alone. A feature branch whose
+    # NAME contains a release word is still authorship and still gets both
+    # rules -- otherwise `feat/staging-cleanup` would be a way to land a
+    # two-surface change with no trailer.
+    ("a feature branch named after a release base is not exempt",
+     lambda: check_base(["bronze_layer/bronze_ingest/config.py",
+                         "bronze_layer/notebooks/run_ingestion.py"],
+                        "feat: x\n", "origin/feat/staging-cleanup") == FAIL),
+    ("a two-surface change into dev still fails",
+     lambda: check_base(["bronze_layer/bronze_ingest/config.py",
+                         "bronze_layer/notebooks/run_ingestion.py"],
+                        "feat: x\n\nAgent: builder\n", "origin/dev") == FAIL),
+    ("is_release_base ignores a missing base (commit-msg hook)",
+     lambda: mod.is_release_base(None) is False),
 ]
 
 
