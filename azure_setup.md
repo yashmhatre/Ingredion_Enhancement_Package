@@ -59,10 +59,26 @@ The config file edits listed under Step 6 have since been **applied** to the
 repo (`order_bronze.yaml`, `sample_config.yaml`, and the bundle all updated to
 the real catalog/schema/volume values).
 
-**Still to do:** `staging` and `prod` provisioning — the Entra ID service
-principals exist and their client IDs are wired into the bundle, but the
-`ingredion_stg` / `ingredion_prd` schemas and their scoped grants are not yet
-created. Tracked as Phase B on the deployment-provisioning issue.
+**Staging and prod provisioning is done, bar one object.** Verified against the
+workspace on 2026-08-19: the Entra ID service principals exist and their client
+IDs are wired into the bundle, both the `ingredion_stg` and `ingredion_prd`
+schemas exist, and each principal holds `USE CATALOG` on the catalog plus
+`USE SCHEMA` / `CREATE TABLE` / `MODIFY` / `SELECT` on its own schema. Step 12
+carries the applied statements and the commands to re-verify them.
+
+**What is left is one grant.** Staging and prod do **not** get volumes of their
+own — decided 2026-08-19, see
+`docs/decisions/2026-08_per_environment_volumes.md`. They read subpaths of the
+existing `ext-ingredion-dev` volume (`STG/Raw/` and `PROD/Raw/`, both of which
+already exist), and the bundle points there. Reading already works; the missing
+privilege is `WRITE VOLUME`, which the package needs to archive processed and
+quarantined files. See Step 12.
+
+> This section previously read "the schemas and their scoped grants are not yet
+> created", long after they were. Provisioning done by hand in Catalog Explorer
+> leaves no trace in the repo, so this file drifts silently and in one
+> direction. **Query the workspace before trusting it** — the commands are at
+> the end of Step 12.
 
 ---
 
@@ -535,7 +551,7 @@ forget when granting.
 
 ---
 
-## Step 12 — Staging and prod provisioning (partially done)
+## Step 12 — Staging and prod provisioning (schemas and grants done; Volumes not)
 
 Phase B. Summarised here so the runbook stays the single entry point; the
 authoritative checklist is on the deployment-provisioning issue.
@@ -607,7 +623,9 @@ deploying identity *is* the service principal, so nothing is binding on
 anyone else's behalf. One more reason to move deploys into CI rather than
 leaving them manual.
 
-**Not done — schemas and grants.** In the Databricks workspace:
+**Done — schemas and grants.** Applied in the Databricks workspace and verified
+there on 2026-08-19. Kept here as the record of exactly what was granted, and as
+the script to re-apply if an environment is ever rebuilt:
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS ingredion_en.ingredion_stg;
@@ -636,6 +654,51 @@ GRANT READ VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
 **Verify the isolation rather than assuming it.** As the staging principal, a
 `SELECT` against a table in `ingredion_prd` should be denied. A grant that
 looks right and a grant that works are different things.
+
+**The block above grants READ but not WRITE, and that is not enough to run a
+job.** The package archives ingested files into `processed/` and failed ones
+into `quarantine_files/`, both under the source root, so a principal with read
+alone produces a run that ingests correctly and then fails at archival — the
+files never move, and the next run re-ingests them. It reads as a pipeline bug
+rather than a permissions gap, which is the expensive kind of failure.
+
+Staging and prod read subpaths of `ext-ingredion-dev` rather than volumes of
+their own (decided 2026-08-19), so write is granted on that volume:
+
+```sql
+-- Staging. Needed before the first bronze_directory_ingestion_stg run.
+GRANT WRITE VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
+  TO `6ea945e0-2b4f-4746-b8f7-e7be51adc35a`;
+
+-- Prod. Not needed until prod actually deploys; grant it then, not now.
+GRANT WRITE VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
+  TO `8cbc9ba5-b4be-47b7-8a1d-576eb7d1a2e9`;
+```
+
+**Know what that grant conveys.** `ext-ingredion-dev` spans the storage
+container root and Unity Catalog has no sub-path grant, so `WRITE VOLUME` on it
+is write access to *everything* under the container — `DEV/`, `STG/` and
+`PROD/Raw/` alike. Each environment can therefore overwrite the others' source
+files. Directory separation between environments is a naming convention, not a
+control, and this is true in both directions rather than only for reads.
+
+Tables, the audit trail and the schema registry are unaffected — those are
+isolated by schema, which is a real boundary. It is source files, and only
+source files, that are shared.
+
+The tradeoff was accepted deliberately; the reasoning and the way back are in
+`docs/decisions/2026-08_per_environment_volumes.md`.
+
+**Re-verifying, rather than trusting this file.** Everything above is a snapshot
+of a live system, and hand-provisioning leaves no trace here. Four commands
+settle the real state:
+
+```bash
+databricks schemas list ingredion_en                          --profile bronze-json-loader-dev
+databricks volumes list ingredion_en ingredion_stg            --profile bronze-json-loader-dev
+databricks grants get schema ingredion_en.ingredion_stg       --profile bronze-json-loader-dev
+databricks grants get catalog ingredion_en                    --profile bronze-json-loader-dev
+```
 
 **Known gap — source files are not isolated.** All three environments read
 subpaths of one volume, and `READ VOLUME` is granted at volume granularity;

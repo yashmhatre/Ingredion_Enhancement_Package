@@ -1,8 +1,15 @@
 # Root Asset Bundle for the whole repository.
 #
 #   databricks bundle deploy -t dev        # deploys as you, schedules paused
-#   databricks bundle deploy -t staging    # requires --var overrides, see below
-#   databricks bundle deploy -t prod       # requires --var overrides, see below
+#   databricks bundle deploy -t staging    # runs as the staging service principal
+#   databricks bundle deploy -t prod       # runs as the prod service principal
+#
+# No --var overrides are needed for any target. Every variable declared below
+# is pinned per target in the `targets:` block, which is the point: a value
+# that must be passed on the command line is a value someone can pass wrongly,
+# and run_as_service_principal in particular decides which identity a deploy
+# runs under. This said "requires --var overrides" long after that stopped
+# being true.
 #
 # One bundle, not one per layer. bronze_layer and silver_layer previously
 # carried their own databricks.yml, which meant the workspace host, the
@@ -33,11 +40,21 @@
 # via --var, so a prod deploy cannot accidentally run under the staging
 # identity. Client IDs are identifiers, not credentials, and are safe here.
 #
-# Known gap: all three environments read subpaths of ONE volume, and Unity
-# Catalog grants READ VOLUME at volume granularity - there is no sub-path
-# grant. Any principal that can read its own subpath can read PROD/Raw/.
-# Tables, audit and registry are isolated by schema; source files are not.
-# Per-environment volumes would close it. See bronze_layer/README.md.
+# Accepted gap: all three environments use subpaths of ONE volume
+# (ext-ingredion-dev, which spans the storage container root), and Unity
+# Catalog grants at volume granularity - there is no sub-path grant. So this
+# is not only a read gap. The package archives ingested files into processed/
+# and quarantine_files/, which needs WRITE VOLUME, and write granted at volume
+# granularity means each environment's principal can write anywhere under the
+# container - including PROD/Raw/.
+#
+# Source-file separation between environments is therefore a naming
+# convention, not a control. Tables, audit and registry remain properly
+# isolated by schema; source files are not, in either direction.
+#
+# This was a deliberate decision, not an oversight: #160 proposed one volume
+# per environment and it is not being executed. See
+# docs/decisions/2026-08_per_environment_volumes.md and bronze_layer/README.md.
 
 bundle:
   name: ingredion_enhancement_package
@@ -181,11 +198,14 @@ targets:
       env_suffix: stg
       audit_schema_name: ingredion_stg
       registry_schema_name: ingredion_stg
-      # Per-environment volume (#160). Requires Phase A of
-      # docs/decisions/2026-08_per_environment_volumes.md to have run - a
-      # deploy that cannot find its source volume should fail rather than
-      # silently read another environment's files.
-      source_volume_path: /Volumes/ingredion_en/ingredion_stg/ext-ingredion-stg/Raw/
+      # A subpath of the shared dev volume, not a volume of its own. #160
+      # proposed one volume per environment; that plan is not being executed -
+      # see docs/decisions/2026-08_per_environment_volumes.md for the decision
+      # and what it costs. The STG/ folder already exists under this volume.
+      #
+      # This path briefly pointed at ext-ingredion-stg, a volume that was never
+      # created, which is why a staging deploy could not have succeeded.
+      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/STG/Raw/
       # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
       # is preferable once more than one person is on call - an individual's
       # address means failure alerts stop reaching anyone if that mailbox goes
@@ -210,8 +230,8 @@ targets:
       env_suffix: prd
       audit_schema_name: ingredion_prd
       registry_schema_name: ingredion_prd
-      # Per-environment volume (#160) - see the staging note above.
-      source_volume_path: /Volumes/ingredion_en/ingredion_prd/ext-ingredion-prd/Raw/
+      # A subpath of the shared dev volume - see the staging note above.
+      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/PROD/Raw/
       # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
       # is preferable once more than one person is on call - an individual's
       # address means failure alerts stop reaching anyone if that mailbox goes

@@ -1,0 +1,882 @@
+<title>0.6.0 Staging Runbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFCFD;
+    --surface:    #F1F4F8;
+    --surface-2:  #E7ECF3;
+    --line:       #D6DDE7;
+    --line-soft:  #E4EAF1;
+    --ink:        #14171C;
+    --muted:      #5A6474;
+    --accent:     #2E5AA8;
+    --accent-dim: #E8EEF9;
+    --blocked:    #B32B21;
+    --blocked-bg: #FBEAE8;
+    --gate:       #8A6008;
+    --gate-bg:    #FBF1DC;
+    --ok:         #15675A;
+    --ok-bg:      #E2F2EE;
+    --code-bg:    #14171C;
+    --code-ink:   #E6EAF0;
+    --code-line:  #2A303A;
+
+    --f-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --spine: 3.25rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0F1216;
+      --surface:    #161A21;
+      --surface-2:  #1D222B;
+      --line:       #272E39;
+      --line-soft:  #1F252E;
+      --ink:        #E3E8EF;
+      --muted:      #939DAC;
+      --accent:     #7FA6E8;
+      --accent-dim: #18202E;
+      --blocked:    #EE8073;
+      --blocked-bg: #2A1815;
+      --gate:       #DCA83F;
+      --gate-bg:    #2A2110;
+      --ok:         #4FBCA4;
+      --ok-bg:      #10241F;
+      --code-bg:    #0A0C0F;
+      --code-ink:   #DDE3EB;
+      --code-line:  #232A34;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0F1216;
+    --surface:    #161A21;
+    --surface-2:  #1D222B;
+    --line:       #272E39;
+    --line-soft:  #1F252E;
+    --ink:        #E3E8EF;
+    --muted:      #939DAC;
+    --accent:     #7FA6E8;
+    --accent-dim: #18202E;
+    --blocked:    #EE8073;
+    --blocked-bg: #2A1815;
+    --gate:       #DCA83F;
+    --gate-bg:    #2A2110;
+    --ok:         #4FBCA4;
+    --ok-bg:      #10241F;
+    --code-bg:    #0A0C0F;
+    --code-ink:   #DDE3EB;
+    --code-line:  #232A34;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 6rem;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .mast { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.1rem;
+    align-items: center;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 5.5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.024em;
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 1.075rem;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin-top: 1.6rem;
+    overflow: hidden;
+  }
+  .meta-cell { background: var(--surface); padding: 0.8rem 1rem; }
+  .meta-cell dt {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.28rem;
+  }
+  .meta-cell dd {
+    margin: 0;
+    font-family: var(--f-mono);
+    font-size: 0.86rem;
+    font-weight: 500;
+    word-break: break-word;
+  }
+
+  /* ---------- stop panel ---------- */
+
+  .stop {
+    margin: 2.75rem 0 0;
+    border: 1px solid var(--gate);
+    border-left-width: 4px;
+    border-radius: 3px;
+    background: var(--gate-bg);
+    padding: 1.4rem clamp(1.1rem, 3vw, 1.75rem);
+  }
+  .stop h2 {
+    font-size: 1.16rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 0 0 0.55rem;
+    color: var(--gate);
+  }
+
+  /* verified-state audit table */
+  .state { margin: 2.25rem 0 0; }
+  .state h3 {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.7rem;
+  }
+  .state td:first-child { font-family: var(--f-mono); font-size: 0.8rem; }
+  .st {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .st.yes { color: var(--ok); }
+  .st.no  { color: var(--blocked); }
+  .stop p { margin: 0 0 0.85rem; max-width: var(--measure); }
+  .stop p:last-child { margin-bottom: 0; }
+  .stop ol { margin: 0 0 0.95rem; padding-left: 1.15rem; max-width: var(--measure); }
+  .stop li { margin-bottom: 0.4rem; }
+
+  /* ---------- phases ---------- */
+
+  .phase {
+    display: grid;
+    grid-template-columns: var(--spine) minmax(0, 1fr);
+    gap: 0 clamp(0.9rem, 2.5vw, 1.6rem);
+    padding-top: 3.25rem;
+    margin-top: 3.25rem;
+    border-top: 1px solid var(--line);
+  }
+  .phase:first-of-type { border-top: none; }
+
+  .spine {
+    font-family: var(--f-mono);
+    font-size: 1.55rem;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    letter-spacing: -0.03em;
+    padding-top: 0.18rem;
+  }
+
+  .phase-head { display: flex; flex-direction: column; gap: 0.55rem; margin-bottom: 1.5rem; }
+  .phase-head h2 {
+    font-size: clamp(1.35rem, 3vw, 1.7rem);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    line-height: 1.2;
+    text-wrap: balance;
+    margin: 0;
+  }
+  .phase-head .lede { margin: 0; color: var(--muted); max-width: var(--measure); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .chip {
+    font-family: var(--f-mono);
+    font-size: 0.64rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    padding: 0.22rem 0.5rem;
+    border-radius: 2px;
+    border: 1px solid;
+  }
+  .chip.tier3   { color: var(--blocked); border-color: var(--blocked); background: var(--blocked-bg); }
+  .chip.tier2   { color: var(--gate);    border-color: var(--gate);    background: var(--gate-bg); }
+  .chip.local   { color: var(--ok);      border-color: var(--ok);      background: var(--ok-bg); }
+  .chip.neutral { color: var(--muted);   border-color: var(--line);    background: var(--surface); }
+
+  .phase-body { display: flex; flex-direction: column; gap: 1.05rem; }
+  .phase-body > p { margin: 0; max-width: var(--measure); }
+  .phase-body h3 {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0.6rem 0 -0.3rem;
+  }
+
+  @media (max-width: 640px) {
+    .phase { grid-template-columns: 1fr; gap: 0; }
+    .spine { font-size: 1.1rem; margin-bottom: 0.6rem; }
+  }
+
+  /* ---------- code ---------- */
+
+  pre {
+    margin: 0;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--code-line);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+    tab-size: 2;
+  }
+  pre .c { color: #7C8798; }
+  pre .k { color: #8FB4EE; }
+  pre .s { color: #9BD1A8; }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.875em;
+    background: var(--surface-2);
+    padding: 0.09em 0.34em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* ---------- checks ---------- */
+
+  .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+  .checks li { background: var(--surface); }
+  .checks label {
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    gap: 0.75rem;
+    align-items: start;
+    padding: 0.72rem 0.95rem;
+    cursor: pointer;
+  }
+  .checks input {
+    margin: 0.36rem 0 0;
+    width: 1.1rem;
+    height: 1.1rem;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .checks .txt { font-size: 0.95rem; }
+  .checks input:checked ~ .txt { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line); }
+  .checks input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- callouts ---------- */
+
+  .note {
+    border-left: 3px solid var(--line);
+    padding: 0.15rem 0 0.15rem 1rem;
+    color: var(--muted);
+    max-width: var(--measure);
+    font-size: 0.95rem;
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+  .note.warn { border-left-color: var(--gate); }
+  .note.stopish { border-left-color: var(--blocked); }
+
+  /* ---------- tables ---------- */
+
+  .tbl-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.875rem; min-width: 30rem; }
+  th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { background: none; padding: 0; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ---------- footer ---------- */
+
+  .foot {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.5rem;
+  }
+
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="eyebrow">
+      <span>Ingredion Enhancement Package</span>
+      <span>PR #359 merged</span>
+      <span>2026-08-19</span>
+    </div>
+    <h1>0.6.0 Staging Runbook</h1>
+    <p class="standfirst">
+      <code>dev</code> → <code>staging</code> promoted 214 commits in one release. Staging has never run
+      this code, and one Unity Catalog object is still missing before it can. Work these phases in order —
+      each one depends on the one above it.
+    </p>
+
+    <dl class="meta-grid">
+      <div class="meta-cell"><dt>Staging tip</dt><dd>06506fd</dd></div>
+      <div class="meta-cell"><dt>Wheel</dt><dd>bronze_ingest-0.6.0</dd></div>
+      <div class="meta-cell"><dt>Schema</dt><dd>ingredion_en.ingredion_stg</dd></div>
+      <div class="meta-cell"><dt>Runs as</dt><dd>6ea945e0…dc35a</dd></div>
+      <div class="meta-cell"><dt>Rollback to</dt><dd>638444a</dd></div>
+    </dl>
+  </header>
+
+  <section class="stop">
+    <h2>Read this first — one grant stands between you and a deploy</h2>
+    <p>
+      The repo says staging is unprovisioned. <strong>The repo is out of date.</strong> Queried against the
+      workspace on 2026-08-19, the schema exists, the catalog grant exists, and all four schema privileges
+      are already on the staging service principal.
+    </p>
+    <p>
+      Staging reads <code>STG/Raw/</code> under the existing <code>ext-ingredion-dev</code> volume rather
+      than getting a volume of its own — decided 2026-08-19, and the bundle points there. That folder
+      exists and the staging principal can already read it, so <strong>nothing needs creating</strong>.
+    </p>
+    <p>
+      What is missing is <strong>one privilege</strong>: <code>WRITE VOLUME</code>, held by neither
+      principal on any volume. The package archives ingested files into <code>processed/</code> and failed
+      ones into <code>quarantine_files/</code>, so without it a run ingests correctly and then fails at
+      archival. Granting it is <strong>Tier 3</strong>: you execute it, no agent does.
+    </p>
+  </section>
+
+  <section class="state">
+    <h3>Verified against the workspace · 2026-08-19</h3>
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Prerequisite</th><th>State</th><th>Evidence</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>ingredion_stg schema</td>
+            <td class="st yes">Exists</td>
+            <td><code>schemas list</code> — alongside <code>ingredion_prd</code>, also created</td>
+          </tr>
+          <tr>
+            <td>USE CATALOG on ingredion_en</td>
+            <td class="st yes">Granted</td>
+            <td>Both staging and prod SPs hold it, and nothing more at catalog level</td>
+          </tr>
+          <tr>
+            <td>Schema privileges</td>
+            <td class="st yes">Granted</td>
+            <td><code>USE_SCHEMA</code>, <code>CREATE_TABLE</code>, <code>MODIFY</code>, <code>SELECT</code> — all four, exactly as prescribed</td>
+          </tr>
+          <tr>
+            <td>Tables in ingredion_stg</td>
+            <td class="st yes">Zero</td>
+            <td>Confirms 0.5.0's <code>table</code> → <code>table_name</code> backfill does not apply here</td>
+          </tr>
+          <tr>
+            <td>Source volume</td>
+            <td class="st yes">Decided</td>
+            <td>Staging uses <code>STG/</code> under <code>ext-ingredion-dev</code>; no per-environment volume, per the 2026-08-19 decision</td>
+          </tr>
+          <tr>
+            <td>Read path to STG/Raw</td>
+            <td class="st yes">Live</td>
+            <td><code>USE_SCHEMA</code> on <code>ingredion_dev</code> + <code>READ_VOLUME</code> on <code>ext-ingredion-dev</code>, and <code>STG/Raw</code> exists — readable today, no grant needed</td>
+          </tr>
+          <tr>
+            <td>WRITE VOLUME anywhere</td>
+            <td class="st no">Missing</td>
+            <td>Held by neither principal, on any volume. Required for archival — see Phase 02</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 0 ================= -->
+  <section class="phase">
+    <div class="spine">01</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips">
+          <span class="chip local">Local · no workspace</span>
+          <span class="chip neutral">~5 min</span>
+        </div>
+        <h2>Confirm what you are about to deploy</h2>
+        <p class="lede">
+          Cheap, and it catches the two things that have historically broken this deploy: building from the
+          wrong branch, and a bundle error CI is deliberately blind to.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <pre><code><span class="c"># 1. Deploy from the staging branch, not dev.</span>
+git fetch origin
+git checkout staging &amp;&amp; git pull
+git rev-parse --short HEAD   <span class="c"># must print 06506fd</span>
+
+<span class="c"># 2. Full local gate — 750 tests, lint, wheel, hooks.</span>
+bash scripts/verify.sh
+
+<span class="c"># 3. Bundle validate. CI does NOT do this (see ci.yml:446) —</span>
+<span class="c">#    it needs a real authenticated profile, so it is a local step.</span>
+databricks bundle validate -t staging --profile bronze-json-loader-dev</code></pre>
+
+        <div class="note warn">
+          <strong>Expect step 3 to fail on the missing volume</strong>, and that is the correct signal that
+          Phase 2 is still blocked. What you are looking for is that it fails <em>only</em> on the volume —
+          any other bundle error (a bad reference, a missing notebook) is a real defect that CI cannot see,
+          which is exactly why this step exists.
+        </div>
+
+        <div class="note">
+          The comment at the top of <code>databricks.yml</code> says staging <em>“requires <code>--var</code>
+          overrides”</em>. That is stale — every staging variable, including
+          <code>notification_email</code> and <code>run_as_service_principal</code>, is pinned in the target
+          block. No overrides needed. Worth correcting in the file while you are here.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 1 ================= -->
+  <section class="phase">
+    <div class="spine">02</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips">
+          <span class="chip tier3">Tier 3 · you only</span>
+          <span class="chip neutral">Sole blocker · 1 grant</span>
+        </div>
+        <h2>Grant the one missing privilege</h2>
+        <p class="lede">
+          The schema and every grant on it are already in place — verified, not assumed. Staging reads
+          <code>STG/Raw/</code> under the shared <code>ext-ingredion-dev</code> volume, which it can already
+          reach. This phase is the single privilege that is not yet there.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <h3>The one statement</h3>
+        <pre><code><span class="c">-- Staging already holds USE_SCHEMA on ingredion_dev and READ_VOLUME on</span>
+<span class="c">-- this volume, so reading STG/Raw/ works today. Write is what is missing.</span>
+<span class="k">GRANT WRITE VOLUME</span>
+  <span class="k">ON VOLUME</span> ingredion_en.ingredion_dev.<span class="s">`ext-ingredion-dev`</span>
+  <span class="k">TO</span> <span class="s">`6ea945e0-2b4f-4746-b8f7-e7be51adc35a`</span>;</code></pre>
+
+        <div class="note warn">
+          <strong>Without it you get a run that looks like a pipeline bug.</strong> The package archives
+          ingested files into <code>processed/</code> and failed ones into <code>quarantine_files/</code>.
+          Read alone ingests every row correctly and then fails at archival — the files never move, and the
+          next run re-ingests them. Nothing in that error points at permissions.
+        </div>
+
+        <h3>What this grant conveys</h3>
+        <p>
+          <code>ext-ingredion-dev</code> spans the storage container root and Unity Catalog has no sub-path
+          grant, so this is write access to <strong>everything under the container</strong> —
+          <code>DEV/</code>, <code>STG/</code> and <code>PROD/Raw/</code> alike.
+        </p>
+        <div class="note">
+          Separation of <em>source files</em> between environments is therefore a naming convention rather
+          than a control, in both directions and not only for reads. Tables, the audit trail and the schema
+          registry are unaffected — those are isolated by schema, which is a real boundary. Accepted
+          deliberately on 2026-08-19; the reasoning, and the way back, are in
+          <code>docs/decisions/2026-08_per_environment_volumes.md</code>.
+        </div>
+
+        <h3>A free dry run first, if you want one</h3>
+        <div class="note">
+          <code>STG/Raw</code> is already readable, so you can land the Phase 04 fixtures and confirm
+          discovery finds them — the format-aware listing, the <code>.jsonl</code> handling, the ignored
+          <code>.csv</code> — before granting anything. Read-only and reversible. Ingestion itself will
+          fail at archival until the grant lands, which is the expected result rather than a defect.
+        </div>
+
+        <h3>Verify rather than assume</h3>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p1a"><span class="txt">As the staging SP, <code>SELECT</code> against anything in <code>ingredion_prd</code> is <strong>denied</strong>. A grant that looks right and a grant that works are different things — and the prd schema is real, so this is a live boundary, not a hypothetical one.</span></label></li>
+          <li><label><input type="checkbox" id="p1b"><span class="txt">As the staging SP, a <code>LIST</code> of <code>STG/Raw/</code> succeeds and a scratch <code>CREATE TABLE</code> in <code>ingredion_stg</code> succeeds.</span></label></li>
+          <li><label><input type="checkbox" id="p1c"><span class="txt">As the staging SP, writing a throwaway file under <code>STG/</code> succeeds — that is the grant actually working, which is the only thing the deploy cares about. Delete it afterwards.</span></label></li>
+          <li><label><input type="checkbox" id="p1d"><span class="txt">Do not report #160 as closed. Declining per-environment volumes leaves its gap open and widens it to writes; the issue should be updated to reflect the decision rather than resolved.</span></label></li>
+          <li><label><input type="checkbox" id="p1e"><span class="txt">Grant prod's <code>WRITE VOLUME</code> only when prod actually deploys. There is no reason for an unused principal to hold write over the container in the meantime.</span></label></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 2 ================= -->
+  <section class="phase">
+    <div class="spine">03</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips">
+          <span class="chip neutral">Manual deploy</span>
+          <span class="chip neutral">mode: production</span>
+        </div>
+        <h2>Deploy the bundle</h2>
+        <p class="lede">
+          There is no CI deploy — <code>ci.yml</code> tests, builds and lints, but never touches the
+          workspace. Promotion is a person running a command, which is the mechanism that produced the
+          214-commit gap in the first place.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <pre><code>databricks bundle deploy -t staging --profile bronze-json-loader-dev</code></pre>
+
+        <h3>Verify the deploy before running anything</h3>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p2a"><span class="txt">Three jobs appear, all suffixed <code>_stg</code>: <code>bronze_directory_ingestion_stg</code>, <code>ai_metadata_stg</code>, <code>bronze_maintenance_stg</code>.</span></label></li>
+          <li><label><input type="checkbox" id="p2b"><span class="txt">All three show <strong>Run as</strong> = the staging service principal, not you. Staging is <code>mode: production</code>, so unlike dev there is no per-user name prefix and <strong>schedules are not force-paused</strong>.</span></label></li>
+          <li><label><input type="checkbox" id="p2c"><span class="txt"><code>bronze_maintenance_stg</code> shows its weekly Sunday 03:00 UTC schedule as <strong>PAUSED</strong>. If it is not paused, stop and fix it — it runs <code>VACUUM</code>.</span></label></li>
+          <li><label><input type="checkbox" id="p2d"><span class="txt"><code>ai_metadata_stg</code> has <strong>no schedule at all</strong>. Correct — it is verified by manual run first.</span></label></li>
+          <li><label><input type="checkbox" id="p2e"><span class="txt">The uploaded wheel is <code>bronze_ingest-0.6.0</code>, under <code>/Shared/.bundle/ingredion_enhancement_package/staging</code> — not anyone's home directory.</span></label></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 3 ================= -->
+  <section class="phase">
+    <div class="spine">04</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips"><span class="chip neutral">Fixtures</span></div>
+        <h2>Land fixtures — staging has zero data</h2>
+        <p class="lede">
+          Nothing flows into this environment, so the smoke test must generate what it ingests. That is the
+          point: you cannot prove a quality gate works using data that is already clean.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <div class="note warn">
+          <strong>Name the bad-data file exactly <code>orders_quarantine_test.json</code>.</strong> The
+          deployed job already carries
+          <code>per_file_config_json: {"orders_quarantine_test.json": {"required_columns": ["order_id"]}}</code>
+          in its base parameters. Match that filename and the quality gate fires with no parameter editing;
+          miss it and every row passes and you prove nothing.
+        </div>
+
+        <div class="tbl-scroll">
+          <table>
+            <thead>
+              <tr><th>Fixture</th><th>Under <code>STG/Raw/</code></th><th>What it proves</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>orders_clean.json</code></td><td>root</td><td>Happy path → its own bronze table</td></tr>
+              <tr><td><code>orders.jsonl</code></td><td>root</td><td>#146 regression — must yield 3 rows, not 1, with <code>multiline=true</code> set on the job</td></tr>
+              <tr><td><code>orders_quarantine_test.json</code></td><td>root</td><td>Null <code>order_id</code> rows split to quarantine</td></tr>
+              <tr><td><code>orders_drift.json</code></td><td>root</td><td>Schema drift — a column added, a column removed</td></tr>
+              <tr><td><code>orders.csv</code></td><td>root</td><td>Ignored without erroring on a <code>json</code> run; ingested on a <code>csv</code> run</td></tr>
+              <tr><td><code>orders.parquet</code></td><td>root</td><td>Parquet reader (#312) — never run outside the local suite</td></tr>
+              <tr><td><code>folder_a/</code> (2 files)</td><td>subfolder</td><td>Folder merges into one table</td></tr>
+              <tr><td><code>folder_empty/</code></td><td>subfolder</td><td>Reports <code>skipped</code>, never <code>failed</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          Lift the shapes straight from <code>bronze_layer/notebooks/validate_e2e_bronze.py</code> — it
+          generates all of these. Do not run that notebook as-is against staging: it hardcodes
+          <code>ingredion_dev</code> and the dev volume, and it issues <code>DROP TABLE</code>.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 4 ================= -->
+  <section class="phase">
+    <div class="spine">05</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips"><span class="chip neutral">First real run</span></div>
+        <h2>Run the ingestion job</h2>
+        <p class="lede">
+          The resource key is unsuffixed, so the target selects the environment. Default parameters are
+          <code>source_format: json</code>, <code>write_mode: append</code>, <code>multiline: true</code>,
+          <code>max_files: 50</code>, <code>stop_on_error: false</code>.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <pre><code>databricks bundle run bronze_directory_ingestion -t staging \
+  --profile bronze-json-loader-dev</code></pre>
+
+        <h3>Verify by querying, not by reading the return value</h3>
+        <p>
+          #305 showed the returned dict can lie. Assert against the tables and the volume listing.
+        </p>
+
+        <pre><code><span class="k">SHOW TABLES IN</span> ingredion_en.ingredion_stg;
+
+<span class="k">SELECT</span> status, <span class="k">COUNT</span>(*) <span class="k">FROM</span> ingredion_en.ingredion_stg._ingestion_audit
+<span class="k">GROUP BY</span> status;
+
+<span class="k">SELECT</span> table_name, first_seen_at, last_updated_at
+<span class="k">FROM</span> ingredion_en.ingredion_stg._schema_registry;</code></pre>
+
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p4a"><span class="txt">Each top-level file became its own table; <code>folder_a/</code> merged its two files into one.</span></label></li>
+          <li><label><input type="checkbox" id="p4b"><span class="txt"><code>folder_empty/</code> reports <code>status: "skipped"</code> with reason <code>"no json files in folder"</code> — <strong>skipped, not failed</strong>.</span></label></li>
+          <li><label><input type="checkbox" id="p4c"><span class="txt"><code>orders.jsonl</code> returned <strong>3 rows, not 1</strong>. Unguarded this returns only the first record with no error, which is why it is worth an explicit check.</span></label></li>
+          <li><label><input type="checkbox" id="p4d"><span class="txt">Quarantine counts add up: rows in bronze + rows in quarantine = rows in the source file.</span></label></li>
+          <li><label><input type="checkbox" id="p4e"><span class="txt">Audit columns hold real values — <code>_source_file</code> is the full Volume path, <code>_ingested_at</code> a real timestamp, <code>_batch_id</code> the job run id — not placeholders.</span></label></li>
+          <li><label><input type="checkbox" id="p4f"><span class="txt"><code>orders.csv</code> was <strong>ignored without erroring</strong> on this JSON run. Format is never inferred from the extension.</span></label></li>
+          <li><label><input type="checkbox" id="p4g"><span class="txt">The registry holds <strong>one row per table</strong>, upsert-keyed on <code>table_name</code>. A flat row count after a drift run is correct — an assertion expecting growth would be wrong.</span></label></li>
+          <li><label><input type="checkbox" id="p4h"><span class="txt">Run it a second time: append grows the table rather than replacing it, and the source files landed in <code>processed/</code> — which is what the <code>WRITE VOLUME</code> grant was for.</span></label></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 5 ================= -->
+  <section class="phase">
+    <div class="spine">06</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips"><span class="chip neutral">0.6.0-specific</span></div>
+        <h2>The changes this release actually ships</h2>
+        <p class="lede">
+          Everything above would have passed on 0.5.0. These are the checks that exist because of #359, in
+          the order the CHANGELOG ranks their blast radius.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <h3>Change Data Feed is now on by default</h3>
+        <p>
+          The single highest-impact change, and a real storage line item. It resolves to <strong>on</strong>
+          for <code>append</code> and <code>merge</code> — which is what the staging job runs.
+        </p>
+        <pre><code><span class="k">SHOW TBLPROPERTIES</span> ingredion_en.ingredion_stg.orders_clean_bronze;</code></pre>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p5a"><span class="txt"><code>delta.enableChangeDataFeed = true</code>, and both <code>delta.logRetentionDuration</code> and <code>delta.deletedFileRetentionDuration</code> read <code>interval 30 days</code>.</span></label></li>
+          <li><label><input type="checkbox" id="p5b"><span class="txt">Same properties on the quarantine table — CDF applies to bronze and quarantine alike.</span></label></li>
+          <li><label><input type="checkbox" id="p5c"><span class="txt">Decide now whether staging keeps it. To opt out, set <code>enable_change_data_feed: false</code> explicitly.</span></label></li>
+        </ul>
+
+        <h3>Three new audit columns</h3>
+        <pre><code><span class="k">SELECT</span> schema_drift_json, tags_failed, tag_outcome_json
+<span class="k">FROM</span> ingredion_en.ingredion_stg._ingestion_audit
+<span class="k">ORDER BY</span> _ingested_at <span class="k">DESC</span> <span class="k">LIMIT</span> 20;</code></pre>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p5d"><span class="txt">All three columns exist and are <strong>populated</strong>, not uniformly <code>NULL</code>. Three of these were previously in the schema with no caller able to fill them; that is what 0.6.0 fixed.</span></label></li>
+          <li><label><input type="checkbox" id="p5e"><span class="txt">The drift fixture produced <code>schema_changed: true</code>, a changed fingerprint, and a populated <code>schema_drift_json</code> naming added and removed columns.</span></label></li>
+          <li><label><input type="checkbox" id="p5f"><span class="txt">No backfill needed here — 0.5.0's <code>table</code> → <code>table_name</code> migration does not apply. Confirmed against the workspace: <code>ingredion_stg</code> held <strong>zero tables</strong> before this run, so every table in it was created by 0.6.0.</span></label></li>
+        </ul>
+
+        <h3>XML is implemented and refused</h3>
+        <p>
+          Both ingestion notebooks build their format dropdown from <code>formats.approved_formats()</code>,
+          so in the deployed job the gate is visible rather than something you have to trigger.
+        </p>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p5g"><span class="txt">Open <code>bronze_directory_ingestion_stg</code> → the <strong>Source format</strong> dropdown offers <code>csv</code>, <code>json</code>, <code>parquet</code> and <strong>not</strong> <code>xml</code>.</span></label></li>
+          <li><label><input type="checkbox" id="p5h"><span class="txt">Lifting the gate later is one deletion — the <code>"xml"</code> entry in <code>formats._PENDING_SIGNOFF</code> — and it waits on #336 and #337 clearing Tier 2 sign-off.</span></label></li>
+        </ul>
+
+        <h3>CSV and Parquet, the formats that have never run on real compute</h3>
+        <p>
+          Re-run the job twice with <code>source_format</code> overridden, pointing at a directory holding
+          only that format. Mixed-format folders are not supported by design.
+        </p>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p5i"><span class="txt">CSV run: <code>csv_header</code> and <code>csv_infer_schema</code> both default <code>true</code> (not Spark's default). Column names come from the header row, and types are not all-string.</span></label></li>
+          <li><label><input type="checkbox" id="p5j"><span class="txt">Parquet run lands a table with types preserved.</span></label></li>
+          <li><label><input type="checkbox" id="p5k"><span class="txt">Under Spark Connect <code>.load()</code> is <strong>lazy</strong> — a read that “succeeds” proves nothing until an action forces it. Count rows.</span></label></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 6 ================= -->
+  <section class="phase">
+    <div class="spine">07</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips">
+          <span class="chip tier2">Tier 2 gate</span>
+          <span class="chip neutral">Two dormant jobs</span>
+        </div>
+        <h2>The jobs that deploy but do not run</h2>
+        <p class="lede">
+          Deploying them costs nothing until someone turns them on. Turning them on is where the care goes.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <h3><code>ai_metadata_stg</code> — safe to run manually</h3>
+        <p>
+          Advisory only. Nothing in the write path reads <code>_ai_metadata</code>; acceptance, rejection and
+          quarantine stay <code>quality.py</code>'s alone. Trigger one manual run.
+        </p>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p6a"><span class="txt"><strong>Most likely failure:</strong> the job drafts via <code>ai_query</code> against the <code>databricks-claude-opus-4-8</code> serving endpoint. The staging service principal needs <code>CAN QUERY</code> on it — grant that before the run rather than debugging it after.</span></label></li>
+          <li><label><input type="checkbox" id="p6b"><span class="txt">The endpoint pin is deliberate. Do not "upgrade" it to a Claude 5 endpoint — <code>ai_query</code> does not reach those, and the error names the endpoint rather than the principal, which reads like a permissions problem and is not.</span></label></li>
+          <li><label><input type="checkbox" id="p6c"><span class="txt"><code>_ai_metadata</code> is created and holds drafted descriptions with <code>model_id</code> recorded. <code>lookback_hours: 24</code>, so run it the same day as your ingestion.</span></label></li>
+          <li><label><input type="checkbox" id="p6d"><span class="txt">The <code>anthropic</code> package is <em>not</em> installed on job compute and does not need to be — the import is lazy and the AI Functions drafter is the default. Only the direct-SDK drafter needs the extra.</span></label></li>
+        </ul>
+
+        <h3><code>bronze_maintenance_stg</code> — do not unpause</h3>
+        <div class="note stopish">
+          The job ships <code>vacuum: "true"</code>. <strong>Unpausing it, or running it as-configured,
+          executes <code>VACUUM</code> — Tier 2, and it needs your explicit named sign-off.</strong> To smoke
+          test the job without that, trigger a manual run with <code>vacuum</code> overridden to
+          <code>false</code> so only <code>OPTIMIZE</code> runs. Leave the schedule paused either way.
+        </div>
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p6e"><span class="txt">Manual run with <code>optimize=true</code>, <code>vacuum=false</code> against <code>_ingestion_audit,_schema_registry,_ai_metadata</code> completes and writes its result table.</span></label></li>
+          <li><label><input type="checkbox" id="p6f"><span class="txt">Schedule is still <code>PAUSED</code> when you are done.</span></label></li>
+          <li><label><input type="checkbox" id="p6g"><span class="txt">Note for when it is unpaused: <code>VACUUM</code> never goes below each table's own CDF retention floor — which the 30-day CDF default just raised.</span></label></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PHASE 7 ================= -->
+  <section class="phase">
+    <div class="spine">08</div>
+    <div>
+      <div class="phase-head">
+        <div class="chips"><span class="chip neutral">Close out</span></div>
+        <h2>Record it, or it did not happen</h2>
+        <p class="lede">
+          The dev run has <code>docs/e2e_validation_2026-08.md</code> — 21/21 checks, named workspace, named
+          wheel. Staging deserves the same artifact, because <code>main</code> is next and this is the only
+          evidence that will exist.
+        </p>
+      </div>
+
+      <div class="phase-body">
+        <ul class="checks">
+          <li><label><input type="checkbox" id="p7a"><span class="txt">Write <code>docs/staging_validation_2026-08.md</code> in the shape of the dev record: environment table, results table, what the evidence actually shows, and the limits.</span></label></li>
+          <li><label><input type="checkbox" id="p7b"><span class="txt">Record every check that ran, including failures. A run that stops tells you about one defect; a run that completes tells you about all of them.</span></label></li>
+          <li><label><input type="checkbox" id="p7c"><span class="txt">Update #160 to record that per-environment volumes were declined and the gap now extends to writes — rather than closing it, which would lose the tradeoff.</span></label></li>
+          <li><label><input type="checkbox" id="p7d"><span class="txt"><strong>Correct <code>azure_setup.md</code>.</strong> Its “Still to do” section claims the <code>ingredion_stg</code> / <code>ingredion_prd</code> schemas and their grants “are not yet created”. Both schemas exist and every grant it prescribes is already applied — the doc has been wrong for long enough that it was about to send this deploy down a phantom provisioning path.</span></label></li>
+          <li><label><input type="checkbox" id="p7e"><span class="txt">Re-scope #112 to what is actually left (Key Vault, secret scopes, verification) rather than closing or reopening it wholesale — the grants half is done.</span></label></li>
+        </ul>
+
+        <h3>Rollback</h3>
+        <p>
+          Staging is <code>mode: production</code>, so there is no per-user sandboxing to fall back on.
+          Redeploy the previous tip; do not reach for <code>bundle destroy</code>.
+        </p>
+        <pre><code>git checkout 638444a
+databricks bundle deploy -t staging --profile bronze-json-loader-dev</code></pre>
+
+        <h3>Two traps that cost time on the dev run</h3>
+        <div class="note">
+          Public DBFS root is disabled and <code>file:/tmp</code> is refused — only <code>/Workspace</code>
+          and Volume paths are readable. And <code>/Workspace</code> has FUSE publish lag: files written and
+          read in the same cell hit <code>PATH_NOT_FOUND</code>. Write, wait, then read.
+        </div>
+
+        <h3>One documentation contradiction worth settling</h3>
+        <div class="note">
+          The 0.6.0 CHANGELOG opens with “<em>production is running the code from before all of it</em>”, and
+          today's architecture review agrees. But
+          <code>docs/decisions/2026-08_ai_genie_architecture.md</code> states the opposite outright:
+          “<em>the premise that production runs pre-0.5.0 code is false. There is no production
+          deployment.</em>” Both cannot hold. Settle it before the <code>staging</code> → <code>main</code>
+          promotion, because the answer changes whether that promotion is an upgrade or a first install.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">
+    <span>Ingredion Enhancement Package · bronze_ingest 0.6.0</span>
+    <span>staging @ 06506fd</span>
+    <span>Workspace adb-7405607398572130</span>
+  </div>
+
+</div>
+
+<script>
+  (function () {
+    var boxes = document.querySelectorAll('.checks input[type="checkbox"]');
+    var KEY = 'ingredion-stg-runbook-060';
+    var state = {};
+    try { state = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { state = {}; }
+
+    boxes.forEach(function (box) {
+      if (state[box.id]) { box.checked = true; }
+      box.addEventListener('change', function () {
+        state[box.id] = box.checked;
+        try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode: ticks just won't persist */ }
+      });
+    });
+  })();
+</script>
