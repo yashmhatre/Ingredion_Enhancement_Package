@@ -628,7 +628,7 @@ def test_run_ingestion_builds_config_from_widgets(run_notebook):
     assert "row_count" in run.exit_value
 
 
-def test_run_ingestion_threads_format_specific_widgets(run_notebook):
+def test_run_ingestion_threads_format_specific_widgets(run_notebook, xml_signed_off):
     seen = {}
 
     class _FakeJob:
@@ -656,7 +656,7 @@ def test_run_ingestion_threads_format_specific_widgets(run_notebook):
 
 
 def test_run_ingestion_does_not_replace_config_file_format_with_widget_default(
-    run_notebook,
+    run_notebook, xml_signed_off
 ):
     seen = {}
     loaded = IngestionConfig(
@@ -1066,3 +1066,25 @@ def test_maintenance_notebook_warns_but_succeeds_when_retention_was_clamped(run_
 
     assert run.exit_value.startswith("SUCCESS")
     assert "raised to the table floor" in caplog.text
+
+
+def test_only_the_xml_validation_notebook_lifts_the_signoff_gate():
+    """
+    `validate_xml_reader.py` clears `formats._PENDING_SIGNOFF` because it
+    exists to produce the evidence #336 and #337 are waiting on. That is a
+    deliberate exception, and an exception with no edge is not an exception.
+
+    No operational notebook may do the same: an ingestion notebook that lifted
+    the gate would run the unapproved path on real data while every document
+    still described it as blocked, which is the exact defect the gate was
+    added to close.
+    """
+    allowed = {"validate_xml_reader.py"}
+    offenders = []
+    for name in sorted(os.listdir(NOTEBOOK_DIR)):
+        if not name.endswith(".py") or name in allowed:
+            continue
+        source = open(os.path.join(NOTEBOOK_DIR, name), encoding="utf-8").read()
+        if "_PENDING_SIGNOFF" in source:
+            offenders.append(name)
+    assert offenders == [], f"notebooks lifting the sign-off gate: {offenders}"
