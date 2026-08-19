@@ -33,114 +33,47 @@ changes.
 
 ## Local Development Setup
 
-### Prerequisites (get these right first)
+### Prerequisites (Windows Spark setup)
 
-Five things must be in place before `pytest` will run the Spark-backed
-tests. Each one was found the hard way, in this order, and each produces a
-failure that looks like something else (#74). The pure-Python tests — config
-validation, notebooks, retry — need none of it and run anywhere.
+Five prerequisites are required to run Spark-backed tests on Windows. Each produces a distinct failure if missing — the diagnostics below can help troubleshoot a stalled setup.
 
-**1. Java 17.** Spark supports 8/11/17 only. A newer JDK fails at
-`SparkSession` creation with `ClassNotFoundException: jdk.internal.ref.Cleaner`.
-Install Temurin 17 (what CI uses) and set `JAVA_HOME`.
+| Prerequisite | How to verify | Fix |
+| --- | --- | --- |
+| **Java 17** | `java -version` | Install Temurin 17 (not 8/11/21+); set `JAVA_HOME` |
+| **Python 3.11** | `python --version` | Create fresh venv via `python -m venv .venv311` |
+| **Hadoop 3.4.x** (Windows) | Check PySpark's Hadoop version | Download `kontext-tech/winutils` hadoop-3.4.0; set `HADOOP_HOME` |
+| **`PYSPARK_PYTHON`** (Windows) | Check env var | Set to `.venv311/Scripts/python.exe` (absolute path) |
+| **`SPARK_LOCAL_IP`** (Windows, Spark 4.x) | Check env var | Set to `127.0.0.1`; also set `SPARK_LOCAL_HOSTNAME` to `localhost` |
 
-**2. Python 3.11**, in a venv of its own (e.g. `.venv311`) rather than by
-replacing an existing interpreter.
+**Why each matters:**
+- Java 17: Spark only supports 8/11/17. Newer JDKs fail at `SparkSession` creation.
+- Python 3.11: The supported version this repo uses. 3.14+ may work but is untested.
+- Hadoop: PySpark on Windows bundles Hadoop but doesn't ship `winutils.exe`. Without it, Spark fails at startup.
+- `PYSPARK_PYTHON`: Without it, Spark launches workers with the system Python, not your venv. This is the #1 cause of `SparkException: Python worker exited unexpectedly`.
+- `SPARK_LOCAL_IP`: Required for Spark 4.x driver host resolution on Windows.
 
-Worth correcting the record, because #74 got this wrong and the wrong
-diagnosis cost real time: the issue attributes `TypeError: 'JavaPackage'
-object is not callable` to Python 3.14. On PySpark 4.1.x that error no
-longer occurs — the session builds fine. What *was* still failing looked
-like a version problem and was not; see prerequisite 4.
+**Note:** Local Spark on Windows is usable but not fully reliable — occasional startup failures are normal even with all five in place. Re-run tests if needed. CI is the authoritative test pass/fail. Pure-Python tests (config, notebooks, retry) run anywhere without these prerequisites and pass reliably.
 
-3.11 remains the recommendation because it is what CI runs and what this
-setup was verified against end to end. Whether 3.14 also works once
-prerequisite 4 is set has not been tested.
-
-**3. `winutils.exe` + `hadoop.dll` (Windows only).** Without `HADOOP_HOME`,
-Spark fails during session creation at `Shell.checkHadoopHomeInner` —
-so it blocks every Spark test, including ones that never touch a file.
-
-Match the Hadoop version PySpark bundles, not the newest mirror you find:
-
-```powershell
-python -c "import pyspark, glob, os; print(glob.glob(os.path.join(os.path.dirname(pyspark.__file__),'jars','hadoop-client-api-*.jar')))"
-```
-
-PySpark 4.1.x bundles Hadoop **3.4.x**. The widely-linked `cdarlint/winutils`
-mirror stops at 3.3.6; `kontext-tech/winutils` carries `hadoop-3.4.0-win10-x64`,
-which works. Both are third-party binaries — Apache publishes no Windows
-builds — so this is a judgement call, not a vendor download.
-
-```powershell
-# put winutils.exe and hadoop.dll in <dir>\bin, then:
-setx HADOOP_HOME C:\Users\<you>\hadoop
-```
-
-**4. `PYSPARK_PYTHON` (Windows).** The single most important one, and the
-one that looks exactly like a Python-version problem. Without it, Spark
-launches its Python workers with whatever `python` it finds rather than the
-venv's, and every test needing a worker dies with `SparkException: Python
-worker exited unexpectedly (crashed)`. That is the *same* symptom a wrong
-Python version produces, which is why #74 originally attributed it to 3.14 —
-setting this fixed 94 of 105 failures on 3.11, and the version alone fixed
-none of them.
-
-```powershell
-setx PYSPARK_PYTHON <repo>\.venv311\Scripts\python.exe
-setx PYSPARK_DRIVER_PYTHON <repo>\.venv311\Scripts\python.exe
-```
-
-**5. `SPARK_LOCAL_IP` (Windows, Spark 4.x).** Not in the original issue, and
-the reason step 3 alone is not enough. With `winutils` in place the Hadoop
-error is replaced by:
-
-```
-Py4JError: An error occurred while calling None.org.apache.spark.api.java.JavaSparkContext
-Caused by: NullPointerException: ... "idWithoutTopologyInfo" is null
-```
-
-That is driver host resolution, not Hadoop:
-
-```powershell
-setx SPARK_LOCAL_IP 127.0.0.1
-setx SPARK_LOCAL_HOSTNAME localhost
-```
-
-Both are **environment** settings on purpose. Pinning the driver host in
-`conftest.py` would be a Windows-specific workaround that CI does not need
-and that could break Linux.
-
-> **Local Spark on Windows is usable but not fully reliable** even with all
-> five in place — session startup intermittently fails with the same
-> `JavaSparkContext` error. Re-running usually works. The pure-Python suites
-> are unaffected, and CI remains the source of truth for Spark-backed tests.
+### Quick Setup
 
 ```bash
-# 1. Clone the repo
+# 1. Clone and enter bronze layer
 git clone https://github.com/yashmhatre/Ingredion_Enhancement_Package.git
 cd Ingredion_Enhancement_Package/bronze_layer
 
-# 2. Create a virtual environment
+# 2. Create and activate Python venv
 python -m venv venv
 source venv/bin/activate      # Mac/Linux
 venv\Scripts\activate         # Windows
 
-# 3. Install dependencies (pyspark, delta-spark, pytest, and build via the
-#    dev extra). None of this is needed to DEPLOY - the bundle builds its
-#    wheel with `python -m pip wheel`, so a deploy needs only the Databricks
-#    CLI and works the same from a laptop or from Databricks compute. This
-#    is for running the tests locally.
+# 3. Install dependencies
 pip install -e ".[dev]"
 
-# 4. Run tests to confirm your setup works
+# 4. Run tests
 pytest
 ```
 
-If you're setting up the Azure/Databricks environment from scratch
-(storage account, Unity Catalog, external volumes), see
-[azure_setup.md](../azure_setup.md) at the repo root — a validated,
-step-by-step runbook.
+**Note:** Multi-format and streaming tests require Databricks workspace access. Local tests validate core logic only. For full Spark testing on Windows, complete the prerequisites above first.
 
 ### Quality gates
 
@@ -359,9 +292,9 @@ and `json_test_dir` fixtures for how that works).
 notebooks), needed when a change touches:
 - Reading behavior against real cloud storage (see
   `notebooks/validate_json_reader.py` and
-  [testing_json_reader.md](docs/testing_json_reader.md))
+  [testing_json_reader.md](bronze_layer/docs/archive/testing_json_reader.md))
 - Deployment or job configuration (`databricks.yml`, notebook entrypoints)
-  — see [testing_end_to_end_deployment.md](docs/testing_end_to_end_deployment.md)
+  — see [testing_end_to_end_deployment.md](bronze_layer/docs/archive/testing_end_to_end_deployment.md)
   for the kind of validation expected before considering a deployment
   change done
 

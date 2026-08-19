@@ -1,3 +1,10 @@
+> **ARCHIVED — point-in-time record, not maintained.** Moved from
+> `docs/current_behavior.md` on 2026-08-06 as part of a documentation
+> refresh; content is unchanged. This is a snapshot of what was true in
+> July 2026, not a description of current behavior. For current behavior,
+> read `bronze_layer/README.md` and the code — where they disagree with
+> anything below, they win. See `docs/README.md` for what's current.
+
 # Current Behavior Audit — Bronze Ingestion (`bronze_layer/bronze_ingest/`)
 
 > **Historical record, not a description of today's code.** This is a

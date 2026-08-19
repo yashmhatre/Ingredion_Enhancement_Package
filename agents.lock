@@ -1,0 +1,23 @@
+# Pins the version of the private ingredion-agent-config repo that
+# scripts/bootstrap_agents.sh fetches into .claude/agents/.
+#
+# This is the ONLY place this (public) repo records anything about the
+# private agent-config content — a version string, not the content itself.
+# Bumping it is the update mechanism: change the line below, open a normal
+# one-line PR here, after the corresponding release has already been
+# reviewed and tagged in the private repo.
+#
+# `version` is the release tag; `sha` is the commit that tag resolved
+# to when it was reviewed. Derive it with
+# `git rev-parse "refs/tags/<tag>^{commit}"`, NOT `git rev-parse <tag>`:
+# from v2.1.0 onward these are annotated tags, so the bare form returns the
+# tag *object* instead. Pinning that makes every fetch fail with "the tag
+# has been moved since it was pinned" - which fails closed, but points at
+# the wrong cause. Both are checked on every fetch, because a
+# tag is a movable name and this repo's plan does not offer tag
+# protection rulesets. Bump both together, in the same PR.
+#
+# See docs/private_agent_architecture.md for the full model.
+
+version=v2.1.2
+sha=408adbad25df928803d79227c52974ea91b4774b

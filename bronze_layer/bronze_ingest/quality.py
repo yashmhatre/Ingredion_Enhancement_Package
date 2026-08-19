@@ -37,7 +37,7 @@ from pyspark.sql.window import Window
 from .config import IngestionConfig
 from .errors import DataQualityError
 from .logging_utils import logger
-from .sql_utils import row_content_hash
+from .sql_utils import apply_table_properties, row_content_hash
 
 
 def _missing_columns(df, columns: List[str]) -> List[str]:
@@ -125,6 +125,24 @@ def split_good_bad(df, config: IngestionConfig) -> Tuple[Any, Any]:
         remove exactly the rows it re-promoted (#148).
     """
     if not config.required_columns and not config.unique_columns:
+        # A gate configured to check nothing looks exactly like a gate that
+        # passed (#250). Both produce zero bad rows, a clean audit row and a
+        # green run - and the deployed job resource ships
+        # `required_columns: ""`, so this is the DEFAULT state, not an edge
+        # case someone opted into.
+        #
+        # One line per run, deliberately not a raise: an unconfigured gate is a
+        # legitimate choice for a source with no known invariants, and failing
+        # would make bronze undeployable until someone invented rules. But it
+        # must not be SILENT, which is the difference this repo keeps finding
+        # between a check and a green light nobody looks at.
+        logger.warning(
+            "Quality gate for %s is checking nothing: required_columns and unique_columns "
+            "are both empty, so every row will pass and the quarantine table will stay "
+            "empty regardless of the data. Configure required_columns if this source has "
+            "columns that must be non-null (#250).",
+            config.full_table_name,
+        )
         return df, df.limit(0)
 
     missing = _missing_columns(df, config.required_columns) + _missing_columns(
@@ -223,6 +241,12 @@ def enforce_quality(df, config: IngestionConfig):
 _QUARANTINE_META_COLUMNS = {
     "_occurrence_count": "BIGINT",
     "_first_quarantined_at": "TIMESTAMP",
+    # How many times replay has tried this row and it still failed the gate
+    # (#159 item 4). The point is to tell "not yet fixed" from "never going to
+    # be" with DATA rather than with age: a row quarantined 90 days ago whose
+    # upstream fix landed yesterday is not hopeless, and an age-based TTL
+    # cannot see the difference.
+    "_replay_attempts": "BIGINT",
 }
 
 
@@ -357,6 +381,10 @@ def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
         # written on insert - the matched branch below leaves it alone, which
         # is what makes it "first".
         .withColumn("_first_quarantined_at", current_timestamp())
+        # Starts at 0 and is only ever incremented by replay - never by
+        # re-quarantining. Re-ingesting the same bad row is not a failed
+        # attempt to fix it.
+        .withColumn("_replay_attempts", lit(0).cast("bigint"))
     )
 
     # Atomic create-if-not-exists rather than a tableExists() check followed
@@ -364,7 +392,25 @@ def write_quarantine(spark, bad_df, bad_count: int, config: IngestionConfig):
     # "missing" and both create/append, which is the #46 race in a different
     # module. Merging into a freshly-created empty table inserts everything.
     creator = DeltaTable.createIfNotExists(spark).tableName(table_name).addColumns(source.schema)
+    # Table properties on the quarantine table too (#58). This write used to
+    # bypass them entirely - `createIfNotExists` here, `_ensure_liquid_
+    # clustering_and_properties` only over in bronze_writer - so quarantine
+    # tables got no Delta properties at all, including no Change Data Feed.
+    #
+    # Not cosmetic: #155's replay path promotes quarantined rows into bronze,
+    # so a Silver consumer needs to see when a row LEAVES quarantine, not just
+    # when it arrives. Without CDF here that transition is invisible
+    # incrementally, and the row appears in bronze with no readable trace of
+    # where it came from. Set at creation so a brand-new quarantine table is
+    # correct from its first commit rather than from the first ALTER.
+    for key, value in config.resolved_table_properties.items():
+        creator = creator.property(key, value)
     creator.execute()
+    # And for tables that already exist from before this shipped. Diffed
+    # inside, so a second run against an already-upgraded table issues no DDL.
+    changed_props = apply_table_properties(spark, table_name, config.resolved_table_properties)
+    if changed_props:
+        logger.warning("Quarantine table properties changed for %s: %s", table_name, changed_props)
     _align_quarantine_schema(spark, table_name, source.schema)
 
     target = DeltaTable.forName(spark, table_name)

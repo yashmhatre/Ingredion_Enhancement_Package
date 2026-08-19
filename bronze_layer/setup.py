@@ -32,21 +32,43 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "pyyaml>=5.1",
+        "defusedxml>=0.7.1",
     ],
     extras_require={
         # pyspark/delta-spark are provided by the Databricks runtime already;
         # only needed if you want to run/test this package outside Databricks.
-        "local": ["pyspark>=3.3.0", "delta-spark>=2.3.0"],
+        "local": ["pyspark>=4.0.0", "delta-spark>=2.3.0"],
         # databricks-sdk is deliberately NOT in install_requires: the
         # Databricks runtime ships its own copy, and pinning a second one
         # risks a version conflict on job compute. databricks_fs.py imports
         # it defensively and falls back to the notebook-injected dbutils, so
         # the package works with or without it.
         "sdk": ["databricks-sdk>=0.30.0"],
+        # anthropic backs AnthropicMetadataDrafter only, which since #241 is
+        # the local-development escape hatch rather than the default. The
+        # deployed path is AIFunctionsMetadataDrafter, which calls ai_query in
+        # SQL and needs no package at all - so this dependency never reaches
+        # job compute, and the wheel installed there is unaffected by it.
+        #
+        # A stronger reason to keep it out of install_requires than the `sdk`
+        # extra has: databricks-sdk is excluded because the runtime ships its
+        # own copy and a second one risks a conflict. This one is excluded
+        # because production does not use it at all.
+        #
+        # Deliberately NOT in `dev`. The test suite fakes the MetadataDrafter
+        # Protocol and never imports anthropic (see test_ai_metadata.py's
+        # module docstring), and mypy is clean without it - so adding it there
+        # would pull a network dependency into every CI run for no coverage.
+        #
+        # Floor, not a pin: the Messages API surface used in draft() - client
+        # construction, messages.create(model=, max_tokens=, messages=), and
+        # response.content text blocks. No upper bound on purpose; this is a
+        # developer tool, so tracking latest is the useful behaviour.
+        "ai": ["anthropic>=0.40.0"],
         # `build` backs the wheel that Asset Bundles uploads and installs onto
         # job compute (see the `artifacts:` block in databricks.yml).
         "dev": [
-            "pyspark>=3.3.0", "delta-spark>=2.3.0", "pytest>=7.0.0",
+            "pyspark>=4.0.0", "delta-spark>=2.3.0", "pytest>=7.0.0",
             "build>=1.0.0", "databricks-sdk>=0.30.0",
         ],
     },

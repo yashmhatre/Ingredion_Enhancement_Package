@@ -1,3 +1,10 @@
+> **ARCHIVED — point-in-time record, not maintained.** Moved from
+> `bronze_layer/docs/testing_json_reader.md` on 2026-08-06 as part of a
+> documentation refresh; content is unchanged. Requires a live cluster and
+> is not part of the pytest suite — kept as a record of manual validation
+> performed, not as a runnable or current test plan. See `docs/README.md`
+> for what's current.
+
 # JSON Reader Validation — ADLS Notebook
 
 ## Purpose

@@ -5,7 +5,7 @@ schema evolution.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
@@ -14,7 +14,7 @@ from .config import IngestionConfig
 from .errors import DuplicateMergeKeyError, NullMergeKeyError
 from .logging_utils import logger
 from .retry import with_retry
-from .sql_utils import quote_literal, row_content_hash
+from .sql_utils import apply_table_properties, row_content_hash
 
 
 def resolve_batch_id(config: IngestionConfig) -> str:
@@ -100,7 +100,7 @@ def _assert_no_null_merge_keys(df, merge_keys):
         )
 
 
-def _dedupe_for_merge(df, config: IngestionConfig):
+def _dedupe_for_merge(df, config: IngestionConfig, merge_key_columns):
     """
     Delta MERGE raises "Cannot perform Merge as multiple source rows
     matched..." when the source has more than one row per merge key.
@@ -108,6 +108,12 @@ def _dedupe_for_merge(df, config: IngestionConfig):
     intra-batch duplicates, so deterministically keep one row per key -
     the one with the highest dedupe_order_by value (defaults to the
     ingestion timestamp, so the most-recently-ingested row wins).
+
+    `merge_key_columns` is the columns to partition by for this run - either
+    `config.merge_keys` or, under the content-hash strategy (#84),
+    `[config.content_hash_key_col]`. Passed in rather than read from
+    `config.merge_keys` directly so this function doesn't need to know which
+    strategy is active; `_prepare_merge_keys` already resolved that.
 
     "Deterministically" needs the content-hash tie-break to be true (#147).
     The default order column is the ingestion timestamp, which
@@ -130,7 +136,7 @@ def _dedupe_for_merge(df, config: IngestionConfig):
             "or leave add_audit_columns=True so the default (audit_ingest_ts_col) exists."
         )
 
-    w = Window.partitionBy(*(config.merge_keys or [])).orderBy(
+    w = Window.partitionBy(*merge_key_columns).orderBy(
         col(f"`{order_col}`").desc(), row_content_hash(df).asc()
     )
     return (
@@ -156,6 +162,36 @@ def _assert_no_duplicate_merge_keys(df, merge_keys):
             f"Example duplicated key(s): {[r.asDict() for r in dup_keys]}. Set "
             "dedupe_before_merge=True (default) to auto-dedupe instead of failing."
         )
+
+
+def _prepare_merge_keys(df, config: IngestionConfig):
+    """
+    Resolves the MERGE key column(s) for this write and, under the
+    content-hash strategy, computes them onto `df` (#84).
+
+    Two mutually exclusive strategies - config guarantees exactly one is set
+    when write_mode='merge':
+
+    - Natural key (`config.merge_keys`): used as-is, nothing added to `df`.
+    - Content hash (`config.content_hash_columns`): computes
+      `row_content_hash(df, config.content_hash_columns)` into
+      `config.content_hash_key_col` and returns THAT single column as the
+      merge key. See `content_hash_columns`' field comment in config.py for
+      why this gives idempotent re-ingestion of identical payloads rather
+      than upsert semantics - callers further down this module (dedupe,
+      null/duplicate checks, the MERGE condition itself) don't need to know
+      which strategy produced the key, only which column(s) to use.
+
+    Returns (df, merge_key_columns) - df is unchanged for the natural-key
+    path, and carries the new hash column for the content-hash path.
+    """
+    if config.content_hash_columns:
+        df = df.withColumn(
+            config.content_hash_key_col,
+            row_content_hash(df, config.content_hash_columns),
+        )
+        return df, [config.content_hash_key_col]
+    return df, list(config.merge_keys or [])
 
 
 def _describe_current_layout(spark, full_name):
@@ -194,7 +230,15 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
     branch in _write_core calls this again immediately after its write to
     restore it, rather than relying on it surviving the write.
     """
-    if not (config.cluster_by or config.cluster_by_auto or config.table_properties):
+    # resolved_table_properties, not table_properties: it carries the CDF
+    # defaults (#58) as well as the user's dict. One consequence worth naming
+    # - with CDF on by default this set is never empty, so the early return
+    # below no longer fires for a table that configures no layout at all.
+    # That is the intended behaviour change: CDF has to reach every table the
+    # package creates, including ones nobody configured.
+    desired_props = config.resolved_table_properties
+
+    if not (config.cluster_by or config.cluster_by_auto or desired_props):
         return
 
     from delta.tables import DeltaTable
@@ -205,7 +249,7 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
             creator = creator.clusterBy(*config.cluster_by)
         elif config.partition_by:
             creator = creator.partitionedBy(*config.partition_by)
-        for key, value in (config.table_properties or {}).items():
+        for key, value in desired_props.items():
             creator = creator.property(key, value)
         creator.execute()
 
@@ -233,21 +277,12 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
                 exc,
             )
 
-    changed_props = {
-        k: v for k, v in (config.table_properties or {}).items() if current_props.get(k) != v
-    }
+    # current_props is already in hand from the DESCRIBE DETAIL above, so it
+    # is passed in rather than letting the helper re-read it. Escaping and the
+    # diff-before-ALTER live in the helper now, shared with the quarantine
+    # write (#58) - see sql_utils.apply_table_properties.
+    changed_props = apply_table_properties(spark, full_name, desired_props, current_props)
     if changed_props:
-        # Both sides escaped (#154). `table_properties` is a free-form
-        # Dict[str, str] straight from YAML, and both key and value landed in
-        # single-quoted SQL literals raw: a value containing an apostrophe
-        # broke the statement, and a crafted one appended arbitrary DDL to it.
-        # The keys are additionally validated at config load, per
-        # dot-separated part, since they are dotted by convention
-        # (delta.enableChangeDataFeed).
-        props_clause = ", ".join(
-            f"'{quote_literal(k)}' = '{quote_literal(v)}'" for k, v in changed_props.items()
-        )
-        spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ({props_clause})")
         logger.warning("Table properties changed for %s: %s", full_name, changed_props)
 
 
@@ -294,6 +329,34 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
 
     full_name = config.full_table_name
+
+    # Merge preparation and its refusals run BEFORE anything can create the
+    # table, and the ordering is load-bearing in two ways (both caught by
+    # pre-existing tests when #58 made the layout step unconditional):
+    #
+    # 1. _ensure_liquid_clustering_and_properties creates the table when it
+    #    has something to apply. Until #58 it usually had nothing, so it
+    #    returned early and a config-error merge left no table behind -
+    #    test_merge_refuses_null_merge_keys asserts exactly that. With CDF on
+    #    by default it always has something to apply, so a run that is about
+    #    to be refused would otherwise leave an empty table behind.
+    # 2. Under the content-hash strategy (#84) _prepare_merge_keys ADDS a
+    #    column. Creating the table from the pre-hash schema and then merging
+    #    the post-hash DataFrame into it is a schema mismatch.
+    #
+    # So: resolve the keys, refuse if they are unusable, and only then let
+    # anything touch the catalog.
+    merge_key_columns: List[str] = []
+    if config.write_mode == "merge":
+        df, merge_key_columns = _prepare_merge_keys(df, config)
+        _assert_no_null_merge_keys(df, merge_key_columns)
+        # resolved_, not the raw field: it defaults to None so config load can
+        # tell an explicit choice from silence, and None is falsy (#54).
+        if config.resolved_dedupe_before_merge:
+            df = _dedupe_for_merge(df, config, merge_key_columns)
+        else:
+            _assert_no_duplicate_merge_keys(df, merge_key_columns)
+
     _ensure_liquid_clustering_and_properties(spark, df, config, full_name)
 
     writer = df.write.format("delta")
@@ -325,14 +388,9 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     elif config.write_mode == "merge":
         from delta.tables import DeltaTable
 
-        _assert_no_null_merge_keys(df, config.merge_keys)
-
-        # resolved_, not the raw field: it defaults to None so config load can
-        # tell an explicit choice from silence, and None is falsy (#54).
-        if config.resolved_dedupe_before_merge:
-            df = _dedupe_for_merge(df, config)
-        else:
-            _assert_no_duplicate_merge_keys(df, config.merge_keys)
+        # df and merge_key_columns were both resolved above, before anything
+        # could create the table - see the comment there for why that ordering
+        # matters. merge_key_columns is non-empty here by construction.
 
         # Atomic create-if-not-exists instead of a check-then-act on table
         # existence - two concurrent first-runs against the same
@@ -341,22 +399,32 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
         # first batch (#46). Merging into a freshly-created empty table is
         # equivalent to insert-all, so there's no separate "first load"
         # branch needed - and it makes a retried first load idempotent
-        # too, since MERGE on merge_keys can't duplicate rows the way a
-        # retried append could.
+        # too, since MERGE on merge_key_columns can't duplicate rows the way
+        # a retried append could.
         creator = DeltaTable.createIfNotExists(spark).tableName(full_name).addColumns(df.schema)
         if config.partition_by:
             creator = creator.partitionedBy(*config.partition_by)
         creator.execute()
 
         target = DeltaTable.forName(spark, full_name)
-        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in (config.merge_keys or []))
-        (
-            target.alias("target")
-            .merge(df.alias("source"), condition)
-            .whenMatchedUpdateAll()
-            .whenNotMatchedInsertAll()
-            .execute()
-        )
+        condition = " AND ".join(f"target.`{k}` = source.`{k}`" for k in merge_key_columns)
+        merge_builder = target.alias("target").merge(df.alias("source"), condition)
+
+        if config.content_hash_columns:
+            # Excluded from the matched-row update rather than folded into a
+            # blanket whenMatchedUpdateAll(): a genuine match means source
+            # and target hash are already equal (that's what made them
+            # match), so overwriting it would be a no-op either way - this
+            # makes that explicit instead of relying on it being
+            # incidentally true, per #84's design note.
+            update_columns: Dict[str, Any] = {
+                c: f"source.`{c}`" for c in df.columns if c != config.content_hash_key_col
+            }
+            merge_builder = merge_builder.whenMatchedUpdate(set=update_columns)
+        else:
+            merge_builder = merge_builder.whenMatchedUpdateAll()
+
+        merge_builder.whenNotMatchedInsertAll().execute()
     else:
         raise ValueError(f"Unknown write_mode: {config.write_mode}")
 
@@ -476,8 +544,11 @@ def write_bronze(spark, df, config: IngestionConfig):
     (write succeeded, a downstream step then failed) re-running with the
     same batch_id converges to one copy of the data instead of duplicating
     it. Not applied to write_mode="merge" - Delta's MERGE doesn't accept
-    txn options, but re-running the same batch is naturally safe there via
-    merge_keys upsert semantics anyway.
+    txn options, but re-running the same batch is naturally safe there:
+    via merge_keys upsert semantics, or, under the content-hash strategy
+    (#84), because an identical retried batch re-hashes to the same key and
+    matches the rows it already wrote (idempotent re-ingestion - not
+    upsert, see content_hash_columns' field comment in config.py).
     """
     txn_options = None
     if config.idempotent_batch_writes and config.write_mode in ("append", "overwrite"):
@@ -529,7 +600,21 @@ def write_bronze_micro_batch(spark, micro_batch_df, batch_id: int, config: Inges
     on Auto Loader's own checkpoint (which prevents re-reading the same
     source files) rather than txnVersion.
     """
-    if micro_batch_df.rdd.isEmpty():
+    # DataFrame.isEmpty(), NOT micro_batch_df.rdd.isEmpty() (#248).
+    #
+    # `.rdd` does not exist on Spark Connect - it raises
+    # PySparkNotImplementedError: [NOT_IMPLEMENTED] rdd is not implemented.
+    # Every Databricks compute this project has is serverless (azure_setup.md
+    # Step 3: the trial subscription's 4-vCPU quota rules out classic
+    # compute), and serverless is Spark Connect. So this line failed the
+    # FIRST micro-batch of every streaming run, every time - the streaming
+    # write path could never have worked here.
+    #
+    # It survived because no test could reach it: cloudFiles is Databricks-
+    # only, so the suite cannot start a stream at all, and local pyspark is
+    # classic Spark where `.rdd` exists and the line is fine. Found by the
+    # first real Auto Loader run (#248), not by CI.
+    if micro_batch_df.isEmpty():
         logger.info("Micro-batch %s is empty - skipping write.", batch_id)
         return
 

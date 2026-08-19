@@ -9,6 +9,7 @@ from bronze_ingest.bronze_writer import (
     _resolve_idempotent_txn_version,
     add_audit_columns,
     write_bronze,
+    write_bronze_micro_batch,
 )
 from bronze_ingest.config import IngestionConfig
 
@@ -175,6 +176,104 @@ def test_merge_dedupe_missing_order_column_raises_clear_error(spark):
 
     with pytest.raises(ValueError, match="_ingested_at"):
         write_bronze(spark, df, cfg)
+
+
+def test_content_hash_merge_key_column_is_added_and_populated(spark):
+    """#84: the hash strategy computes its own key column onto the
+    DataFrame and persists it, named _content_hash_key by default."""
+    table = f"bw_hash_col_{uuid.uuid4().hex[:8]}"
+    # dedupe_before_merge is orthogonal to this test - disable it so this
+    # test doesn't depend on audit columns being present (see #48 tests).
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    written = spark.read.table(_table(table))
+    assert "_content_hash_key" in written.columns
+    assert written.select("_content_hash_key").collect()[0][0] is not None
+
+
+def test_content_hash_key_col_name_is_configurable(spark):
+    table = f"bw_hash_col_name_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        content_hash_key_col="_my_dedup_key",
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    written = spark.read.table(_table(table))
+    assert "_my_dedup_key" in written.columns
+    assert "_content_hash_key" not in written.columns
+
+
+def test_content_hash_merge_dedupes_identical_rows_within_one_batch(spark):
+    """Rows that are identical across the HASHED columns collide on the
+    computed key, so dedupe_before_merge (default True) collapses them the
+    same way it would collapse a duplicate natural merge key - and picks the
+    highest dedupe_order_by value, exactly as #48 specified for merge_keys.
+
+    `version` differs between the two rows and is deliberately NOT in
+    content_hash_columns, which also pins the other half of this: the hash
+    covers the named columns only, so a column outside the list can't stop
+    two rows from colliding. dedupe_order_by is explicit here because
+    write_bronze doesn't add audit columns, so the default order column
+    (_ingested_at) isn't on a raw DataFrame - see
+    test_merge_dedupe_missing_order_column_raises_clear_error."""
+    table = f"bw_hash_dupe_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_order_by="version",
+    )
+
+    df = spark.createDataFrame(
+        [(1, "a", 1), (1, "a", 2), (2, "b", 1)],
+        ["id", "name", "version"],
+    )
+    write_bronze(spark, df, cfg)
+
+    rows = {r["id"]: r["version"] for r in spark.read.table(_table(table)).collect()}
+    assert rows == {1: 2, 2: 1}
+
+
+def test_content_hash_merge_key_gives_idempotent_reingestion_not_upsert(spark):
+    """#84's central design point: content_hash_columns answers 'are these
+    the same bytes', not 'is this the same business entity'. Re-ingesting
+    byte-identical rows is a no-op (idempotent). An upstream UPDATE against
+    the same business key (id=1 here) produces a NEW row instead of
+    updating in place, because the hash no longer matches - the opposite of
+    what a natural merge_keys=['id'] would do, and the whole reason this is
+    a separate, explicitly-named strategy rather than a variant of
+    merge_keys."""
+    table = f"bw_hash_merge_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    assert spark.read.table(_table(table)).count() == 2
+
+    # Re-ingest the exact same bytes - idempotent, no new rows.
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    assert spark.read.table(_table(table)).count() == 2
+
+    # Same business key (id=1), different content - INSERTS as a new row.
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated")], ["id", "name"]), cfg)
+    rows = {(r["id"], r["name"]) for r in spark.read.table(_table(table)).collect()}
+    assert rows == {(1, "a"), (2, "b"), (1, "a-updated")}
 
 
 def test_append_mode_does_not_require_merge_keys(spark):
@@ -492,3 +591,186 @@ def test_resolve_batch_id_generates_a_distinct_value_when_unset():
     cfg = _cfg("t")
     first = resolve_batch_id(cfg)
     assert first and first.endswith("Z")
+
+
+# ---------------------------------------------------------------------------
+# Change Data Feed (#58)
+# ---------------------------------------------------------------------------
+
+
+def test_cdf_is_enabled_on_a_table_that_configures_nothing(spark):
+    """The default has to reach tables nobody configured, which is exactly the
+    case that used to skip the property path entirely: before #58 the writer
+    returned early unless cluster_by/cluster_by_auto/table_properties were
+    set, so a plain append table got no Delta properties at all."""
+    table = f"bw_cdf_default_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append")
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+    assert props.get("delta.logRetentionDuration") == "interval 30 days"
+    assert props.get("delta.deletedFileRetentionDuration") == "interval 30 days"
+
+
+def test_second_run_against_an_already_configured_table_issues_no_ddl(spark, caplog):
+    """#58's acceptance criterion. The writer logs a warning naming the
+    changed properties whenever it issues the ALTER, so silence on the second
+    run is the observable for 'no DDL' - and it is what keeps CDF from
+    re-ALTERing the table on every single ingestion."""
+    table = f"bw_cdf_idempotent_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    caplog.clear()
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg)
+
+    assert "Table properties changed" not in caplog.text
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+
+
+def test_existing_table_without_cdf_is_upgraded_without_rewriting_data(spark):
+    """Tables created before this shipped must gain CDF on the next run, and
+    keep their rows - the upgrade is an ALTER, not a rewrite."""
+    table = f"bw_cdf_upgrade_{uuid.uuid4().hex[:8]}"
+    off = _cfg(table, write_mode="append", enable_change_data_feed=False)
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), off)
+    _, before = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in before
+
+    on = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), on)
+
+    _, after = _layout(spark, table)
+    assert after.get("delta.enableChangeDataFeed") == "true"
+    assert spark.read.table(_table(table)).count() == 2, "the upgrade must not drop rows"
+
+
+def test_explicitly_disabling_cdf_is_respected_end_to_end(spark):
+    table = f"bw_cdf_off_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", enable_change_data_feed=False)
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in props
+
+
+def test_raw_table_property_beats_the_cdf_default_end_to_end(spark):
+    """Precedence is decided in config; this pins that the writer honours it
+    rather than re-adding the default further down."""
+    table = f"bw_cdf_override_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="append",
+        table_properties={"delta.enableChangeDataFeed": "false"},
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "false"
+
+
+def test_overwrite_mode_gets_no_cdf_by_default(spark):
+    """docs/bronze_silver_contract.md 2: overwrite emits the whole table as
+    deletes then inserts every run, so the feed carries no incremental
+    information. Silence resolves to off rather than raising, so existing
+    overwrite configs keep working."""
+    table = f"bw_cdf_overwrite_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="overwrite")
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in props
+
+
+def test_a_refused_merge_creates_no_table_even_though_cdf_wants_one(spark):
+    """The regression #58 introduced and CI caught.
+
+    _ensure_liquid_clustering_and_properties creates the table when it has
+    something to apply. Before CDF was on by default it usually had nothing,
+    returned early, and a merge refused for a bad key left no table behind.
+    With CDF always on it always has something to apply - so unless the
+    refusals run FIRST, a run that is about to be rejected leaves an empty
+    table sitting in the catalog.
+
+    test_merge_refuses_null_merge_keys already asserts the no-table property
+    and is what failed. This one exists to say why, so the ordering in
+    _write_core is not 'simplified' back later."""
+    table = f"bw_cdf_refusal_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        retry_attempts=1,
+    )
+    assert cfg.resolved_table_properties, "precondition: CDF gives this config properties to apply"
+
+    with pytest.raises(NullMergeKeyError):
+        write_bronze(spark, spark.createDataFrame([(1, "a"), (None, "b")], ["id", "name"]), cfg)
+
+    assert not spark.catalog.tableExists(_table(table))
+
+
+# ---- streaming micro-batch: Spark Connect compatibility (#248) ----
+
+
+class _ConnectLikeDataFrame:
+    """Stands in for a Spark Connect DataFrame.
+
+    Everything works except `.rdd`, which raises the way serverless does:
+    `PySparkNotImplementedError: [NOT_IMPLEMENTED] rdd is not implemented.`
+    """
+
+    def __init__(self, empty):
+        self._empty = empty
+
+    @property
+    def rdd(self):
+        raise NotImplementedError("[NOT_IMPLEMENTED] rdd is not implemented.")
+
+    def isEmpty(self):  # noqa: N802 - mirrors the PySpark DataFrame API
+        return self._empty
+
+
+def test_micro_batch_empty_check_does_not_touch_rdd():
+    """#248. `write_bronze_micro_batch` used `micro_batch_df.rdd.isEmpty()`,
+    and `.rdd` does not exist on Spark Connect - which is every compute this
+    project has, since the trial subscription's vCPU quota rules out classic
+    compute. It failed the FIRST micro-batch of every streaming run.
+
+    Nothing caught it: cloudFiles is Databricks-only so the suite cannot
+    start a stream, and local pyspark is classic Spark where `.rdd` works
+    fine. So the regression test is a fake that raises exactly where
+    serverless raises, and needs no stream and no Spark.
+    """
+    cfg = _cfg("micro_batch_rdd_guard", checkpoint_location="/tmp/al248_cp")
+
+    # Empty batch: must return early, and must not consult `.rdd` to find out.
+    write_bronze_micro_batch(None, _ConnectLikeDataFrame(empty=True), 0, cfg)
+
+
+def test_micro_batch_writes_a_non_empty_batch_without_touching_rdd(monkeypatch):
+    """The other half: a non-empty batch must get past the emptiness check
+    and reach the write, still without `.rdd`."""
+    import bronze_ingest.bronze_writer as bw
+
+    seen = {}
+
+    def fake_write_core(spark, df, config, txn_options=None):
+        seen["txn_options"] = txn_options
+        return config.full_table_name
+
+    monkeypatch.setattr(bw, "_write_core", fake_write_core)
+
+    cfg = _cfg("micro_batch_rdd_guard_write", checkpoint_location="/tmp/al248_cp")
+    write_bronze_micro_batch(None, _ConnectLikeDataFrame(empty=False), 7, cfg)
+
+    # Keyed on the checkpoint location and the streaming batch id - the
+    # idempotency this function exists to provide.
+    assert seen["txn_options"] == {"txnAppId": "/tmp/al248_cp", "txnVersion": "7"}

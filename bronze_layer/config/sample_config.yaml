@@ -1,8 +1,14 @@
 # Sample config for bronze_ingest
 # Any Spark-readable path works: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/
 source_path: "/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/orders.json"
+# source_format: "json"  # json | csv | parquet | xml;
+                           # drives both what discovery lists and which reader_options are valid.
+                           # Case-sensitive - "JSON" is rejected, not normalized.
+# xml_row_tag: "order"   # required only for XML; reader_options.rowTag is rejected
+# csv_header: true       # CSV only
+# csv_infer_schema: true # CSV only
 multiline: true
-# schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"
+# schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"  # not XML v1
 reader_options: {}
 # reader_options passes keys straight to the Spark reader, so keys are
 # checked against ALLOWED_READER_OPTIONS at config load (#154). Parsing and
@@ -16,7 +22,11 @@ catalog: "ingredion_en"
 schema_name: "ingredion_dev"
 table: "orders_raw"
 write_mode: "append"           # append | overwrite | merge
-# merge_keys: ["order_id"]
+# merge requires exactly ONE of the two strategies below (#84) - they are
+# not interchangeable, see README.md "merge key strategies":
+# merge_keys: ["order_id"]                                 # natural business key (upsert)
+# content_hash_columns: ["order_id", "customer_id", "amount"]  # content-addressed dedup key
+# content_hash_key_col: "_content_hash_key"                 # optional, this is the default
 merge_schema: true
 
 # --- Table layout: liquid clustering (recommended) vs. partition_by (legacy) ---
@@ -25,8 +35,14 @@ merge_schema: true
                                  # optimization pick clustering keys automatically
 partition_by: null              # discouraged for new tables - prefer cluster_by; kept for
                                  # backward compat with existing hive-partitioned tables
-# table_properties:
-#   delta.enableChangeDataFeed: "true"
+# --- Change Data Feed (#58): ON by default for append/merge, off for
+# overwrite (see docs/bronze_silver_contract.md 2). Both retention keys are
+# derived from the one number below, because Delta bounds the readable feed by
+# the SHORTER of log retention and deleted-file retention.
+# enable_change_data_feed: true        # unset = decide from write_mode
+# change_data_feed_retention_days: 30  # the CDF window, in days
+# table_properties:                    # raw properties WIN over the flag above
+#   delta.enableChangeDataFeed: "false"
 
 # --- Catalog documentation: applied post-write, only when changed ---
 # table_comment: "Raw orders landed from SAP, one row per source record"

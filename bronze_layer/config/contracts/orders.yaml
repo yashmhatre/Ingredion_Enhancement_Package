@@ -1,0 +1,71 @@
+# Data contract for the `orders` source (#264).
+#
+# Structure only: which columns exist and what type each one is. Value rules
+# (in_range, regex, in_set, ...) are NOT here - #109 split those out of
+# bronze into a Silver rule engine, and docs/bronze_silver_contract.md
+# records why. See bronze_ingest/contract.py for the full reasoning.
+#
+# On `nullable`, and why most of these are still `true`
+# -----------------------------------------------------
+# `nullable: false` is a claim that a column ALWAYS carries a value, and a
+# wrong claim silently diverts real data to quarantine the moment real data
+# arrives. #250 is open for exactly this reason: every source ever ingested
+# here is a hand-built fixture of at most 457 bytes, so there is nothing to
+# measure an invariant from.
+#
+# So this file states only what the codebase ALREADY asserts, and leaves the
+# rest for the source owner to fill in. That is deliberate, not unfinished:
+# an invented invariant is worse than a missing one.
+
+source: orders
+version: 1
+
+# Bronze is additive by design - a new upstream column is normal, and is what
+# schema drift detection (#256) exists to report rather than reject.
+allow_undeclared_columns: true
+
+columns:
+  - name: order_id
+    type: string
+    # The one non-null claim that is NOT a guess. config.py already enforces
+    # `merge_keys` must be a subset of `required_columns`, because a NULL
+    # merge key never matches in a SQL MERGE and re-inserts a duplicate row
+    # on every run. The sample config's merge key is order_id, so bronze
+    # already depends on this being non-null.
+    nullable: false
+    description: Source system order identifier. Merge key.
+
+  - name: customer_id
+    type: string
+    # Almost certainly non-null in practice. Left true because "almost
+    # certainly" is not evidence, and the cost of being wrong is quarantined
+    # production data. Needs the source owner or a real sample (#250).
+    nullable: true
+    description: Source system customer identifier.
+
+  - name: amount
+    # `bigint`, not `long`: this is compared against
+    # StructField.dataType.simpleString(), and LongType() spells itself
+    # `bigint` there. Getting this wrong produces a type_mismatch on every
+    # single batch, which is a loud failure rather than a silent one - but
+    # only because a test pins the vocabulary to real Spark types.
+    type: bigint
+    nullable: true
+    description: Order amount as provided upstream. Untyped in Auto Loader's
+      default inference (cloudFiles.inferColumnTypes=false yields string) -
+      see metadata.note below.
+
+metadata:
+  # A type contract has to say which reader it describes. Batch JSON
+  # inference types `amount` as long; Auto Loader's default
+  # (inferColumnTypes=false) reads every column as string, so the SAME source
+  # legitimately produces two different schemas depending on ingestion_mode.
+  # Verified on 2026-08-12: the streaming run under #248 produced
+  # order_id/customer_id/amount all as `string`.
+  note: >-
+    Declared against BATCH JSON inference. A streaming (Auto Loader) ingest of
+    the same source yields all-string columns unless
+    cloudFiles.inferColumnTypes is enabled, and will report a type_mismatch
+    on `amount` against this contract.
+  owner: unassigned
+  issue: "264"

@@ -11,7 +11,14 @@ exercised deliberately.
 import pytest
 
 import bronze_ingest.databricks_fs as dfs
+from bronze_ingest.formats import extensions_for
 from bronze_ingest.fs import discovery
+
+# #304 made the extension filter a required argument on the private listing
+# helpers. Resolve it from the registry rather than restating (".json",
+# ".jsonl") here - a literal in the test is the same hardcoding #304 removed
+# from discovery.py, and it would keep passing if the registry changed.
+JSON_EXT = extensions_for("json")
 
 # ---- fakes ----
 
@@ -210,12 +217,12 @@ def test_file_listing_excludes_directories(monkeypatch):
         ),
     )
 
-    files = discovery._try_dbutils_ls("/Volumes/x")
+    files = discovery._try_dbutils_ls("/Volumes/x", JSON_EXT)
 
     assert files == ["/Volumes/x/orders.json"]
 
 
 def test_listing_returns_none_off_databricks_so_local_path_is_used(monkeypatch):
     _no_backends(monkeypatch)
-    assert discovery._try_dbutils_ls("/anything") is None
+    assert discovery._try_dbutils_ls("/anything", JSON_EXT) is None
     assert discovery._try_dbutils_ls_dirs("/anything") is None

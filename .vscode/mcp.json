@@ -1,0 +1,32 @@
+{
+  // Local MCP servers for this workspace. JSONC - comments are allowed.
+  //
+  // context-scout routes issue/git/PR-CI summarization to a local Ollama
+  // model, so the Claude and Copilot lanes don't spend metered tokens reading
+  // raw output. It is the tooling half of the `scout` role; `scout` itself is
+  // an agent definition pinned in agents.lock.
+  //
+  // Requires `ollama serve` running with the model below pulled. If Ollama
+  // isn't up the server starts but every call fails - that's the expected
+  // signal, not a misconfiguration.
+  //
+  // PATH ASSUMPTION: context-scout-mcp is checked out as a sibling of this
+  // repo. If yours lives elsewhere, change `args` to an absolute path.
+  "servers": {
+    "context-scout": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/../context-scout-mcp/server.js"],
+      "env": {
+        "CONTEXT_SCOUT_MODEL": "qwen3.5:9b",
+        "CONTEXT_SCOUT_OLLAMA_URL": "http://localhost:11434/api/generate",
+        // 16384 is what the server's README recommends; raising it costs VRAM,
+        // and on an 8 GB card a 9b at Q4 has little headroom to give.
+        "CONTEXT_SCOUT_NUM_CTX": "16384",
+        // How long Ollama keeps the model resident between calls. Shorten it
+        // if you need the VRAM back for something else.
+        "CONTEXT_SCOUT_KEEP_ALIVE": "30m"
+      }
+    }
+  }
+}

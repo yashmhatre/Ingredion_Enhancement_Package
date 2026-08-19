@@ -44,10 +44,11 @@ bundle:
 
 include:
   - bronze_layer/resources/*.yml
-  # silver_layer has no deployable resources yet (it's a stub plus the
-  # archived flattener). Uncomment once silver_layer/resources/ contains
-  # at least one .yml - an include pattern matching zero files is an error.
-  # - silver_layer/resources/*.yml
+  # Defines no jobs yet - the silver pipeline does not exist. The file is
+  # here so this include is valid at all: an include pattern matching zero
+  # files is a bundle error, which is why this line was commented out and
+  # the layer was not deployable even in principle (#162).
+  - silver_layer/resources/*.yml
 
 # The package is built into a wheel and uploaded on every deploy, then
 # installed onto job compute via each task's `libraries:`. This replaces
@@ -180,7 +181,11 @@ targets:
       env_suffix: stg
       audit_schema_name: ingredion_stg
       registry_schema_name: ingredion_stg
-      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/STG/Raw/
+      # Per-environment volume (#160). Requires Phase A of
+      # docs/decisions/2026-08_per_environment_volumes.md to have run - a
+      # deploy that cannot find its source volume should fail rather than
+      # silently read another environment's files.
+      source_volume_path: /Volumes/ingredion_en/ingredion_stg/ext-ingredion-stg/Raw/
       # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
       # is preferable once more than one person is on call - an individual's
       # address means failure alerts stop reaching anyone if that mailbox goes
@@ -205,7 +210,8 @@ targets:
       env_suffix: prd
       audit_schema_name: ingredion_prd
       registry_schema_name: ingredion_prd
-      source_volume_path: /Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/PROD/Raw/
+      # Per-environment volume (#160) - see the staging note above.
+      source_volume_path: /Volumes/ingredion_en/ingredion_prd/ext-ingredion-prd/Raw/
       # Alerts for this environment. A shared alias (e.g. data-platform-oncall@)
       # is preferable once more than one person is on call - an individual's
       # address means failure alerts stop reaching anyone if that mailbox goes
