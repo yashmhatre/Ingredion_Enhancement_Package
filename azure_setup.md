@@ -59,10 +59,23 @@ The config file edits listed under Step 6 have since been **applied** to the
 repo (`order_bronze.yaml`, `sample_config.yaml`, and the bundle all updated to
 the real catalog/schema/volume values).
 
-**Still to do:** `staging` and `prod` provisioning — the Entra ID service
-principals exist and their client IDs are wired into the bundle, but the
-`ingredion_stg` / `ingredion_prd` schemas and their scoped grants are not yet
-created. Tracked as Phase B on the deployment-provisioning issue.
+**Staging and prod provisioning is done, bar one object.** Verified against the
+workspace on 2026-08-19: the Entra ID service principals exist and their client
+IDs are wired into the bundle, both the `ingredion_stg` and `ingredion_prd`
+schemas exist, and each principal holds `USE CATALOG` on the catalog plus
+`USE SCHEMA` / `CREATE TABLE` / `MODIFY` / `SELECT` on its own schema. Step 12
+carries the applied statements and the commands to re-verify them.
+
+**What is left is the Volumes.** `ext-ingredion-stg` and `ext-ingredion-prd` do
+not exist, and the bundle already points staging and prod at them, so
+`bundle deploy -t staging` fails until they are created. That is Phase A of
+`docs/decisions/2026-08_per_environment_volumes.md`.
+
+> This section previously read "the schemas and their scoped grants are not yet
+> created", long after they were. Provisioning done by hand in Catalog Explorer
+> leaves no trace in the repo, so this file drifts silently and in one
+> direction. **Query the workspace before trusting it** — the commands are at
+> the end of Step 12.
 
 ---
 
@@ -535,7 +548,7 @@ forget when granting.
 
 ---
 
-## Step 12 — Staging and prod provisioning (partially done)
+## Step 12 — Staging and prod provisioning (schemas and grants done; Volumes not)
 
 Phase B. Summarised here so the runbook stays the single entry point; the
 authoritative checklist is on the deployment-provisioning issue.
@@ -607,7 +620,9 @@ deploying identity *is* the service principal, so nothing is binding on
 anyone else's behalf. One more reason to move deploys into CI rather than
 leaving them manual.
 
-**Not done — schemas and grants.** In the Databricks workspace:
+**Done — schemas and grants.** Applied in the Databricks workspace and verified
+there on 2026-08-19. Kept here as the record of exactly what was granted, and as
+the script to re-apply if an environment is ever rebuilt:
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS ingredion_en.ingredion_stg;
@@ -636,6 +651,36 @@ GRANT READ VOLUME ON VOLUME ingredion_en.ingredion_dev.`ext-ingredion-dev`
 **Verify the isolation rather than assuming it.** As the staging principal, a
 `SELECT` against a table in `ingredion_prd` should be denied. A grant that
 looks right and a grant that works are different things.
+
+**The block above grants READ but not WRITE, and that is not enough to run a
+job.** The package archives ingested files into `processed/` and failed ones
+into `quarantine_files/`, both under the source root, so a principal with read
+alone produces a run that ingests correctly and then fails at archival — the
+files never move, and the next run re-ingests them. Whichever volume an
+environment ends up reading, grant both in one statement so they cannot drift
+apart:
+
+```sql
+GRANT READ VOLUME, WRITE VOLUME ON VOLUME <the environment's own volume>
+  TO `<that environment's service principal>`;
+```
+
+Write is deliberately **not** granted on `ext-ingredion-dev` above. That volume
+spans the storage container root, so write on it would let staging and prod
+overwrite each other's source files — and `PROD/Raw/`. Read-only is the most
+that root-scoped volume should ever carry; write belongs on the per-environment
+volumes of #160.
+
+**Re-verifying, rather than trusting this file.** Everything above is a snapshot
+of a live system, and hand-provisioning leaves no trace here. Four commands
+settle the real state:
+
+```bash
+databricks schemas list ingredion_en                          --profile bronze-json-loader-dev
+databricks volumes list ingredion_en ingredion_stg            --profile bronze-json-loader-dev
+databricks grants get schema ingredion_en.ingredion_stg       --profile bronze-json-loader-dev
+databricks grants get catalog ingredion_en                    --profile bronze-json-loader-dev
+```
 
 **Known gap — source files are not isolated.** All three environments read
 subpaths of one volume, and `READ VOLUME` is granted at volume granularity;
