@@ -1,112 +1,104 @@
-# Ingredion Enhancement Project
+# Ingredion Enhancement Package
 
-A config-driven ELT framework for ingesting and processing data across **Bronze, Silver, and Gold layers** on Databricks.
+This repo is a Databricks + Unity Catalog ELT package focused on a production-ready bronze layer.
 
-The project currently focuses on a production-ready **Bronze ingestion framework** using Delta Lake and Unity Catalog. Silver and Gold layers are planned and will follow the same modular structure.
+The active implementation is in `bronze_layer/`. Silver and Gold are planned, not live.
 
-## Overview
+## What the project does
 
-The Bronze layer ingests raw source data while preserving the original structure. Transformations such as flattening, cleansing, deduplication, and business logic are handled downstream in the Silver layer.
+The Bronze layer ingests raw source data without flattening it. It keeps the original structure, records lineage, captures corrupt rows, and lets downstream layers handle cleanup and business logic.
 
-The framework is designed to be:
+The package is built to be:
 
-- **Config-driven** — ingestion behavior is controlled through `IngestionConfig`
-- **Reusable** — onboard new sources without modifying pipeline code
-- **Reliable** — retries, quarantine handling, and corrupt-record capture
-- **Traceable** — row-level lineage, file tracking, and run-level auditing
-- **Deployable** — supports Databricks Asset Bundles and CI/CD
+- config-driven
+- reusable across sources
+- resilient under failures
+- traceable at run and row level
+- deployable through Databricks Asset Bundles and CI
 
-## Implemented
+## Current scope
 
-- **JSON** ingestion with nested structure preservation
-- **CSV, Parquet, and XML** batch ingestion (streaming multi-format deferred)
+Implemented:
+
+- JSON ingestion with nested structure preservation
+- batch CSV, Parquet, and XML ingestion
 - Unity Catalog integration
-- Required-column validation and row-level quarantine
-- Retry with exponential backoff
-- Lineage columns: `_ingested_at`, `_source_file`, `_batch_id`
-- Directory ingestion and folder-as-table ingestion
-- Automatic processed-file archival
-- Retry-limit-based quarantine
-- Run-level audit trail
-- Auto Loader streaming (JSON only)
-- GitHub Actions CI
-- Databricks Asset Bundle deployment
+- required-column validation and quarantining
+- retry with backoff
+- lineage columns such as `_ingested_at`, `_source_file`, and `_batch_id`
+- directory and folder-as-table ingestion
+- processed-file archival
+- run-level audit trail
+- Auto Loader streaming for JSON
+- CI checks and Databricks bundle deployment
 
-## Planned
+Planned:
 
-- Multi-format streaming ingestion
+- multi-format streaming ingestion
 - Excel support
-- Control-table-driven configuration
-- Concurrency locking
-- Configuration governance and allowlists
+- control-table-driven configuration
+- concurrency locking
+- configuration governance and allowlists
 - Databricks secret scopes
-- Schema registry
+- schema registry
 - Silver transformation framework
 - Gold aggregation framework
-- Async AI-assisted metadata:
-  - PII detection
-  - Schema drift summaries
-  - Quarantine report generation
+- AI-assisted metadata such as PII detection, drift summaries, and quarantine reporting
 
-> AI capabilities remain outside the ingestion write path and do not control ingestion decisions.
+AI does not drive ingestion decisions. It remains outside the write path.
 
-## Project Structure
+## Repository structure
 
 ```text
 .
 ├── bronze_layer/
-│   ├── bronze_ingest/     # Core ingestion package
+│   ├── bronze_ingest/     # ingestion package
 │   ├── notebooks/         # Databricks entrypoints
-│   ├── config/            # Source configurations
+│   ├── config/            # source configs
 │   ├── resources/         # Asset Bundle resources
-│   ├── tests/             # Pytest suite
-│   ├── docs/              # Architecture and testing docs
+│   ├── tests/             # pytest suite
+│   ├── docs/              # architecture and testing docs
 │   └── README.md
 ├── databricks.yml
 ├── azure_setup.md
 ├── CONTRIBUTING.md
+├── AGENTS.md
+├── docs/
 └── README.md
 ```
 
-Future `silver_layer/` and `gold_layer/` packages will follow the same independently deployable structure.
-
-## Getting Started
+## Getting started
 
 ```bash
 git clone https://github.com/yashmhatre/Ingredion_Enhancement_Package.git
 cd Ingredion_Enhancement_Package/bronze_layer
 pip install -e ".[dev]"
-```
-
-Run tests:
-
-```bash
 pytest
 ```
 
 ## Testing
 
-Testing is performed at two levels:
+The repo uses two layers of validation:
 
-1. **Automated pytest tests** for configuration, quality gates, retries, archival, quarantine, folder ingestion, and auditing.
-2. **Databricks environment validation** using real ADLS files, Unity Catalog tables, and Asset Bundle deployments.
+1. automated pytest checks for config, quality gates, retries, archival, quarantine, folder ingestion, and audit behavior
+2. Databricks environment validation against real files, Unity Catalog tables, and bundle deployment paths
 
-CI runs the full test suite automatically on every pull request.
+CI runs the suite automatically on pull requests.
 
 ## Roadmap
 
-- [x] Production-ready Bronze ingestion
-- [x] Directory ingestion and resilience
-- [x] Run-level auditing
+- [x] production-ready bronze ingestion
+- [x] directory ingestion and resilience
+- [x] run-level auditing
 - [x] CI enforcement
 - [x] Auto Loader support
 - [x] Asset Bundle deployment
-- [ ] Dynamic configuration
-- [ ] Multi-format ingestion
-- [ ] Concurrency controls
-- [ ] Schema registry
+- [ ] dynamic configuration
+- [ ] multi-format ingestion
+- [ ] concurrency controls
+- [ ] schema registry
 - [ ] AI-assisted metadata
 - [ ] Silver layer
 - [ ] Gold layer
 
-See the repository **Issues** for the latest implementation tasks.
+Use the repo issues for current implementation tasks and `docs/roadmap.md` for sequencing.

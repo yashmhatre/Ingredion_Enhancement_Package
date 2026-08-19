@@ -242,6 +242,24 @@ Every cross-lane handoff is an issue or PR comment naming the lane that wrote
 it and the lane it's addressed to. A handoff that isn't written down didn't
 happen.
 
+## Writing gate
+
+Every agent and subagent must use the local `unslop` skill when it writes or
+rewrites Markdown, docs, comments, issues, PR text, release notes, summaries,
+prompts, or handoffs. The rule applies across Claude, Copilot, and local-model
+lanes.
+
+- Route audit-only requests to `cleanup`.
+- Route requested rewrites to `rewrite`.
+- Read the routed command file before acting.
+- Preserve facts, names, dates, quantities, code, scope, uncertainty,
+  attribution, and technical meaning.
+- Validate against the skill contract before returning or committing the text.
+
+An agent must report a validator that could not run. It must not claim that
+prose passed a gate it did not execute. An audit must not silently rewrite the
+source.
+
 ## The sign-off packet
 
 Yash gets two interrupt types and nothing else. Each arrives complete — an

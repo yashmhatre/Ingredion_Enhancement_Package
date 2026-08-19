@@ -1,45 +1,37 @@
-# .claude/agents/ — populated at fetch time, not committed
+# .claude/agents/
 
-The real agent definitions (prompts, tool grants, workflow instructions) for
-this project are proprietary and live in the private
-`yashmhatre/ingredion-agent-config` repo, not here. This directory is
-gitignored except for this README — everything else in it is written by
-`scripts/bootstrap_agents.sh` and must never be committed.
+This directory is not the source of truth for the repo's agent definitions. The real prompt content and tool grants live in the private `ingredion-agent-config` repo and are fetched here by `scripts/bootstrap_agents.sh`.
 
-## First-time setup (local dev)
+This directory is gitignored except for this README. Do not commit real agent files here.
+
+## Local setup
 
 ```bash
-export AGENT_CONFIG_TOKEN=<a token scoped to read-only access on ingredion-agent-config>
+export AGENT_CONFIG_TOKEN=<read-only token for ingredion-agent-config>
 ./scripts/bootstrap_agents.sh
 ```
 
-This reads the pinned version from `agents.lock` at the repo root and
-fetches exactly that version's agent files into this directory. Re-run it
-any time `agents.lock` changes.
+This reads the pinned version from `agents.lock` and fetches that exact version into `.claude/agents/`.
 
 ## CI
 
-The same script runs as a setup step using a CI-scoped credential (a
-fine-grained PAT or deploy key with read-only access to the one private
-repo, stored as a repo/environment secret — never a broad personal token).
+CI uses a read-only token for the same private repo. It does not use a broad personal token.
 
 ## Why this exists
 
-See `docs/private_agent_architecture.md` for the full comparison of options
-and why this project uses a private authoring repo + a pinned, versioned
-fetch instead of committing agent content directly here, encrypted or not.
+See `docs/private_agent_architecture.md` for the reasoning. This repo keeps agent prompt content out of git and pins the fetch to a known version instead of copying secrets or proprietary instructions into the repo.
 
 ## Current team
 
-See `docs/agent_governance.md`'s "The team" section for the full table, the
-lanes, and the dispatch ladder. Short version: Yash (Senior Principal Data
-Engineer) signs off and does not route or implement. `orchestrator` routes
-and merges all Tier 1 work into `dev`; `architect` designs; `reviewer` reviews
-the escalation paths; `builder`, `notebook-qa`, and `platform` implement;
-`scout` produces cheap briefs on a local model. **Seven subagents in total**,
-pinned at `agents.lock`'s current version.
+The current roster is defined in `docs/agent_governance.md`.
 
-Merging into `dev` is the agent team's authority. Tier 2/3 actions
-(staging/prod deploys, GRANT/DROP/VACUUM, credentials, and the promotion PRs
-`dev` → `staging` and `staging` → `main`) require Yash's own named sign-off —
-that authority sits with no agent.
+Short version:
+
+- Yash signs off and does not implement
+- `orchestrator` routes work and merges Tier 1 changes into `dev`
+- `architect` handles business reconciliation and design
+- `reviewer` handles escalation-path review
+- `builder`, `notebook-qa`, and `platform` implement
+- `scout` produces brief summaries only
+
+Tier 2 and Tier 3 actions still require Yash's explicit named sign-off.
