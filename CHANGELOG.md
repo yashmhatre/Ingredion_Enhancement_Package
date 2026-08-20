@@ -86,6 +86,16 @@ The single JSON-era allowlist is now one allowlist per format. Existing JSON con
 
 Both deploy with `max_concurrent_runs: 1`. Deploying them costs nothing until someone turns them on.
 
+### 10. Column names are canonicalized on every format, not just XML
+
+A field name that Delta rejects — anything containing a space, a comma, a semicolon, a brace, a parenthesis, a tab, a newline or an equals sign — is now rewritten to a safe identifier before the write, on JSON, CSV, Parquet, XML and the streaming path alike. `Gross Weight (KG)` becomes `Gross_Weight__KG_`. Previously this rewrite existed only inside the XML reader, so the same name on a JSON source reached Delta intact and failed the write three retries deep with `DELTA_INVALID_CHARACTERS_IN_COLUMN_NAMES` (#374).
+
+The rule: `:` becomes `__` first (XML's namespace separator, unchanged from before), then every remaining character that is not a letter, digit or underscore becomes `_`. Unicode letters are kept — `Änderungsdatum` is untouched. Underscore runs are not collapsed and leading underscores are not stripped.
+
+**What this renames that used to work.** Any source whose names contained a Delta-invalid character already failed, so there is nothing there to break. The names that did work and now change are those containing `.` or `:` — `sales.amount` becomes `sales_amount`. If a downstream silver query selects such a column, update it. Everything already made of letters, digits and underscores is untouched.
+
+**Two names can now collapse into one**, `Order Id` and `Order.Id` both giving `Order_Id`. Neither field is ever dropped: the first keeps the name, later ones are suffixed `_2`, `_3` in source order, and each rename logs a WARNING naming both source names. XML is the exception and still fails closed on a collision rather than renaming — two differently-namespaced elements are different fields, and picking one would be a guess.
+
 ---
 
 ## Added — multi-format batch ingestion
@@ -139,6 +149,7 @@ Not wired into ingestion; these build the evidence Silver needs.
 - **Merge refusals ran after the table could already have been created** (#58).
 - **An unconfigured quality gate passed silently** (#250). It now warns when `required_columns` and `unique_columns` are both empty. The shipped configs still set neither — populating them per source is #250's remaining half and needs a business answer.
 - **`_ingestion_audit` mid-migration now fails closed** rather than writing into a half-migrated table (#231).
+- **A JSON, CSV or Parquet field name with a space in it could not be ingested at all** (#374). Identifier canonicalization lived only in `xml_reader`, so names like `Gross Weight (KG)` or `Material Number` — ordinary in anything exported from Excel or a BW query — reached Delta unchanged and failed the write. Found by the #369 staging smoke test, where EC-11 and EC-12 both failed on it. The logic now lives in `identifiers.py` and `readers.read_source` applies it to every format. See §10 above for what this renames.
 
 ## Changed — engineering and governance
 

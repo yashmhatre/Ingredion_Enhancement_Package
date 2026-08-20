@@ -130,6 +130,10 @@ def test_read_source_dispatches_to_the_registered_reader(monkeypatch):
         return "dataframe-sentinel"
 
     monkeypatch.setitem(readers._BATCH_READERS, "json", spy)
+    # read_source canonicalizes what the reader returned (#374), which a
+    # string sentinel cannot survive; stub that step out so this test keeps
+    # asserting routing and nothing else.
+    monkeypatch.setattr(readers, "canonicalize_identifiers", lambda frame, on_collision: frame)
     sentinel_spark = object()
     cfg = _cfg()
 
@@ -138,6 +142,41 @@ def test_read_source_dispatches_to_the_registered_reader(monkeypatch):
     assert result == "dataframe-sentinel"
     assert seen["spark"] is sentinel_spark
     assert seen["config"] is cfg
+
+
+#: Every batch format an `IngestionConfig` can actually be built for today.
+#: `xml` is registered and has a reader but `config.__post_init__` refuses
+#: it until #336/#337 clear Tier 2 sign-off, so it cannot be parametrized
+#: over here; `read_xml` canonicalizes under its own policy regardless, and
+#: `test_xml_reader.py` covers that.
+_CONFIGURABLE_FORMATS = sorted(
+    name for name in readers._BATCH_READERS if not formats_module.signoff_blocker(name)
+)
+
+
+@pytest.mark.parametrize("source_format", _CONFIGURABLE_FORMATS)
+def test_read_source_canonicalizes_identifiers_for_every_format(source_format, monkeypatch):
+    """
+    Every batch format's frame goes through the canonicalizer on its way
+    out, under the disambiguating policy (#374). Before this, the rename
+    existed only inside `read_xml`, so a JSON field named `Gross Weight
+    (KG)` reached Delta intact and failed the write.
+    """
+    seen = {}
+
+    def canonicalize_spy(frame, on_collision):
+        seen["frame"] = frame
+        seen["on_collision"] = on_collision
+        return "canonicalized-sentinel"
+
+    monkeypatch.setitem(readers._BATCH_READERS, source_format, lambda s, c: "raw-sentinel")
+    monkeypatch.setattr(readers, "canonicalize_identifiers", canonicalize_spy)
+
+    result = readers.read_source(object(), _cfg(source_format=source_format))
+
+    assert result == "canonicalized-sentinel"
+    assert seen["frame"] == "raw-sentinel"
+    assert seen["on_collision"] == readers.ON_COLLISION_DISAMBIGUATE
 
 
 # ---- the pure option dict mirrors read_json ------------------------------

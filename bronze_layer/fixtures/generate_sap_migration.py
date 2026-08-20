@@ -806,7 +806,7 @@ def build_edge_cases(
     case(
         "EC-12",
         "ec12_canonicalization_collision/zcollide.json",
-        "three distinct source names that collapse to one canonical name",
+        "three near-identical source names, two of which collapse to one canonical name",
         "the collision is detected and disambiguated, never silently last-wins",
         "naming collision detection",
     )
