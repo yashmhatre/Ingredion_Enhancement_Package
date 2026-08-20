@@ -51,6 +51,22 @@ class DuplicateMergeKeyError(Exception):
     """
 
 
+class WriteNotCommittedError(Exception):
+    """
+    The write returned without raising, and Delta committed nothing (#366).
+
+    The table version was the same before and after, so the rows are not in
+    the table. The known cause is Delta's idempotent-write protection
+    discarding a write whose `txnVersion` is at or below one already
+    committed for the same `txnAppId`, which it does silently by design.
+
+    Reported as a failure rather than swallowed because everything
+    downstream treats a returning write as a written one: the audit row
+    records a `row_count`, and the source file is archived out of the
+    landing directory. A silent no-op therefore loses the data.
+    """
+
+
 class JsonLinesTruncationError(Exception):
     """
     A streaming micro-batch was read with `multiLine=true` but contains
@@ -71,6 +87,9 @@ PERMANENT_ERRORS = (
     NullMergeKeyError,
     DuplicateMergeKeyError,
     JsonLinesTruncationError,
+    # Retrying changes nothing: the same txnVersion is discarded by the same
+    # rule on every attempt, so a retry loop only delays the report (#366).
+    WriteNotCommittedError,
     ValueError,
     TypeError,
     KeyError,
