@@ -21,7 +21,10 @@ def read_csv(spark: Any, config: IngestionConfig):
     Production behavior:
       - `header` and `inferSchema` come from `config.csv_header` /
         `config.csv_infer_schema` - CSV's own knobs, added for exactly this
-        purpose (#308).
+        purpose (#308). `csv_infer_schema` defaults to False, so unless a
+        caller opts in every column arrives as a string; see the field's
+        comment in `config.py` for the zero-padded-key corruption that
+        default prevents (#371).
       - `mode=PERMISSIVE` (Spark's default) unconditionally, so unparseable
         rows don't kill the whole job, same as `read_json`.
       - `config.multiline` is NEVER read here. It is a JSON-only field:
@@ -45,9 +48,11 @@ def read_csv(spark: Any, config: IngestionConfig):
         includes every field). For CSV this is not merely mirroring
         `read_json`'s style - it is required: Spark only materialises
         `columnNameOfCorruptRecord` for CSV when that column is DECLARED in
-        the read schema. Against an inferred schema (the default here),
+        the read schema. Without `schema_hint_ddl` (the default path),
         malformed rows do not raise and do not populate the corrupt-record
-        column; they surface as NULLs in whatever columns failed to parse,
+        column - and inference is not the only way to end up without a
+        declared schema, since the default all-string read has none either.
+        They surface as NULLs in whatever columns failed to parse,
         indistinguishable from genuinely missing values. There is no
         runtime warning for this, and the column is never auto-appended to
         an operator-supplied `schema_hint_ddl` - if corrupt-record capture

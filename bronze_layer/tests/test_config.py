@@ -480,10 +480,13 @@ def test_shipped_config_yaml_still_constructs_unchanged(config_path):
 # ---- csv_header / csv_infer_schema (#308/#310) ----
 
 
-def test_csv_header_and_csv_infer_schema_default_to_true():
+def test_csv_header_defaults_to_true_and_csv_infer_schema_to_false():
+    """csv_infer_schema is False by default since #371: inference read a
+    zero-padded SAP key as a number and dropped the padding without an error,
+    a warning or a quarantine row. CSV lands as strings; callers cast."""
     cfg = _cfg()
     assert cfg.csv_header is True
-    assert cfg.csv_infer_schema is True
+    assert cfg.csv_infer_schema is False
 
 
 def test_csv_header_and_csv_infer_schema_settable_from_config_file(tmp_path):

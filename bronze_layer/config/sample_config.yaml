@@ -6,7 +6,9 @@ source_path: "/Volumes/ingredion_en/ingredion_dev/ext-ingredion-dev/orders.json"
                            # Case-sensitive - "JSON" is rejected, not normalized.
 # xml_row_tag: "order"   # required only for XML; reader_options.rowTag is rejected
 # csv_header: true       # CSV only
-# csv_infer_schema: true # CSV only
+# csv_infer_schema: false # CSV only; false by default so zero-padded keys
+                           # survive as text (#371). true opts into Spark's
+                           # type inference.
 multiline: true
 # schema_hint_ddl: "id STRING, customer STRUCT<name: STRING, email: STRING>"  # not XML v1
 reader_options: {}

@@ -126,16 +126,21 @@ def test_fixed_options(monkeypatch):
     sink = _capture(_cfg(), monkeypatch)
     assert sink["format"] == "csv"
     assert sink["option_dict"]["header"] is True
-    assert sink["option_dict"]["inferSchema"] is True
+    assert sink["option_dict"]["inferSchema"] is False
     assert sink["option_dict"]["mode"] == "PERMISSIVE"
 
 
 def test_header_and_infer_schema_follow_their_config_fields(monkeypatch):
-    sink = _capture(
+    off = _capture(
         _cfg(csv_header=False, csv_infer_schema=False, schema_hint_ddl="a STRING"), monkeypatch
     )
-    assert sink["option_dict"]["header"] is False
-    assert sink["option_dict"]["inferSchema"] is False
+    assert off["option_dict"]["header"] is False
+    assert off["option_dict"]["inferSchema"] is False
+
+    # Both directions, since each field now has a different default.
+    on = _capture(_cfg(csv_header=True, csv_infer_schema=True), monkeypatch)
+    assert on["option_dict"]["header"] is True
+    assert on["option_dict"]["inferSchema"] is True
 
 
 def test_corrupt_record_options_only_with_a_schema_hint(monkeypatch):
@@ -175,20 +180,41 @@ def test_lineage_column_is_selected(monkeypatch):
 # ---- behaviour a fake cannot prove --------------------------------------
 
 
-def test_read_csv_infers_numeric_types_not_strings(spark, tmp_path):
-    """#308's whole reason for csv_infer_schema defaulting True: an
-    all-string `amount` is the format-dependent-schema trap already
-    documented in config/contracts/orders.yaml."""
+def test_read_csv_preserves_zero_padded_keys_by_default(spark, tmp_path):
+    """#371, on real Spark because a fake cannot prove it. With inference on,
+    an 18-character MATNR came back as the integer 1000001 and the padding
+    was gone - silently, with the row count still reconciling. The default
+    read must return the source text byte for byte."""
+    p = tmp_path / "makt.csv"
+    p.write_text(
+        "MANDT,MATNR,MAKTX\n100,000000000001000001,Dextrose\n",
+        encoding="utf-8",
+    )
+
+    df = cr.read_csv(spark, _cfg(source_path=file_uri(p)))
+
+    types = dict(df.dtypes)
+    assert types["MATNR"] == "string", types
+    assert types["MANDT"] == "string", types
+    row = df.first()
+    assert row["MATNR"] == "000000000001000001"
+    assert row["MANDT"] == "100"
+    assert "_input_file_name" in df.columns
+    assert df.count() == 1
+
+
+def test_read_csv_infers_numeric_types_when_opted_in(spark, tmp_path):
+    """The knob still works when a caller asks for it explicitly (#308) -
+    #371 changed the default, not the capability."""
     p = tmp_path / "orders.csv"
     p.write_text("order_id,amount\n1,10\n2,20\n", encoding="utf-8")
 
-    cfg = _cfg(source_path=file_uri(p))
+    cfg = _cfg(source_path=file_uri(p), csv_infer_schema=True)
     df = cr.read_csv(spark, cfg)
 
     types = dict(df.dtypes)
     assert "order_id" in types and "amount" in types, types
     assert types["amount"] != "string", f"inferSchema did not apply: {types}"
-    assert "_input_file_name" in df.columns
     assert df.count() == 2
 
 

@@ -69,11 +69,18 @@ class IngestionConfig:
     # ("_c0".."_cN") instead of the real header row - see the __post_init__
     # check below for why that default would be unsafe here.
     csv_header: bool = True
-    # CSV-only; ignored for every other source_format. Spark's CSV reader
-    # defaults this to False, which yields all-string columns - the same
-    # format-dependent-schema trap documented for batch JSON inference in
-    # bronze_layer/config/contracts/orders.yaml.
-    csv_infer_schema: bool = True
+    # CSV-only; ignored for every other source_format. False on purpose,
+    # matching Spark's own default (#371). Inference reads an 18-character
+    # zero-padded SAP MATNR ('000000000001000001') as the integer 1000001
+    # and the padding is gone - no error, no warning, no quarantine row, and
+    # a row count that reconciles perfectly. It survives a referential-
+    # integrity check too, because Spark coerces the string side of the join
+    # to a number and finds the match; the silver-layer join written the
+    # obvious way, string to string, then matches nothing. JSON and Parquet
+    # carry their own types and are unaffected. Every CSV column lands as a
+    # string and a caller casts what it actually wants cast, which is also
+    # how a migration extract is really shaped. Set True to opt back in.
+    csv_infer_schema: bool = False
     # XML-only. Spark's XML data source cannot infer the repeated record
     # element safely; there is deliberately no second rowTag source in
     # reader_options.

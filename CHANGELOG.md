@@ -96,7 +96,8 @@ Both deploy with `max_concurrent_runs: 1`. Deploying them costs nothing until so
 - `readers.read_source` is the single dispatch both call sites use (#306); a registered format with no reader is a test failure, not a silent fall-through to JSON.
 - Discovery is format-aware end to end (#304, #307), including through `reprocess_quarantined_files` (#305).
 - `ingest_to_bronze` replaces `ingest_json_to_bronze`, which stays as an alias (#319).
-- `csv_header` and `csv_infer_schema` both default to `true`, which is not Spark's default — Spark yields positional names and all-string columns, and neither is a sane default for a bronze table (#308).
+- `csv_header` defaults to `true`, which is not Spark's default — Spark yields positional names (`_c0`, `_c1`) and those are unusable for `required_columns`, `merge_keys` or a data contract (#308).
+- `csv_infer_schema` defaults to **`false`**, matching Spark. Inference read an 18-character zero-padded SAP `MATNR` as the integer `1000001` and the padding was gone — no error, no warning, no quarantine row, and a row count that reconciled perfectly (#371). CSV columns land as strings and the caller casts. Set `csv_infer_schema: true` to opt back in. See `docs/decisions/2026-08_csv_schema_inference_default.md`.
 - Mixed-format folders are not supported. Two configs pointing at one path is clearer than per-file routing, and format is never inferred from the extension.
 
 ## Added — advisory AI metadata layer (#208)
