@@ -647,10 +647,17 @@
   <section>
     <h2>State left behind</h2>
     <p>
-      34 bronze tables, 3 quarantine tables, <code>_ingestion_audit</code> (45 rows: 39 success, 6
-      failed) and <code>_schema_registry</code> (34 rows, one per bronze table — quarantine tables
+      36 bronze tables, 3 quarantine tables, <code>_ingestion_audit</code> (47 rows: 41 success, 6
+      failed) and <code>_schema_registry</code> (36 rows, one per bronze table — quarantine tables
       are deliberately not registered). Every table carries CDF and 30-day retention, which is a
       storage line item.
+    </p>
+    <p>
+      The 6 failed audit rows are three attempts each for EC-11 and EC-12, which
+      <code>max_retries: 2</code> retried to exhaustion. Three bronze tables belong to EC-20 rather
+      than to one case each: <code>ec20_kna1_bronze</code> from the case itself, plus
+      <code>ec20ctl_kna1_bronze</code> and <code>ec20esc_kna1_bronze</code> from the two control runs
+      that isolated #375.
     </p>
     <p>
       Nothing was dropped. The tables are left in place so the numbers above can be re-queried;

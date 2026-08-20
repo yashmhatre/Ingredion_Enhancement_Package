@@ -154,7 +154,9 @@ EC-12's actual question — whether three colliding names are disambiguated rath
 
 ## State left behind
 
-34 bronze tables, 3 quarantine tables, `_ingestion_audit` (45 rows: 39 success, 6 failed) and `_schema_registry` (34 rows, one per bronze table; quarantine tables are deliberately not registered). Every table carries CDF and 30-day retention, which is a storage line item.
+36 bronze tables, 3 quarantine tables, `_ingestion_audit` (47 rows: 41 success, 6 failed) and `_schema_registry` (36 rows, one per bronze table; quarantine tables are deliberately not registered). Every table carries CDF and 30-day retention, which is a storage line item.
+
+The 6 failed audit rows are three attempts each for EC-11 and EC-12, which `max_retries: 2` retried to exhaustion. Three of the bronze tables belong to EC-20 rather than to one case each: `ec20_kna1_bronze` from the case itself, plus `ec20ctl_kna1_bronze` and `ec20esc_kna1_bronze` from the two control runs that isolated #375.
 
 Nothing was dropped. The tables are left in place so the numbers in this record can be re-queried; cleanup is a separate decision.
 
