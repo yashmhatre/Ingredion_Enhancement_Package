@@ -11,7 +11,7 @@ from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.window import Window
 
 from .config import IngestionConfig
-from .errors import DuplicateMergeKeyError, NullMergeKeyError
+from .errors import DuplicateMergeKeyError, NullMergeKeyError, WriteNotCommittedError
 from .logging_utils import logger
 from .retry import with_retry
 from .sql_utils import apply_table_properties, row_content_hash
@@ -288,39 +288,48 @@ def _ensure_liquid_clustering_and_properties(spark, df, config: IngestionConfig,
 
 def _resolve_idempotent_txn_version(config: IngestionConfig):
     """
-    Derives a numeric Delta txnVersion from config.batch_id for the batch
-    write path's idempotent-write options (#63) - mirrors the mechanism
-    write_bronze_micro_batch already uses for streaming.
+    Returns the Delta txnVersion for this write's idempotent-write options
+    (#63), or None to skip the protection entirely.
 
-    Returns None (meaning: skip idempotent protection for this write) when
-    a *stable* version can't be derived:
-      - batch_id is None. An auto-generated batch_id (see add_audit_columns)
-        is a fresh timestamp on every call, including every retry attempt -
-        it cannot provide retry protection no matter how it's converted,
-        since txnVersion would then also differ on every attempt just like
-        the value it's derived from. Only an explicitly-set, externally
-        stable batch_id (e.g. a Databricks job run ID via #52) can make
-        this guarantee real.
-      - batch_id is an arbitrary string that's neither an integer nor the
-        package's own auto-generated timestamp format.
+    Nothing is derived here any more. The version is whatever
+    `config.idempotent_txn_version` says, and unset means unprotected.
 
-    batch_id that parses as an integer (e.g. a job run ID) is used
-    directly. A string in the auto-generated format (%Y%m%dT%H%M%S%fZ) -
-    e.g. if a caller explicitly passes one - converts to a stable
-    microsecond-epoch integer.
+    Why deriving it was removed (#366)
+    ----------------------------------
+    This used to fall back to `config.batch_id`, using it directly when it
+    parsed as an integer and converting the package's own timestamp format
+    otherwise. Every deployed job sets `batch_id` to `{{job.run_id}}`, so in
+    practice the txnVersion was a Databricks job run ID.
+
+    Delta silently discards a write whose txnVersion is at or below one
+    already committed for the same txnAppId. Job run IDs are globally unique
+    but not increasing, so a run drawing an ID lower than one already used
+    for that table wrote nothing, raised nothing, reported success, and had
+    its source file archived out of the landing directory. Reproduced in dev
+    with three runs of one unchanged file: the middle run, given a lower
+    batch_id, committed nothing while its audit row reported rows written.
+
+    The old docstring recommended a job run ID for exactly this. It confused
+    *stable across retries* with *increasing across batches*. Delta needs
+    both, and a run ID has only the first, so there is no safe default left
+    to derive - which is why this is now opt-in.
     """
-    if config.batch_id is None:
-        return None
+    return config.idempotent_txn_version
 
-    try:
-        return int(config.batch_id)
-    except (TypeError, ValueError):
-        pass
 
+def table_version(spark, full_name: str) -> Optional[int]:
+    """
+    Current Delta version of `full_name`, or None if the table does not
+    exist yet or the version cannot be read.
+
+    Deliberately quiet: this is used to bracket a write, and a version that
+    cannot be read means "unknown", not "failed". Callers treat None as
+    no-information rather than as evidence of anything.
+    """
     try:
-        dt = datetime.strptime(config.batch_id, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1_000_000)
-    except (TypeError, ValueError):
+        row = spark.sql(f"DESCRIBE HISTORY {full_name} LIMIT 1").select("version").collect()
+        return int(row[0]["version"]) if row else None
+    except Exception:  # noqa: BLE001 - absent or unreadable table is the answer, not an error
         return None
 
 
@@ -443,10 +452,17 @@ EMPTY_WRITE_METRICS: Dict[str, Any] = {
 }
 
 
-def read_write_metrics(spark, full_name: str, write_mode: str) -> Dict[str, Any]:
+def read_write_metrics(
+    spark, full_name: str, write_mode: str, since_version: Optional[int] = None
+) -> Dict[str, Any]:
     """
     Row counts for the write that just committed, taken from Delta's own
     transaction log rather than by recounting the DataFrame (#149).
+
+    Pass `since_version` - the table's version before the write - to get the
+    guarantee that the numbers belong to this run. Without it the latest
+    commit is assumed to be this write's, which is what let #366 report row
+    counts copied from an earlier run.
 
     Why not `final_df.count()`, which is what this replaces
     -----------------------------------------------------
@@ -487,11 +503,29 @@ def read_write_metrics(spark, full_name: str, write_mode: str) -> Dict[str, Any]
     try:
         from delta.tables import DeltaTable
 
-        history = DeltaTable.forName(spark, full_name).history(1).select("operationMetrics")
+        history = (
+            DeltaTable.forName(spark, full_name).history(1).select("version", "operationMetrics")
+        )
         rows = history.collect()
         if not rows:
             return dict(EMPTY_WRITE_METRICS)
-        metrics = rows[0][0] or {}
+
+        # The latest commit is only this run's if it is newer than the
+        # version the table was on before the write. When it is not, this
+        # run committed nothing and the numbers below belong to somebody
+        # else's commit - which is how #366's audit rows came to report five
+        # rows written by a run that wrote none.
+        if since_version is not None and rows[0]["version"] <= since_version:
+            logger.warning(
+                "%s is still at version %s, so the latest commit predates this write. "
+                "Reporting no metrics rather than attributing an earlier commit's row "
+                "counts to this run (#366).",
+                full_name,
+                rows[0]["version"],
+            )
+            return dict(EMPTY_WRITE_METRICS)
+
+        metrics = rows[0]["operationMetrics"] or {}
 
         def _num(key):
             value = metrics.get(key)
@@ -539,11 +573,21 @@ def write_bronze(spark, df, config: IngestionConfig):
 
     For append/overwrite, wraps the write in Delta's idempotent-write
     transaction options (txnAppId/txnVersion) when
-    config.idempotent_batch_writes=True (default) and a stable txnVersion
-    can be derived from config.batch_id (#63) - a retried batch job
-    (write succeeded, a downstream step then failed) re-running with the
-    same batch_id converges to one copy of the data instead of duplicating
-    it. Not applied to write_mode="merge" - Delta's MERGE doesn't accept
+    config.idempotent_batch_writes=True (default) AND
+    config.idempotent_txn_version is set (#63) - a retried batch job (write
+    succeeded, a downstream step then failed) re-running with the same
+    version converges to one copy of the data instead of duplicating it.
+
+    The version is never derived. It used to come from config.batch_id,
+    which every deployed job sets to the Databricks job run ID, and because
+    run IDs are not increasing Delta silently discarded writes that drew a
+    low one (#366). Unset means unprotected, which is the safe default.
+
+    Every write is bracketed by a table-version check, protection or not, so
+    a write that commits nothing raises WriteNotCommittedError instead of
+    returning as though it had succeeded.
+
+    Not applied to write_mode="merge" - Delta's MERGE doesn't accept
     txn options, but re-running the same batch is naturally safe there:
     via merge_keys upsert semantics, or, under the content-hash strategy
     (#84), because an identical retried batch re-hashes to the same key and
@@ -555,21 +599,18 @@ def write_bronze(spark, df, config: IngestionConfig):
         txn_version = _resolve_idempotent_txn_version(config)
         if txn_version is not None:
             txn_options = {"txnAppId": config.full_table_name, "txnVersion": str(txn_version)}
-        elif config.batch_id is not None:
-            logger.warning(
-                "idempotent_batch_writes=True but batch_id=%r isn't an integer or a "
-                "recognized timestamp format - can't derive a stable txnVersion, so this "
-                "write is not idempotent-protected. Pass an integer batch_id (e.g. a "
-                "Databricks job run ID) for retry-safe batch writes.",
-                config.batch_id,
-            )
         else:
             logger.debug(
-                "idempotent_batch_writes=True but no explicit batch_id is set - an "
-                "auto-generated batch_id changes on every attempt and can't provide retry "
-                "protection. Pass a stable batch_id (e.g. a Databricks job run ID) to get "
-                "this guarantee."
+                "idempotent_batch_writes=True but idempotent_txn_version is unset, so this "
+                "write is not idempotent-protected. That is the default: there is no version "
+                "this package can derive safely, and a discarded write loses data where a "
+                "duplicated one does not (#366)."
             )
+
+    # Bracket the write so a no-op commit cannot pass for a successful one.
+    # Read before anything can create the table: None means the table does
+    # not exist yet, and any commit at all is then an advance.
+    version_before = table_version(spark, config.full_table_name)
 
     @with_retry(
         attempts=config.retry_attempts,
@@ -579,7 +620,48 @@ def write_bronze(spark, df, config: IngestionConfig):
     def _do_write():
         return _write_core(spark, df, config, txn_options=txn_options)
 
-    return _do_write()
+    full_name = _do_write()
+
+    _assert_write_committed(spark, config, version_before, txn_options)
+    return full_name
+
+
+def _assert_write_committed(spark, config: IngestionConfig, version_before, txn_options):
+    """
+    Raises WriteNotCommittedError if the write returned without committing.
+
+    A write that commits nothing is indistinguishable from a successful one
+    to every caller: the audit row still records a row count, and the source
+    file is still archived out of the landing directory. #366 was exactly
+    that, undetected across four staging runs, and the only reason anyone
+    noticed was a row count that failed to move.
+
+    Checked by version rather than by counting rows, which keeps this a
+    metadata read - the same reason read_write_metrics exists at all (#149).
+
+    Deliberately not raised when the version cannot be read before or after.
+    Unknown is not evidence, and an engine that cannot answer DESCRIBE
+    HISTORY must not start failing every ingestion.
+    """
+    version_after = table_version(spark, config.full_table_name)
+    if version_before is None or version_after is None:
+        return
+    if version_after > version_before:
+        return
+
+    detail = ""
+    if txn_options:
+        detail = (
+            f" The write carried txnAppId={txn_options['txnAppId']!r} and "
+            f"txnVersion={txn_options['txnVersion']}, and Delta discards a write whose "
+            f"txnVersion is at or below one already committed for that txnAppId. Supply a "
+            f"higher idempotent_txn_version, or leave it unset to disable the protection."
+        )
+    raise WriteNotCommittedError(
+        f"{config.full_table_name} is still at version {version_after} after a "
+        f"{config.write_mode} write, so nothing was committed and the rows are not in "
+        f"the table.{detail}"
+    )
 
 
 def write_bronze_micro_batch(spark, micro_batch_df, batch_id: int, config: IngestionConfig):

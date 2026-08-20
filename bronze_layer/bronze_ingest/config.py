@@ -136,8 +136,28 @@ class IngestionConfig:
     # minutes of driver sleep with no way to bound it. None means unbounded,
     # which is the previous behaviour.
     retry_max_total_seconds: Optional[float] = 120.0
-    # txnAppId/txnVersion for batch append/overwrite when batch_id is explicit (see #63)
+    # txnAppId/txnVersion for batch append/overwrite (#63). Gates the feature;
+    # it does nothing on its own until idempotent_txn_version supplies a
+    # version, which is deliberate - see that field.
     idempotent_batch_writes: bool = True
+    # The Delta txnVersion to write under. Opt-in, and there is no default
+    # that can be derived safely (#366).
+    #
+    # This used to be derived from batch_id, and every deployed job sets
+    # batch_id to the Databricks job run ID. Delta SILENTLY DISCARDS a write
+    # whose txnVersion is at or below one already committed for the same
+    # txnAppId - that is the whole mechanism - and job run IDs are globally
+    # unique but NOT increasing. So any run drawing an ID below one already
+    # used for that table wrote nothing, reported success, and had its
+    # source file archived. Stable across retries and increasing across
+    # batches are different properties; Delta needs both and a run ID has
+    # only the first.
+    #
+    # Supply this only with a counter you control and know to increase per
+    # table, and hold it constant across retries of the same logical batch.
+    # Left unset, writes are not idempotent-protected: a retried batch can
+    # duplicate rows, which is recoverable, where a discarded write is not.
+    idempotent_txn_version: Optional[int] = None
 
     # --- Target table ---
     catalog: Optional[str] = None  # Unity Catalog catalog name, omit for hive_metastore

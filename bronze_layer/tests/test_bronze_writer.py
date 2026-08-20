@@ -4,10 +4,14 @@ import uuid
 import pytest
 
 from bronze_ingest.bronze_writer import (
+    EMPTY_WRITE_METRICS,
     DuplicateMergeKeyError,
     NullMergeKeyError,
+    WriteNotCommittedError,
     _resolve_idempotent_txn_version,
     add_audit_columns,
+    read_write_metrics,
+    table_version,
     write_bronze,
     write_bronze_micro_batch,
 )
@@ -441,43 +445,60 @@ def test_cluster_by_auto_degrades_gracefully_when_unsupported(spark, caplog):
 # ---- idempotent batch writes (#63) ----
 
 
-def test_resolve_idempotent_txn_version_cases():
-    cfg_int_str = _cfg("t", batch_id="12345")
-    assert _resolve_idempotent_txn_version(cfg_int_str) == 12345
+def test_resolve_idempotent_txn_version_is_the_configured_value_only():
+    """#366: nothing is derived any more.
 
-    cfg_timestamp = _cfg("t", batch_id="20260728T120000000000Z")
-    version = _resolve_idempotent_txn_version(cfg_timestamp)
-    assert isinstance(version, int) and version > 0
-    # Same string must always resolve to the same version (stable, not wall-clock-dependent).
-    assert _resolve_idempotent_txn_version(cfg_timestamp) == version
-
-    cfg_arbitrary = _cfg("t", batch_id="not-a-number-or-timestamp")
-    assert _resolve_idempotent_txn_version(cfg_arbitrary) is None
-
-    cfg_none = _cfg("t")
-    assert _resolve_idempotent_txn_version(cfg_none) is None
-
-
-def test_idempotent_batch_writes_prevents_duplicate_append_on_retry(spark):
+    batch_id used to feed this, and every deployed job sets batch_id to a
+    Databricks job run ID. Run IDs are unique but not increasing, and Delta
+    silently discards a write whose txnVersion is at or below one already
+    committed - so a low run ID lost the data without raising.
     """
-    #63: a retried batch job (write succeeded, a downstream step then
-    failed) re-running with the SAME explicit batch_id must converge to
-    one copy of the data, not duplicate it.
-    """
-    table = f"bw_idempotent_append_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="append", batch_id="1001")
+    assert _resolve_idempotent_txn_version(_cfg("t", idempotent_txn_version=7)) == 7
+    assert _resolve_idempotent_txn_version(_cfg("t")) is None
 
-    df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
-    write_bronze(spark, df, cfg)
-    write_bronze(spark, df, cfg)  # simulated retry - same batch_id, same data
+    # An integer-looking batch_id must NOT be picked up. This is the exact
+    # shape of a job run ID and the exact regression #366 was.
+    assert _resolve_idempotent_txn_version(_cfg("t", batch_id="90849223213432")) is None
+    assert _resolve_idempotent_txn_version(_cfg("t", batch_id="20260728T120000000000Z")) is None
+
+
+def test_batch_id_alone_no_longer_makes_a_write_idempotent(spark):
+    """The #366 regression test.
+
+    Two writes with the same integer batch_id and no idempotent_txn_version
+    must both land. Before the fix the second was discarded by Delta, and
+    with a LOWER batch_id it was discarded while reporting success.
+    """
+    table = f"bw_batch_id_not_idempotent_{uuid.uuid4().hex[:8]}"
+    df = spark.createDataFrame([(1, "a")], ["id", "name"])
+
+    write_bronze(spark, df, _cfg(table, write_mode="append", batch_id="900000000000000"))
+    write_bronze(spark, df, _cfg(table, write_mode="append", batch_id="100000000000000"))
 
     assert spark.read.table(_table(table)).count() == 2
 
 
-def test_idempotent_batch_writes_different_batch_ids_append_normally(spark):
+def test_idempotent_txn_version_prevents_duplicate_append_on_retry(spark):
+    """
+    #63 still works when the version is supplied explicitly: a retried batch
+    re-running with the SAME version converges to one copy.
+    """
+    table = f"bw_idempotent_append_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", idempotent_txn_version=1001)
+
+    df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
+    write_bronze(spark, df, cfg)
+    with pytest.raises(WriteNotCommittedError):
+        write_bronze(spark, df, cfg)  # simulated retry - same version
+
+    # The retry committed nothing, which is the point, and it said so.
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_idempotent_txn_version_increasing_appends_normally(spark):
     table = f"bw_idempotent_diff_batch_{uuid.uuid4().hex[:8]}"
-    cfg1 = _cfg(table, write_mode="append", batch_id="2001")
-    cfg2 = _cfg(table, write_mode="append", batch_id="2002")
+    cfg1 = _cfg(table, write_mode="append", idempotent_txn_version=2001)
+    cfg2 = _cfg(table, write_mode="append", idempotent_txn_version=2002)
 
     write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg1)
     write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg2)
@@ -485,35 +506,62 @@ def test_idempotent_batch_writes_different_batch_ids_append_normally(spark):
     assert spark.read.table(_table(table)).count() == 2
 
 
-def test_idempotent_batch_writes_skipped_when_batch_id_none(spark, caplog):
-    """An auto-generated (None) batch_id can't provide retry protection,
-    since it's a fresh value on every attempt - document this rather than
-    pretending it's protected. The write itself must still succeed."""
-    table = f"bw_idempotent_no_batch_id_{uuid.uuid4().hex[:8]}"
+def test_decreasing_idempotent_txn_version_raises_rather_than_losing_rows(spark):
+    """The heart of #366: a lower version is discarded by Delta. It must
+    surface as a failure, never as a successful write of nothing."""
+    table = f"bw_idempotent_decreasing_{uuid.uuid4().hex[:8]}"
+    write_bronze(
+        spark,
+        spark.createDataFrame([(1, "a")], ["id", "name"]),
+        _cfg(table, write_mode="append", idempotent_txn_version=900000000000000),
+    )
+
+    with pytest.raises(WriteNotCommittedError) as excinfo:
+        write_bronze(
+            spark,
+            spark.createDataFrame([(2, "b")], ["id", "name"]),
+            _cfg(table, write_mode="append", idempotent_txn_version=100000000000000),
+        )
+
+    assert "nothing was committed" in str(excinfo.value)
+    assert spark.read.table(_table(table)).count() == 1
+
+
+def test_metrics_are_not_borrowed_from_an_earlier_commit(spark):
+    """#366's second defect: a run that commits nothing must not report the
+    previous commit's row counts."""
+    table = f"bw_metrics_since_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
 
-    with caplog.at_level("DEBUG"):
-        write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+    full = _table(table)
+    version = table_version(spark, full)
 
-    assert spark.read.table(_table(table)).count() == 1
+    # Reading with since_version equal to the current version means "no
+    # commit happened after that point", so there are no metrics to report.
+    assert read_write_metrics(spark, full, "append", since_version=version) == EMPTY_WRITE_METRICS
+    # Without the guard, the earlier commit's numbers come back.
+    assert read_write_metrics(spark, full, "append")["row_count"] == 2
 
 
-def test_idempotent_batch_writes_warns_on_unparseable_batch_id(spark, caplog):
-    table = f"bw_idempotent_bad_batch_id_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="append", batch_id="release-2026-07-28")
+def test_write_not_committed_is_permanent_and_not_retried(spark):
+    """A discarded write is discarded identically on every attempt, so the
+    retry loop must not spend attempts on it."""
+    from bronze_ingest.errors import PERMANENT_ERRORS
 
-    with caplog.at_level("WARNING"):
-        write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
-
-    assert spark.read.table(_table(table)).count() == 1
-    assert any("can't derive a stable txnVersion" in rec.message for rec in caplog.records)
+    assert WriteNotCommittedError in PERMANENT_ERRORS
 
 
 def test_idempotent_batch_writes_disabled_via_config(spark):
-    """Opt-out must be honored - the same batch_id written twice with
+    """Opt-out must be honored - the same version written twice with
     idempotent_batch_writes=False duplicates, as a plain append would."""
     table = f"bw_idempotent_disabled_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="append", batch_id="3001", idempotent_batch_writes=False)
+    cfg = _cfg(
+        table,
+        write_mode="append",
+        idempotent_txn_version=3001,
+        idempotent_batch_writes=False,
+    )
 
     df = spark.createDataFrame([(1, "a")], ["id", "name"])
     write_bronze(spark, df, cfg)
