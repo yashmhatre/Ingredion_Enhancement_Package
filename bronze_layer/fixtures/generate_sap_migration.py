@@ -823,7 +823,7 @@ def build_edge_cases(
         "EC-13",
         "ec13_leading_zeros/mara.csv",
         "18-char zero-padded MATNR and a US postal code starting 00",
-        "with csv_infer_schema on, these must not become numbers and lose the padding",
+        "must land as text; csv_infer_schema on turns them into numbers and the padding is gone (#371)",
         "csv_reader inference vs schema_hint_ddl",
     )
 
