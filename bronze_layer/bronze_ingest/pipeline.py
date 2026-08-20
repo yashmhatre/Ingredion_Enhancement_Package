@@ -12,6 +12,7 @@ from .bronze_writer import (
     add_audit_columns,
     read_write_metrics,
     resolve_batch_id,
+    table_version,
     write_bronze,
     write_bronze_micro_batch,
 )
@@ -157,6 +158,10 @@ class BronzeIngestion:
                 self.config,
             )
 
+            # Read before the write so the metrics below can prove the commit
+            # they describe is this run's and not an earlier one's (#366).
+            version_before = table_version(self.spark, self.config.full_table_name)
+
             try:
                 table_name = writer(final_df)
             except Exception as exc:
@@ -168,7 +173,10 @@ class BronzeIngestion:
             # quality gate to produce a number Delta already had, and under
             # merge it was the wrong number anyway.
             metrics = read_write_metrics(
-                self.spark, table_name or self.config.full_table_name, self.config.write_mode
+                self.spark,
+                table_name or self.config.full_table_name,
+                self.config.write_mode,
+                since_version=version_before,
             )
             audit.update(metrics)
             audit["quarantined_row_count"] = bad_count
