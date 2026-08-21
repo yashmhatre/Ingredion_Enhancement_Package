@@ -1,0 +1,174 @@
+# AI metadata job — the advisory lane (D1 of
+# docs/decisions/2026-08_ai_genie_architecture.md, #208).
+#
+# Deliberately a SEPARATE job from bronze_directory_ingestion, not a task
+# appended to it. The two-lane split is the load-bearing property of this
+# architecture: ingestion is deterministic and synchronous, this is advisory
+# and asynchronous, and they share no execution context. Adding this as a
+# task on the ingestion job would make ingestion latency depend on model
+# latency, which is the exact coupling the design exists to prevent.
+#
+# Targets, variables, the workspace host and the run-as service principal all
+# live in the root databricks.yml; this file contributes resources only.
+# Picked up by `include: bronze_layer/resources/*.yml` — no databricks.yml
+# edit is needed to add this file.
+#
+# Paths below are relative to THIS FILE's directory
+# (bronze_layer/resources/), not to the bundle root — hence the leading
+# `../`. Same constraint the ingestion job's header documents.
+
+resources:
+  jobs:
+    ai_metadata:
+      name: ai_metadata_${var.env_suffix}
+
+      # One run at a time. The job upserts one row per table into
+      # _ai_metadata via MERGE; two concurrent runs over the same watermark
+      # would draft the same tables twice, pay for both, and race on the
+      # merge. It also has no ordering guarantee between them, so the row
+      # that lands last is not necessarily the newer draft.
+      max_concurrent_runs: 1
+
+      # A scheduled run arriving while another is in flight waits rather than
+      # being silently dropped. Without this, max_concurrent_runs discards
+      # the overlapping trigger and the skipped run produces no signal.
+      queue:
+        enabled: true
+
+      # Cost shape, not a round number. The job is O(tables that CHANGED
+      # since the watermark), not O(tables) — unchanged tables are skipped by
+      # fingerprint before any model call. The architecture review's estimate
+      # for this estate is ~5-10 changed tables/day out of ~50.
+      #
+      # Worst realistic case is every table changing at once: 50 tables x one
+      # ai_query round trip. Model latency dominates and is not something
+      # this repo controls, so the ceiling is set from the table count rather
+      # than from a measured benchmark — unlike the ingestion job, this one
+      # has no benchmark yet. Revisit once there is one.
+      #
+      # 3600s bounds a genuinely stuck run without hard-killing a slow but
+      # progressing one.
+      timeout_seconds: 3600
+
+      # The only proactive signal in this job. Everything else fires on
+      # failure, so a run that is merely stuck — a hung model call, a
+      # warehouse that never woke — is otherwise invisible until it times
+      # out an hour later.
+      health:
+        rules:
+          - metric: RUN_DURATION_SECONDS
+            op: GREATER_THAN
+            value: 1800
+
+      tags:
+        layer: metadata
+        lane: advisory
+        environment: ${var.env_suffix}
+
+      # Serverless rejects a task-level `libraries:` field outright;
+      # dependencies are declared as a job-level environment that tasks bind
+      # to via environment_key. This workspace is serverless by design (see
+      # azure_setup.md Step 3).
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              # The wheel built and uploaded by the root bundle's
+              # `artifacts:` block. Note this job needs NO extra dependency
+              # beyond it: the default drafter is AIFunctionsMetadataDrafter,
+              # which calls ai_query in SQL. The `ai` extra (anthropic) is
+              # for local development only and is deliberately not installed
+              # here — see bronze_layer/setup.py.
+              - ../dist/*.whl
+
+      tasks:
+        - task_key: draft_ai_metadata
+          environment_key: default
+
+          # Slightly under the job timeout so the task is what times out and
+          # the run records which task did it, rather than being killed from
+          # above with no attribution.
+          timeout_seconds: 3300
+
+          # One retry, not two, and the reasoning differs from the ingestion
+          # job's.
+          #
+          # run_ai_metadata_job never raises on a per-table problem — a
+          # failed or malformed model call logs a warning and skips that
+          # table, and the next scheduled run picks it up. So a task-level
+          # failure here means something structural: the wheel did not
+          # install, the warehouse was unreachable, the session died. One
+          # retry covers the transient half of that.
+          #
+          # It will NOT rescue an AuditMigrationIncompleteError. That is
+          # raised deliberately before any work when _ingestion_audit is
+          # mid-migration (#231), and it is a permanent condition until
+          # someone runs the backfill — a retry just burns a second attempt
+          # and delays the alert. If this job starts failing twice in a row
+          # with that error, do not raise max_retries; fix the table.
+          max_retries: 1
+          min_retry_interval_millis: 60000
+
+          # A run that hit the timeout will hit it again. Retrying doubles
+          # the cost of the same failure and delays the alert.
+          retry_on_timeout: false
+
+          notebook_task:
+            # Relative to this file's directory (see header). The notebook
+            # itself is the remaining half of #208 and is owned by
+            # qa-engineer — this job cannot deploy until it exists.
+            notebook_path: ../notebooks/run_ai_metadata.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema_name: ${var.schema_name}
+              # All three environments share one catalog, so the audit and
+              # registry tables must be pinned to this environment's schema —
+              # the same trap documented on the ingestion job. Reading
+              # another environment's audit trail would silently produce
+              # drafts about tables this environment does not own.
+              audit_schema_name: ${var.audit_schema_name}
+              registry_schema_name: ${var.registry_schema_name}
+              # Advisory output lands beside the facts it is drawn from.
+              ai_metadata_table_name: "_ai_metadata"
+              # Matches a daily cadence with margin. Widening this does not
+              # re-draft unchanged tables — the fingerprint check still gates
+              # every model call — it only widens the candidate net.
+              lookback_hours: "24"
+              # Pinned deliberately. The Claude 5 endpoints are READY in this
+              # workspace but reject ai_query batch inference; see
+              # AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT and Amendment 1
+              # of the decision record before changing this.
+              model_id: "databricks-claude-opus-4-8"
+              run_id: "{{job.id}}-{{job.run_id}}"
+
+          # No `libraries:` here — see the `environments:` block above.
+
+      # DELIBERATELY NOT SCHEDULED YET.
+      #
+      # AIFunctionsMetadataDrafter has never executed against a real
+      # Databricks Runtime — ai_query does not exist in OSS Spark, so the
+      # local suite stubs the Protocol and cannot exercise the call. The
+      # two-arg ai_query shape was confirmed by hand in this workspace, but
+      # the parameter-marker form this code uses was not.
+      #
+      # Run it manually first:
+      #     databricks bundle run ai_metadata -t dev
+      #
+      # Enable the schedule only after a manual run has succeeded and the
+      # drafted rows in _ai_metadata have been eyeballed. Putting an
+      # unverified model call on an unattended schedule is how a silent,
+      # billable no-op runs for a month.
+      #
+      # schedule:
+      #   quartz_cron_expression: "0 0 4 * * ?"   # daily 04:00 UTC, after ingestion
+      #   timezone_id: "UTC"
+      #   pause_status: UNPAUSED
+
+      email_notifications:
+        on_failure:
+          - ${var.notification_email}
+        # Fires when the health rule trips, so a stuck run is visible while
+        # it is still stuck rather than only once it finally exits.
+        on_duration_warning_threshold_exceeded:
+          - ${var.notification_email}

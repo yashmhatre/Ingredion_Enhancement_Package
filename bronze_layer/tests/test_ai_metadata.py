@@ -1,0 +1,682 @@
+"""
+Local, workspace-free tests for the AI metadata job (#208).
+
+Follows the pattern in test_audit.py / test_schema_registry.py: no network,
+no credentials, no live model call. `MetadataDrafter` is faked throughout -
+see the fakes below - so these tests exercise `run_ai_metadata_job`'s own
+logic (candidate selection, failure handling, malformed-output handling)
+without ever importing `anthropic`.
+"""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from bronze_ingest.ai_metadata import (
+    AI_METADATA_SCHEMA,
+    AIMetadataJobConfig,
+    _parse_draft,
+    run_ai_metadata_job,
+)
+from bronze_ingest.audit import AUDIT_SCHEMA
+from bronze_ingest.schema_registry import REGISTRY_SCHEMA
+
+# ---------------------------------------------------------------------------
+# Fakes - the whole point of MetadataDrafter being a narrow, one-method
+# interface is that these can be this small.
+# ---------------------------------------------------------------------------
+
+
+class _FakeDrafter:
+    """Returns a fixed, well-formed JSON response for every table."""
+
+    def __init__(self, response=None):
+        self.response = response or (
+            '{"table_description": "Orders placed by customers.", '
+            '"column_descriptions": {"id": "Order id."}, '
+            '"schema_drift_summary": null, '
+            '"pii_flags": ["email"]}'
+        )
+        self.calls = []
+
+    def draft(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        return self.response
+
+
+class _FailingDrafter:
+    """Always raises - simulates a timed-out or failed model call."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def draft(self, prompt: str) -> str:
+        self.calls += 1
+        raise TimeoutError("simulated model call failure")
+
+
+class _MalformedDrafter:
+    """Returns text that cannot be turned into a usable draft."""
+
+    def __init__(self, response="not json at all"):
+        self.response = response
+        self.calls = 0
+
+    def draft(self, prompt: str) -> str:
+        self.calls += 1
+        return self.response
+
+
+class _PerTableDrafter:
+    """Routes to a different fake per table_name, so a test can make one
+    table fail and another succeed in the same job run."""
+
+    def __init__(self, by_table):
+        self.by_table = by_table
+        self.calls = []
+
+    def draft(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        for table_name, drafter in self.by_table.items():
+            if table_name in prompt:
+                return drafter.draft(prompt)
+        raise AssertionError("prompt did not match any configured table")
+
+
+# ---------------------------------------------------------------------------
+# Seed helpers - build directly off AUDIT_SCHEMA / REGISTRY_SCHEMA so these
+# tests can never drift from what those modules actually write.
+# ---------------------------------------------------------------------------
+
+
+def _unique(name: str) -> str:
+    return f"default._{name}_test_{uuid.uuid4().hex[:8]}"
+
+
+def _job_config(**overrides) -> AIMetadataJobConfig:
+    return AIMetadataJobConfig(
+        audit_table=_unique("ingestion_audit"),
+        registry_table=_unique("schema_registry"),
+        ai_metadata_table=_unique("ai_metadata"),
+        **overrides,
+    )
+
+
+def _seed_registry(
+    spark, table, table_name, fingerprint, schema_json='[{"name":"id","type":"int"}]'
+):
+    now = datetime.now(timezone.utc)
+    row = (table_name, "file:///dummy", fingerprint, schema_json, now, now)
+    spark.createDataFrame([row], schema=REGISTRY_SCHEMA).write.format("delta").mode(
+        "append"
+    ).saveAsTable(table)
+
+
+def _seed_audit(
+    spark, table, table_name, run_id=None, status="success", row_count=10, started_at=None
+):
+    started_at = started_at or datetime.now(timezone.utc)
+    values = dict.fromkeys(f.name for f in AUDIT_SCHEMA.fields)
+    values.update(
+        run_id=run_id or str(uuid.uuid4()),
+        table_name=table_name,
+        status=status,
+        row_count=row_count,
+        write_mode="append",
+        started_at=started_at,
+        finished_at=started_at,
+    )
+    row = tuple(values[f.name] for f in AUDIT_SCHEMA.fields)
+    spark.createDataFrame([row], schema=AUDIT_SCHEMA).write.format("delta").mode("append").option(
+        "mergeSchema", "true"
+    ).saveAsTable(table)
+
+
+# ---------------------------------------------------------------------------
+# Reading recent activity / candidate selection
+# ---------------------------------------------------------------------------
+
+
+def test_job_drafts_for_a_table_with_new_activity_and_no_prior_draft(spark):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders", run_id="run-1")
+
+    drafter = _FakeDrafter()
+    summary = run_ai_metadata_job(spark, cfg, drafter)
+
+    assert summary == {
+        "processed": 1,
+        "skipped_unchanged": 0,
+        "skipped_failed": 0,
+        "skipped_malformed": 0,
+    }
+    assert len(drafter.calls) == 1
+
+    row = spark.read.table(cfg.ai_metadata_table).collect()[0]
+    assert row["table_name"] == "bronze.orders"
+    assert row["schema_fingerprint"] == "fp-1"
+    assert row["source_run_id"] == "run-1"
+    assert row["table_description"] == "Orders placed by customers."
+    assert "id" in row["column_descriptions_json"]
+    assert "email" in row["pii_flags_json"]
+    assert row["model_id"] == cfg.model_id
+
+
+def test_table_with_unchanged_fingerprint_and_no_new_activity_is_skipped(spark):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(
+        spark,
+        cfg.audit_table,
+        "bronze.orders",
+        started_at=datetime.now(timezone.utc) - timedelta(days=5),  # outside the lookback window
+    )
+
+    drafter = _FakeDrafter()
+    # First run: nothing recent in the lookback window, but no prior draft
+    # either - the "never drafted" branch still fires once.
+    run_ai_metadata_job(spark, cfg, drafter)
+    assert len(drafter.calls) == 1
+
+    # Second run: same fingerprint, no new activity since the draft -
+    # must be skipped entirely, not re-drafted.
+    summary = run_ai_metadata_job(spark, cfg, drafter)
+    assert summary["processed"] == 0
+    assert summary["skipped_unchanged"] == 1
+    assert len(drafter.calls) == 1  # drafter not called again
+
+    rows = spark.read.table(cfg.ai_metadata_table).collect()
+    assert len(rows) == 1  # still exactly one row - upsert target, not appended to
+
+
+def test_schema_drift_triggers_reprocessing_even_without_new_audit_activity(spark):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders")
+
+    drafter = _FakeDrafter()
+    run_ai_metadata_job(spark, cfg, drafter)
+
+    # Simulate schema drift by upserting a new fingerprint into the registry.
+    spark.sql(f"DELETE FROM {cfg.registry_table} WHERE table_name = 'bronze.orders'")
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-2")
+
+    summary = run_ai_metadata_job(spark, cfg, drafter)
+    assert summary["processed"] == 1
+    assert len(drafter.calls) == 2
+
+    row = spark.read.table(cfg.ai_metadata_table).collect()[0]
+    assert row["schema_fingerprint"] == "fp-2"
+
+
+def test_no_candidates_when_registry_and_audit_are_both_empty(spark):
+    cfg = _job_config()
+    summary = run_ai_metadata_job(spark, cfg, _FakeDrafter())
+    assert summary == {
+        "processed": 0,
+        "skipped_unchanged": 0,
+        "skipped_failed": 0,
+        "skipped_malformed": 0,
+    }
+    assert not spark.catalog.tableExists(cfg.ai_metadata_table)
+
+
+# ---------------------------------------------------------------------------
+# Failure handling: log and skip, job continues, zero rows written
+# ---------------------------------------------------------------------------
+
+
+def test_failed_model_call_is_logged_and_skipped_without_raising(spark, caplog):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders")
+
+    summary = run_ai_metadata_job(spark, cfg, _FailingDrafter())  # must not raise
+
+    assert summary["skipped_failed"] == 1
+    assert summary["processed"] == 0
+    assert "AI metadata draft failed" in caplog.text
+    # Zero rows written for that table on that run - the table was never
+    # even created, since nothing was ever accepted.
+    assert not spark.catalog.tableExists(cfg.ai_metadata_table)
+
+
+def test_failed_call_does_not_halt_the_job_for_other_tables(spark):
+    """One bad response must never stop the batch (architecture.md)."""
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders")
+    _seed_registry(spark, cfg.registry_table, "bronze.customers", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.customers")
+
+    drafter = _PerTableDrafter(
+        {
+            "bronze.orders": _FailingDrafter(),
+            "bronze.customers": _FakeDrafter(),
+        }
+    )
+    summary = run_ai_metadata_job(spark, cfg, drafter)
+
+    assert summary["processed"] == 1
+    assert summary["skipped_failed"] == 1
+
+    rows = spark.read.table(cfg.ai_metadata_table).collect()
+    assert len(rows) == 1
+    assert rows[0]["table_name"] == "bronze.customers"
+
+
+def test_failed_call_on_a_previously_drafted_table_leaves_the_existing_row_untouched(spark):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders")
+    run_ai_metadata_job(spark, cfg, _FakeDrafter())
+    before = spark.read.table(cfg.ai_metadata_table).collect()[0]
+
+    # New activity (schema drift) makes it a candidate again, but this time
+    # the call fails.
+    spark.sql(f"DELETE FROM {cfg.registry_table} WHERE table_name = 'bronze.orders'")
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-2")
+
+    summary = run_ai_metadata_job(spark, cfg, _FailingDrafter())
+    assert summary["skipped_failed"] == 1
+
+    rows = spark.read.table(cfg.ai_metadata_table).collect()
+    assert len(rows) == 1  # no new row, and the old one was not overwritten
+    assert rows[0]["schema_fingerprint"] == before["schema_fingerprint"]
+
+
+# ---------------------------------------------------------------------------
+# Malformed output: discarded, never written
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_output_is_discarded_and_writes_zero_rows(spark, caplog):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders")
+
+    summary = run_ai_metadata_job(spark, cfg, _MalformedDrafter("not json at all"))
+
+    assert summary["skipped_malformed"] == 1
+    assert summary["processed"] == 0
+    assert "Discarding malformed AI metadata output" in caplog.text
+    assert not spark.catalog.tableExists(cfg.ai_metadata_table)
+
+
+def test_json_missing_all_expected_keys_is_discarded(spark):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders")
+
+    summary = run_ai_metadata_job(spark, cfg, _MalformedDrafter('{"unrelated_key": "value"}'))
+
+    assert summary["skipped_malformed"] == 1
+    assert not spark.catalog.tableExists(cfg.ai_metadata_table)
+
+
+def test_json_with_wrong_shaped_column_descriptions_is_discarded(spark):
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+    _seed_audit(spark, cfg.audit_table, "bronze.orders")
+
+    # column_descriptions must be an object, not a list.
+    malformed = '{"table_description": "x", "column_descriptions": ["not", "an", "object"]}'
+    summary = run_ai_metadata_job(spark, cfg, _MalformedDrafter(malformed))
+
+    assert summary["skipped_malformed"] == 1
+    assert not spark.catalog.tableExists(cfg.ai_metadata_table)
+
+
+def test_parse_draft_directly_rejects_non_json():
+    assert _parse_draft("definitely not json") is None
+
+
+def test_parse_draft_directly_rejects_a_json_array():
+    assert _parse_draft('["table_description", "x"]') is None
+
+
+def test_parse_draft_directly_accepts_a_well_formed_response():
+    parsed = _parse_draft(
+        '{"table_description": "A table.", "column_descriptions": {"id": "The id."}, '
+        '"schema_drift_summary": "No change.", "pii_flags": []}'
+    )
+    assert parsed["table_description"] == "A table."
+    assert parsed["column_descriptions_json"] == '{"id": "The id."}'
+    assert parsed["schema_drift_summary"] == "No change."
+    assert parsed["pii_flags_json"] is None  # empty list -> no flags to record
+
+
+# ---------------------------------------------------------------------------
+# Schema / config shape
+# ---------------------------------------------------------------------------
+
+
+def test_ai_metadata_schema_matches_documented_fields():
+    """Pins the advisory table's shape deliberately, same reasoning as
+    test_audit.test_audit_schema_matches_documented_fields."""
+    field_names = {f.name for f in AI_METADATA_SCHEMA.fields}
+    assert field_names == {
+        "table_name",
+        "schema_fingerprint",
+        "source_run_id",
+        "table_description",
+        "column_descriptions_json",
+        "schema_drift_summary",
+        "pii_flags_json",
+        "model_id",
+        "generated_at",
+    }
+
+
+def test_job_config_rejects_invalid_table_identifiers():
+    import pytest
+
+    with pytest.raises(ValueError):
+        AIMetadataJobConfig(
+            audit_table="bad-name; DROP TABLE x",
+            registry_table="default.reg",
+            ai_metadata_table="default.ai",
+        )
+
+
+def test_job_config_rejects_non_positive_lookback_hours():
+    import pytest
+
+    with pytest.raises(ValueError):
+        AIMetadataJobConfig(
+            audit_table="default.audit",
+            registry_table="default.reg",
+            ai_metadata_table="default.ai",
+            lookback_hours=0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed check on the CHANGELOG 0.5.0 `table` -> `table_name` migration
+# (#231). These build the legacy table shape by DDL and then let Delta's
+# mergeSchema append produce the half-migrated state exactly the way a real
+# upgrade does, rather than hand-constructing the broken result.
+# ---------------------------------------------------------------------------
+
+# The pre-0.5.0 shape, as observed on a real table created by 0.4.x
+# (ingredion_en.bronze._ingestion_audit, dropped 2026-08-08).
+_LEGACY_AUDIT_DDL = (
+    "run_id STRING, `table` STRING, status STRING, row_count BIGINT, "
+    "quarantined_row_count BIGINT, started_at TIMESTAMP, finished_at TIMESTAMP, "
+    "error_message STRING, source_path STRING, failure_stage STRING, "
+    "schema_fingerprint STRING, schema_changed BOOLEAN"
+)
+
+
+def _seed_legacy_audit(spark, table, table_name="bronze.orders"):
+    """Create a pre-0.5.0 audit table with one row and no `table_name`."""
+    spark.sql(f"CREATE TABLE {table} ({_LEGACY_AUDIT_DDL}) USING DELTA")
+    spark.sql(
+        f"INSERT INTO {table} VALUES ('run-legacy', '{table_name}', 'success', 10, 0, "
+        f"current_timestamp(), current_timestamp(), NULL, 'file:///dummy', NULL, NULL, false)"
+    )
+
+
+def test_pre_0_5_0_audit_table_without_table_name_fails_closed(spark):
+    import pytest
+
+    from bronze_ingest.ai_metadata import AuditMigrationIncompleteError
+
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+
+    with pytest.raises(AuditMigrationIncompleteError) as excinfo:
+        run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    assert "table_name" in str(excinfo.value)
+    assert "0.5.0" in str(excinfo.value)
+
+
+def test_half_migrated_audit_table_fails_closed(spark):
+    """The exact CHANGELOG 0.5.0 hazard: legacy rows, then a mergeSchema
+    append adds `table_name`, leaving every pre-upgrade row NULL."""
+    import pytest
+
+    from bronze_ingest.ai_metadata import AuditMigrationIncompleteError
+
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    # A post-upgrade run: same writer, mergeSchema on, new column appears.
+    _seed_audit(spark, cfg.audit_table, "bronze.orders", run_id="run-new")
+
+    columns = set(spark.read.table(cfg.audit_table).columns)
+    assert {"table", "table_name"} <= columns, "expected the two-column split"
+
+    with pytest.raises(AuditMigrationIncompleteError) as excinfo:
+        run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    message = str(excinfo.value)
+    assert "1 row(s)" in message
+    assert "UPDATE" in message
+    # The remediation hint must name THIS table and leave no placeholder
+    # behind. _BACKFILL_SQL_HINT and _HINT_PLACEHOLDER are separate literals,
+    # so a mismatch between them would silently emit an un-substituted hint
+    # telling the operator to run UPDATE against "<audit_table>".
+    assert cfg.audit_table in message
+    assert "<audit_table>" not in message
+
+
+def test_migration_check_runs_before_any_model_call(spark):
+    """A truncated read must cost zero tokens - the check is a precondition,
+    not something discovered partway through drafting."""
+    import pytest
+
+    from bronze_ingest.ai_metadata import AuditMigrationIncompleteError
+
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    _seed_audit(spark, cfg.audit_table, "bronze.orders", run_id="run-new")
+    drafter = _FakeDrafter()
+
+    with pytest.raises(AuditMigrationIncompleteError):
+        run_ai_metadata_job(spark, cfg, drafter)
+
+    assert drafter.calls == []
+
+
+def test_fully_migrated_audit_table_passes_the_check(spark):
+    """Both columns present but every `table_name` populated - a backfilled
+    environment must not be blocked just because the legacy column survives."""
+    cfg = _job_config()
+    _seed_legacy_audit(spark, cfg.audit_table)
+    _seed_audit(spark, cfg.audit_table, "bronze.orders", run_id="run-new")
+    spark.sql(f"UPDATE {cfg.audit_table} SET table_name = `table` WHERE table_name IS NULL")
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+
+    summary = run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    assert summary["processed"] == 1
+
+
+def test_missing_audit_table_is_not_a_migration_failure(spark):
+    """Nothing written yet is not the same as half of something written."""
+    cfg = _job_config()
+    _seed_registry(spark, cfg.registry_table, "bronze.orders", "fp-1")
+
+    summary = run_ai_metadata_job(spark, cfg, _FakeDrafter())
+
+    assert summary["processed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# AIFunctionsMetadataDrafter (D1 / Amendment 1 of the AI-Genie decision record)
+#
+# `ai_query` is a Databricks Runtime function and does not exist in OSS Spark,
+# so the call itself cannot be executed here - the same constraint
+# catalog_metadata.py cites for UC tags. What IS testable locally, and is where
+# the bugs would be, is the statement this builds and how it binds the prompt.
+# ---------------------------------------------------------------------------
+
+
+class _CapturingSpark:
+    """Records the SQL and args it was handed, and returns a canned draft."""
+
+    def __init__(self, draft="{}"):
+        self.draft = draft
+        self.sql_seen = None
+        self.args_seen = None
+
+    def sql(self, sql, args=None):
+        self.sql_seen = sql
+        self.args_seen = args
+        return self
+
+    def collect(self):
+        return [{"draft": self.draft}]
+
+
+def test_ai_functions_drafter_pins_the_batch_capable_endpoint():
+    """Claude 5 endpoints are READY but reject batch inference - if this
+    constant drifts to one, every scheduled run fails at runtime."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    assert AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT == "databricks-claude-opus-4-8"
+    assert "opus-5" not in AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+    assert "sonnet-5" not in AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+
+
+def test_ai_functions_drafter_binds_the_prompt_instead_of_interpolating_it():
+    """The single most important property here. `_build_prompt` output carries
+    apostrophes and newlines as a matter of course; interpolated into SQL that
+    is both a quoting bug and an injection surface."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark(draft='{"table_description": "ok"}')
+    nasty = "O'Brien's table\n-- DROP TABLE x; /* ' */"
+
+    out = AIFunctionsMetadataDrafter(spark).draft(nasty)
+
+    assert out == '{"table_description": "ok"}'
+    # The prompt must travel as a bound value, never inside the statement.
+    assert nasty not in spark.sql_seen
+    assert "O'Brien" not in spark.sql_seen
+    assert spark.args_seen["prompt"] == nasty
+    assert spark.args_seen["endpoint"] == "databricks-claude-opus-4-8"
+    assert ":prompt" in spark.sql_seen and ":endpoint" in spark.sql_seen
+
+
+def test_ai_functions_drafter_omits_model_parameters_by_default():
+    """The two-arg ai_query form is the one verified working in-workspace;
+    modelParameters is unverified and must stay opt-in."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark()
+    AIFunctionsMetadataDrafter(spark).draft("hello")
+
+    assert "modelParameters" not in spark.sql_seen
+    assert "named_struct" not in spark.sql_seen
+
+
+def test_ai_functions_drafter_adds_model_parameters_only_when_asked():
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark()
+    AIFunctionsMetadataDrafter(spark, max_tokens=4096).draft("hello")
+
+    assert "named_struct('max_tokens', 4096)" in spark.sql_seen
+
+
+def test_ai_functions_drafter_rejects_a_non_integer_max_tokens():
+    """max_tokens is interpolated, not bound - int() in __init__ is the only
+    thing keeping that safe, so it must actually reject rubbish."""
+    import pytest
+
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    with pytest.raises(ValueError):
+        AIFunctionsMetadataDrafter(_CapturingSpark(), max_tokens="4096; DROP TABLE x")
+
+
+def test_ai_functions_drafter_returns_empty_string_for_a_null_result():
+    """ai_query can return NULL; _parse_draft must get a str, not None."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    spark = _CapturingSpark(draft=None)
+    assert AIFunctionsMetadataDrafter(spark).draft("hello") == ""
+
+
+def test_job_config_defaults_model_id_to_the_ai_functions_endpoint():
+    """Rows record what produced them; the default drafter is AI Functions."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter
+
+    cfg = AIMetadataJobConfig(
+        audit_table="default.audit",
+        registry_table="default.reg",
+        ai_metadata_table="default.ai",
+    )
+    assert cfg.model_id == AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+
+
+def test_the_two_drafters_run_different_models_on_purpose():
+    """Guards the asymmetry documented in both class docstrings: the Anthropic
+    path reaches Claude 5 directly, the AI Functions path cannot. Someone
+    'aligning' these would break the deployed job."""
+    from bronze_ingest.ai_metadata import AIFunctionsMetadataDrafter, AnthropicMetadataDrafter
+
+    assert AnthropicMetadataDrafter.DEFAULT_MODEL != AIFunctionsMetadataDrafter.DEFAULT_ENDPOINT
+
+
+# ---------------------------------------------------------------------------
+# Markdown code fences around the JSON.
+#
+# Not hypothetical. The first real run of this job against Databricks-hosted
+# Claude (2026-08-08, dev) drafted 6 tables and discarded 9 as malformed. The
+# discarded responses were well-formed JSON wrapped in ```json ... ``` - 1090
+# characters, so not truncation. 60% of a real run thrown away by a wrapper.
+# ---------------------------------------------------------------------------
+
+_FENCED = """```json
+{"table_description": "Orders placed by customers.",
+ "column_descriptions": {"id": "Order id."},
+ "schema_drift_summary": null,
+ "pii_flags": ["email"]}
+```"""
+
+
+def test_parse_draft_accepts_json_wrapped_in_a_json_code_fence():
+    parsed = _parse_draft(_FENCED)
+    assert parsed is not None, "fenced JSON was discarded - this is the 9-of-15 bug"
+    assert parsed["table_description"] == "Orders placed by customers."
+    assert parsed["pii_flags_json"] == '["email"]'
+
+
+def test_parse_draft_accepts_a_bare_code_fence():
+    raw = '```\n{"table_description": "A table."}\n```'
+    parsed = _parse_draft(raw)
+    assert parsed is not None
+    assert parsed["table_description"] == "A table."
+
+
+def test_parse_draft_accepts_a_fence_after_preamble_text():
+    """Models sometimes add a sentence before the fence."""
+    raw = 'Here is the metadata you asked for:\n\n```json\n{"table_description": "A table."}\n```'
+    parsed = _parse_draft(raw)
+    assert parsed is not None
+    assert parsed["table_description"] == "A table."
+
+
+def test_parse_draft_still_accepts_unfenced_json():
+    """The fix must not regress the path that already worked - 6 of 15
+    responses in that run were unfenced."""
+    parsed = _parse_draft('{"table_description": "A table."}')
+    assert parsed is not None
+    assert parsed["table_description"] == "A table."
+
+
+def test_parse_draft_still_rejects_prose_inside_a_fence():
+    """Unwrapping a fence is not the same as being lenient about content."""
+    assert _parse_draft("```\nI could not determine a description.\n```") is None
+
+
+def test_parse_draft_still_rejects_a_fenced_json_array():
+    assert _parse_draft('```json\n["not", "an", "object"]\n```') is None
+
+
+def test_parse_draft_still_rejects_a_fenced_object_with_no_expected_keys():
+    assert _parse_draft('```json\n{"unrelated": "value"}\n```') is None

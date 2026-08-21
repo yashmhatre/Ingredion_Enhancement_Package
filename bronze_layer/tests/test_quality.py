@@ -521,3 +521,121 @@ def test_quarantine_meta_columns_are_backfilled_on_older_tables(spark):
     assert "_occurrence_count" in result.columns
     # The legacy UUID row cannot match a content hash, so it stays put.
     assert result.count() == 2
+
+
+# ---------------------------------------------------------------------------
+# Change Data Feed on the quarantine table (#58)
+# ---------------------------------------------------------------------------
+
+
+def _quarantine_props(spark, cfg):
+    row = (
+        spark.sql(f"DESCRIBE DETAIL {cfg.resolved_quarantine_table}")
+        .select("properties")
+        .collect()[0]
+    )
+    return row["properties"] or {}
+
+
+def test_quarantine_table_gets_cdf_at_creation(spark):
+    """#58. This write bypassed table properties entirely - it creates its own
+    table via createIfNotExists and never went near
+    _ensure_liquid_clustering_and_properties - so quarantine tables had no
+    Delta properties at all, including no CDF.
+
+    That matters because #155's replay path promotes rows OUT of quarantine
+    into bronze. Without CDF here, a Silver consumer can see rows arriving in
+    quarantine only by full rescan, and cannot see them leaving at all."""
+    table = f"quality_cdf_{uuid.uuid4().hex[:8]}"
+    cfg = IngestionConfig(
+        source_path="x",
+        table=table,
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
+    )
+    good, bad, bad_count = enforce_quality(_df(spark), cfg)
+
+    write_quarantine(spark, bad, bad_count, cfg)
+
+    props = _quarantine_props(spark, cfg)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+    assert props.get("delta.deletedFileRetentionDuration") == "interval 30 days"
+
+
+def test_quarantine_second_write_issues_no_property_ddl(spark, caplog):
+    table = f"quality_cdf_idem_{uuid.uuid4().hex[:8]}"
+    cfg = IngestionConfig(
+        source_path="x",
+        table=table,
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
+    )
+    good, bad, bad_count = enforce_quality(_df(spark), cfg)
+    write_quarantine(spark, bad, bad_count, cfg)
+
+    caplog.clear()
+    write_quarantine(spark, bad, bad_count, cfg)
+
+    assert "Quarantine table properties changed" not in caplog.text
+
+
+def test_quarantine_respects_cdf_being_disabled(spark):
+    table = f"quality_cdf_off_{uuid.uuid4().hex[:8]}"
+    cfg = IngestionConfig(
+        source_path="x",
+        table=table,
+        schema_name="default",
+        catalog=None,
+        required_columns=["name"],
+        fail_on_quality_error=False,
+        enable_change_data_feed=False,
+    )
+    good, bad, bad_count = enforce_quality(_df(spark), cfg)
+
+    write_quarantine(spark, bad, bad_count, cfg)
+
+    assert "delta.enableChangeDataFeed" not in _quarantine_props(spark, cfg)
+
+
+# ---------------------------------------------------------------------------
+# An unconfigured gate must not be silent (#250)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_with_nothing_configured_warns_that_it_checks_nothing(spark, caplog):
+    """#250's actual harm. A gate configured to check nothing looks exactly
+    like a gate that passed: zero bad rows, a clean audit row, a green run.
+    The deployed job resource ships `required_columns: ""`, so this is the
+    DEFAULT state rather than something someone opted into."""
+    cfg = IngestionConfig(source_path="x", table="t")
+    assert not cfg.required_columns and not cfg.unique_columns
+
+    good, bad = split_good_bad(_df(spark), cfg)
+
+    assert bad.count() == 0
+    assert "checking nothing" in caplog.text
+    assert "t" in caplog.text, "the message must name the table, not just complain"
+
+
+def test_a_configured_gate_does_not_warn(spark, caplog):
+    """The warning has to stay rare enough to mean something - a gate doing
+    its job must not log it."""
+    cfg = IngestionConfig(source_path="x", table="t", required_columns=["name"])
+
+    split_good_bad(_df(spark), cfg)
+
+    assert "checking nothing" not in caplog.text
+
+
+def test_unique_columns_alone_is_a_configured_gate(spark, caplog):
+    """Either check counts. A source with no non-null invariant but a
+    uniqueness one is configured, not unconfigured."""
+    cfg = IngestionConfig(source_path="x", table="t", unique_columns=["name"])
+
+    split_good_bad(_df(spark), cfg)
+
+    assert "checking nothing" not in caplog.text

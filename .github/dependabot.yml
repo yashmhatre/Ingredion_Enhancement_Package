@@ -1,5 +1,17 @@
 # Dependency updates (#158).
 #
+# `target-branch: dev` on every ecosystem, and it is load-bearing rather
+# than tidy. Dependabot defaults to the repository's DEFAULT branch, which
+# here is `main` - the END of the promotion chain, not the start. Left at
+# the default it opened #190 and #191 directly against `main`, so those
+# updates existed in production and in neither `dev` nor `staging`, and the
+# next `dev -> staging -> main` promotion would have presented them as
+# REVERSIONS.
+#
+# Everything else in this repo flows dev -> staging -> main. Dependency
+# updates have to enter at the same end as every other change, or the
+# promotion chain stops being the only way code reaches production.
+#
 # Grouped and monthly rather than individual and weekly. This repo has a
 # small dependency surface and a 5-minute test job, so a PR per dependency
 # per week would cost more review attention than it buys - and a review
@@ -11,6 +23,7 @@ updates:
   # not pinned to anything reproducible.
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "monthly"
     groups:
@@ -27,6 +40,7 @@ updates:
   # stay compatible with whatever DBR ships.
   - package-ecosystem: "pip"
     directory: "/bronze_layer"
+    target-branch: "dev"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5

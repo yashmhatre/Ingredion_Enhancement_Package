@@ -1,0 +1,38 @@
+# Code owners for the guarded surfaces.
+#
+# This is the third layer of the same rule, and the only one GitHub itself
+# enforces:
+#   1. scripts/hooks/block_orchestrator_writes.py - advisory, Claude-only,
+#      and silently inert if the session starts from the wrong directory.
+#   2. scripts/check_path_ownership.py - deterministic, runs on the commit
+#      and in CI, binds every substrate.
+#   3. this file - makes a review request automatic on the paths where a
+#      mistake has actually reached production before.
+#
+# Enable "Require review from Code Owners" in branch protection for `dev` to
+# make these binding rather than advisory. See docs/agent_governance.md for
+# which of these paths escalate to a named sign-off.
+
+# Implementation surfaces. Behaviour changes here escalate to the Project
+# Lead rather than being merged on an agent's own authority.
+/bronze_layer/bronze_ingest/      @yashmhatre
+
+# Both known live production defects in this repo shipped through untested
+# notebooks (#144, #145). This is the least negotiable line in the file.
+/bronze_layer/notebooks/          @yashmhatre
+/bronze_layer/tests/test_notebooks.py  @yashmhatre
+
+# Deploy and provisioning config: Tier 2 territory, drafts only.
+/bronze_layer/resources/          @yashmhatre
+/databricks.yml                   @yashmhatre
+/azure_setup.md                   @yashmhatre
+
+# The gates themselves. Weakening one of these is Tier 3.
+/.github/workflows/               @yashmhatre
+/scripts/verify.sh                @yashmhatre
+/scripts/check_path_ownership.py  @yashmhatre
+/scripts/hooks/                   @yashmhatre
+
+# Which agent-config version is pinned, and the rules the agents operate under.
+/agents.lock                      @yashmhatre
+/docs/agent_governance.md         @yashmhatre

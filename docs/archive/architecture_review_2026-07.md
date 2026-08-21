@@ -1,3 +1,10 @@
+> **ARCHIVED — point-in-time record, not maintained.** Moved from
+> `docs/architecture_review_2026-07.md` on 2026-08-06 as part of a
+> documentation refresh; content is unchanged. This review's findings
+> became issues #145–#164; those issues (and `docs/roadmap.md` for
+> current sequencing), not this document, track their state today. See
+> `docs/README.md` for what's current.
+
 # Solution Architecture Review — `bronze_ingest`
 
 **Branch reviewed:** `dev` @ `ceeda69`
@@ -40,14 +47,14 @@ None of these are visible from any single file. All four are visible from the wh
 ## 2. What the system is
 
 ```
-              ┌─────────────── config (YAML/JSON on a UC Volume, or kwargs) ───────────────┐
+              ┌───────────── config (YAML/JSON on a UC Volume, or kwargs) ───────────────┐
               │                                                                            │
    source ──► json_reader / streaming_reader ──► quality gate ──► audit cols ──► bronze_writer ──► Delta
    (Volume)          (PERMISSIVE, retry)         (null/unique)     (lineage)     (append/overwrite/merge)
                                                        │                                │
                                                        └──► quarantine table            ├──► audit.py      (run facts)
                                                                    │                    ├──► schema_registry (schema state)
-                                                                   └──► replay.py ──────┘    └──► catalog_metadata (COMMENTs)
+                                                                   └──► replay.py ───────┘    └──► catalog_metadata (COMMENTs)
 ```
 
 Two entry shapes: **single-table** (`BronzeIngestion.run()`) and **directory ingestion**

@@ -1,45 +1,52 @@
-# Documentation index — who owns what
+# Documentation index
 
-Documentation in this repo is spread across two directories and several
-files that overlap in subject. This index says which document is
-**authoritative** for each subject, so a reader who finds two statements
-about the same thing knows which one to believe and which one to fix.
+This repo has a lot of documentation, and not all of it is live guidance. This file is the map: it tells you which document owns a subject and which one to trust when two docs disagree.
 
-The rule everywhere: **the code wins over any document.** Where two
-documents disagree, the owner below wins over the other.
+The rule is simple: the code wins. If two documents disagree, the owner below wins over the other.
 
-## Living documents — kept current
+## Living documents
 
 | Subject | Owner | Notes |
 | --- | --- | --- |
-| What the package does, how to configure it, how to run it | `bronze_layer/README.md` | The primary reference. Anything a user or administrator needs. |
-| Provisioning, grants, environment isolation | `bronze_layer/README.md` § "What an administrator must provision" | Must agree with `databricks.yml`'s header, which is the operational source of truth for the target/variable layout. |
-| Deployment targets, variables, run-as identities | `databricks.yml` (header comments) | The file *is* the configuration, so its comments cannot drift from what deploys. |
-| Job-level operational settings (concurrency, timeouts, retries) | `bronze_layer/resources/bronze_ingest_jobs.yml` | Same reasoning. |
-| Design rationale, delivery sequencing, remaining hardening phases | `bronze_layer/docs/architecture.md` | Phased and architectural. The reader-facing counterpart is `bronze_layer/README.md` § "Not yet implemented"; if they disagree, the open GitHub issues are the tiebreak. |
-| **What order the remaining work happens in, and why** | `docs/roadmap.md` | Phase plan over the open issues, with the gating relationships between them. The issues own *what* is left; this owns *when* and *why*. Re-audited against the code when it is updated — treat the phase numbering as current only as of the date in its header. |
-| First-time Azure / Databricks setup | `azure_setup.md` | Written from an actual walkthrough, including the real error text encountered. |
-| Contribution workflow, branch model | `CONTRIBUTING.md` | |
-| What changed in a release, and what to do before deploying it | `CHANGELOG.md` | Written per release, not per PR. The migration steps at its top are the part that matters - several changes in a release are silent until something is queried. |
-| Performance numbers (archival cost, files-per-folder guidance) | `bronze_layer/docs/testing_directory_ingestion.md` | **Sole owner of the benchmark.** `architecture.md` and the `_archive_files_parallel` docstring both quote it and link back here; neither should carry an independent number. |
+| package behavior, config, and run steps | `bronze_layer/README.md` | primary reference for users and administrators |
+| provisioning, grants, and environment isolation | `bronze_layer/README.md` + `databricks.yml` | the config file and the README must match |
+| deployment targets and variable layout | `databricks.yml` | operational source of truth |
+| job-level operational settings | `bronze_layer/resources/bronze_ingest_jobs.yml` | same idea as above |
+| design rationale and sequencing | `bronze_layer/docs/architecture.md` | implementation view; read `docs/roadmap.md` for the order of work |
+| remaining work, phases, and dependencies | `docs/roadmap.md` | phase plan over the open issues |
+| first-time Azure and Databricks setup | `azure_setup.md` | based on the real setup steps and error text |
+| contribution rules and branch flow | `CONTRIBUTING.md` | keeps the repo workflow consistent |
+| release notes and deployment warnings | `CHANGELOG.md` | migration steps matter more than the summary |
+| performance numbers | `bronze_layer/docs/testing_directory_ingestion.md` | the benchmark owner |
+| AI agent authority and approval rules | `docs/agent_governance.md` | this is the policy document |
+| why agent prompt content is not committed here | `docs/private_agent_architecture.md` | explains the private repo + pinned fetch model |
+| non-technical overview | `docs/overview.md` | plain-language companion to the technical docs |
+| business intake and reconciliation | `docs/business_requirements.md` | owned by `architect` |
+| skill config for this repo | `docs/agents/` | `issue-tracker.md`, `triage-labels.md`, and `domain.md` |
 
-## Point-in-time records — not maintained
+## Decision records
 
-These are kept because they record what was verified, when, and why —
-not because they describe today's code. Each carries its own header
-saying so. Do not update them to match new behaviour; supersede them.
+`docs/decisions/` holds records that bind once they are signed off. They are not archive material and they are not updated casually.
+
+| Document | What it decides | Status |
+| --- | --- | --- |
+| `docs/decisions/2026-08_autonomous_remediation.md` | whether the AI layer may write to the pipeline and under what bounds | signed off |
+| `docs/decisions/2026-08_ai_genie_architecture.md` | AI architecture choices and scope | signed off |
+| `docs/decisions/2026-08_xml_integrity_policy.md` | XML failure and integrity policy | proposed; waiting on Tier 2 sign-off |
+| `docs/decisions/2026-08_xml_namespace_identifiers.md` | XML namespace mapping and stability rules | proposed; waiting on Tier 2 sign-off |
+
+## Archive material
+
+These are kept for historical context. They record what was true at the time, not what is current.
 
 | Document | What it records |
 | --- | --- |
-| `docs/current_behavior.md` | Audit of the package against the README's claims, for #6. At least one section is explicitly superseded (first-load merge, changed by #46). |
-| `docs/architecture_review_2026-07.md` | Whole-repository review of `dev` @ `ceeda69`, 2026-07-29. Its findings became issues #145–#164; those issues, not this document, track their state. |
-| `bronze_layer/docs/testing_json_reader.md` | Manual ADLS validation of `json_reader.py`. Requires a live cluster; not part of the pytest suite. |
-| `bronze_layer/docs/testing_end_to_end_deployment.md` | A real deployment run. Names the catalog as it was at the time (`ingredion_en_dev`), which was later renamed to `ingredion_en` — the run is the record, the names are not current. |
+| `docs/archive/current_behavior.md` | repo state during earlier review work |
+| `docs/archive/architecture_review_2026-07.md` | earlier architecture review |
+| `docs/architecture_ai_metadata_2026-08.md` | design review that later fed a decision record |
+| `bronze_layer/docs/archive/testing_json_reader.md` | manual cluster validation |
+| `bronze_layer/docs/archive/testing_end_to_end_deployment.md` | real deployment record |
 
-## A note on test counts
+## Test counts
 
-Test counts are deliberately **not** stated in any living document. They
-go stale on every PR that adds a test, and a stale count is worse than no
-count: it invites a reader to conclude a suite shrank. `pytest -q` is the
-answer. The point-in-time records above may still quote a count — that is
-part of what they record.
+Do not state a test count in a living doc. It goes stale quickly and becomes misleading. Use `pytest -q` when you need the current answer.

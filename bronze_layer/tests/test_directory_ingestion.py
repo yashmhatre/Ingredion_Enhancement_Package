@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 
 import pytest
 
@@ -8,6 +9,7 @@ from bronze_ingest.directory_ingestion import (
     list_json_files,
     sanitize_table_name,
 )
+from bronze_ingest.fs import list_source_files
 
 
 def _write(write_dir, name, content):
@@ -85,6 +87,79 @@ def test_list_json_files_missing_dir_raises(spark, json_test_dir):
     _, source_dir = json_test_dir
     with pytest.raises(FileNotFoundError):
         list_json_files(spark, f"{source_dir}/does_not_exist")
+
+
+# ---- list_source_files (#304): format-aware discovery, list_json_files's
+# replacement. list_json_files itself is now a two-line wrapper delegating
+# here with source_format="json" - the tests above are unmodified and are
+# the no-op proof for that delegation. ----
+
+
+def test_list_source_files_json_matches_list_json_files(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "b.jsonl", json.dumps({"x": 2}))
+    _write(write_dir, "notes.txt", "ignore me")
+
+    files = list_source_files(spark, source_dir, source_format="json")
+    names = sorted(os.path.basename(f) for f in files)
+    assert names == ["a.json", "b.jsonl"]
+
+
+def test_list_source_files_default_format_is_json(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "notes.txt", "ignore me")
+
+    files = list_source_files(spark, source_dir)
+    names = sorted(os.path.basename(f) for f in files)
+    assert names == ["a.json"]
+
+
+def test_list_source_files_max_files(spark, json_test_dir):
+    write_dir, source_dir = json_test_dir
+    for i in range(5):
+        _write(write_dir, f"f{i}.json", json.dumps({"i": i}))
+    files = list_source_files(spark, source_dir, source_format="json", max_files=2)
+    assert len(files) == 2
+
+
+def test_list_source_files_missing_dir_raises(spark, json_test_dir):
+    _, source_dir = json_test_dir
+    with pytest.raises(FileNotFoundError):
+        list_source_files(spark, f"{source_dir}/does_not_exist", source_format="json")
+
+
+def test_list_source_files_unregistered_format_raises(spark, json_test_dir):
+    # Use a name no planned issue registers so the error contract remains
+    # covered as real formats are added.
+    _, source_dir = json_test_dir
+    with pytest.raises(ValueError, match="source_format must be one of"):
+        list_source_files(spark, source_dir, source_format="avro")
+
+
+def test_list_source_files_extension_threading_is_per_format(spark, json_test_dir):
+    """
+    #304's acceptance criteria: given a directory with a.json, b.jsonl,
+    c.csv and notes.txt, source_format="json" returns exactly the two JSON
+    files and source_format="csv" returns exactly the CSV file - neither
+    errors on the other's files (architecture.md: "files of other formats
+    are invisible, not an error").
+
+    This proves the extensions tuple is resolved per-call through
+    `formats.extensions_for` rather than hardcoded.
+    """
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "a.json", json.dumps({"x": 1}))
+    _write(write_dir, "b.jsonl", json.dumps({"x": 2}))
+    _write(write_dir, "c.csv", "x,y\n1,2\n")
+    _write(write_dir, "notes.txt", "ignore me")
+
+    json_files = list_source_files(spark, source_dir, source_format="json")
+    csv_files = list_source_files(spark, source_dir, source_format="csv")
+
+    assert sorted(os.path.basename(f) for f in json_files) == ["a.json", "b.jsonl"]
+    assert sorted(os.path.basename(f) for f in csv_files) == ["c.csv"]
 
 
 # ---- file archival tests (real filesystem, local or Databricks Volume) ----
@@ -302,7 +377,10 @@ def test_folder_with_no_json_is_skipped_not_failed(spark, json_test_dir):
 
     assert len(results) == 1
     assert results[0]["status"] == "skipped"
-    assert results[0]["reason"] == "no JSON files in folder"
+    # #307: the reason echoes the configured `source_format` verbatim, so it
+    # is the lowercase registry key rather than the word "JSON". The status
+    # semantics are unchanged - that is what the rest of this test guards.
+    assert results[0]["reason"] == "no json files in folder"
     assert "error" not in results[0]
     # The job task keys off "failed" specifically - a skip must not appear there.
     assert [r for r in results if r["status"] == "failed"] == []
@@ -337,17 +415,17 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     _write(write_dir, "orders/good1.json", json.dumps({"id": 1}))
     _write(write_dir, "orders/good2.json", json.dumps({"id": 2}))
 
-    from bronze_ingest import json_reader as jr
+    from bronze_ingest import readers
     from bronze_ingest.pipeline import BronzeIngestion
 
-    real_read_json = jr.read_json
+    real_read_source = readers.read_source
 
-    def flaky_read_json(spark, config):
+    def flaky_read_source(spark, config):
         if "good2" in config.source_path:
             raise ValueError("simulated bad file")
-        return real_read_json(spark, config)
+        return real_read_source(spark, config)
 
-    monkeypatch.setattr(di, "read_json", flaky_read_json)
+    monkeypatch.setattr(di, "read_source", flaky_read_source)
 
     def fake_run_on_dataframe(self, df):
         return {
@@ -370,6 +448,46 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
     assert good_result["status"] == "success"
     assert bad_result["status"] == "failed"
     assert bad_result["attempts"] == 1
+
+
+def test_xml_folder_with_one_malformed_document_writes_and_archives_nothing(
+    spark, json_test_dir, monkeypatch
+):
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "records"), exist_ok=True)
+    _write(write_dir, "records/good.xml", "<records><record><id>1</id></record></records>")
+    _write(write_dir, "records/bad.xml", "<records><record><id>2</id></record>")
+
+    writes = []
+    archives = []
+
+    from bronze_ingest.pipeline import BronzeIngestion
+
+    monkeypatch.setattr(
+        BronzeIngestion,
+        "run_on_dataframe",
+        lambda self, df: writes.append((self, df)),
+    )
+    monkeypatch.setattr(
+        di,
+        "archive_files_parallel",
+        lambda *args, **kwargs: archives.append((args, kwargs)),
+    )
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        source_format="xml",
+        xml_row_tag="record",
+        max_ingestion_retries=3,
+        catalog=None,
+        schema_name="default",
+    )
+
+    folder_result = next(result for result in results if result["table"].endswith("records_bronze"))
+    assert folder_result["status"] == "failed"
+    assert writes == []
+    assert archives == []
 
 
 def test_folder_as_table_archives_files_with_folder_name_preserved(
@@ -631,6 +749,57 @@ def test_per_file_config_warns_when_it_matches_nothing(spark, json_test_dir, mon
     assert "typo_in_name.json" in caplog.text
 
 
+def test_per_file_required_columns_quarantines_through_the_real_pipeline(spark, json_test_dir):
+    """#250's second acceptance criterion, on the path the job actually
+    deploys.
+
+    test_per_file_config_is_applied_to_the_named_file monkeypatches
+    BronzeIngestion.run, so it proves the override REACHED the config and
+    stops there - it would still pass if the gate then did nothing with it.
+    bronze_ingest_jobs.yml pairs that override with
+    fail_on_quality_error=false, so the behaviour that matters is what the
+    two do together: the bad row held back and quarantined, the rest of the
+    file still loaded. That composition had no test, so run it for real.
+    """
+    write_dir, source_dir = json_test_dir
+    # Unique per run: these tables live in the shared "default" schema for
+    # the whole session, and write_mode is append.
+    name = f"orders_q_{uuid.uuid4().hex[:8]}"
+    _write(
+        write_dir,
+        f"{name}.json",
+        "\n".join(
+            [
+                json.dumps({"order_id": "A-1", "amount": 10}),
+                json.dumps({"order_id": None, "amount": 20}),
+            ]
+        ),
+    )
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
+        multiline=False,
+        fail_on_quality_error=False,
+        per_file_config={f"{name}.json": {"required_columns": ["order_id"]}},
+    )
+
+    assert results[0]["status"] == "success"
+    # The directory layer renames the pipeline's quarantined_row_count to
+    # quarantined_rows in its per-unit result.
+    assert results[0]["quarantined_rows"] == 1
+
+    bronze = spark.read.table(f"default.{name}_bronze").collect()
+    assert [r["order_id"] for r in bronze] == ["A-1"]
+
+    quarantined = spark.read.table(f"default.{name}_bronze_quarantine").collect()
+    assert len(quarantined) == 1
+    assert quarantined[0]["order_id"] is None
+    assert quarantined[0]["_quarantine_reason"] == "null:order_id"
+
+
 # ---------------------------------------------------------------------------
 # One failure policy, two paths (#183)
 # ---------------------------------------------------------------------------
@@ -696,3 +865,118 @@ def test_both_paths_produce_the_same_shape_for_the_same_failure(tmp_path):
     assert set(folder_inner) - set(per_file) == set()
     for key in ("file", "status", "error", "attempts"):
         assert per_file[key] == folder_inner[key]
+
+
+# ---- #307/#310: discovery is format-aware end to end --------------------
+
+
+def test_skipped_reason_names_the_configured_format(spark, json_test_dir):
+    """
+    #307's acceptance criterion. Before this, a CSV config found nothing and
+    reported it as a JSON problem - the operator is told the wrong thing
+    about why their run did nothing, which is worse than an unhelpful
+    message because it sends them looking at the wrong files.
+
+    """
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    # A folder holding only JSON, discovered under source_format="csv".
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default", source_format="csv"
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "skipped"
+    assert results[0]["reason"] == "no csv files in folder"
+    # The deliberate skipped-vs-failed distinction must survive the rewording.
+    assert "error" not in results[0]
+    assert [r for r in results if r["status"] == "failed"] == []
+
+
+def test_source_format_discovers_and_ingests_only_that_format(spark, json_test_dir, monkeypatch):
+    """
+    The other half of the acceptance criterion: only the configured format's
+    files are ingested, and the other format's are invisible rather than an
+    error (architecture.md: "files of other formats are invisible, not an
+    error").
+
+    The reader is replaced with a spy because this test targets discovery
+    and routing, not CSV parsing.
+    """
+    read_calls = []
+
+    def fake_csv_reader(spark_, config):
+        read_calls.append(config.source_path)
+        # Reuse the JSON reader's output shape - this test is about which
+        # files are routed here, not about CSV parsing.
+        return spark_.createDataFrame([(1,)], "id int")
+
+    from bronze_ingest import readers
+    from bronze_ingest.pipeline import BronzeIngestion
+
+    monkeypatch.setitem(readers._BATCH_READERS, "csv", fake_csv_reader)
+
+    def fake_run_on_dataframe(self, df):
+        return {
+            "table": self.config.full_table_name,
+            "row_count": df.count(),
+            "quarantined_row_count": 0,
+        }
+
+    monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
+
+    write_dir, source_dir = json_test_dir
+    _write(write_dir, "orders.csv", "id\n1\n")
+    _write(write_dir, "customers.json", json.dumps({"id": 2}))
+
+    results = di.ingest_directory_to_bronze(
+        spark, source_dir, catalog=None, schema_name="default", source_format="csv"
+    )
+
+    ingested = sorted(os.path.basename(f) for f in read_calls)
+    assert ingested == ["orders.csv"], f"routed the wrong files: {ingested}"
+    assert len(results) == 1
+    assert results[0]["status"] == "success"
+
+
+def test_explicit_source_format_beats_base_config(spark, json_test_dir):
+    """
+    The two routes must never be silently followed at once. The explicit
+    parameter wins - the same "explicit kwarg beats base_config" precedence
+    every other field already has.
+    """
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
+        base_config={"source_format": "json"},
+        source_format="csv",
+    )
+
+    # csv won: the JSON file was not discovered.
+    assert results[0]["reason"] == "no csv files in folder"
+
+
+def test_base_config_source_format_applies_when_the_parameter_is_omitted(spark, json_test_dir):
+    """Leaving the parameter None must leave base_config's value untouched -
+    the pre-#307 behaviour for callers who already set it that way."""
+    write_dir, source_dir = json_test_dir
+    os.makedirs(os.path.join(write_dir, "orders"), exist_ok=True)
+    _write(write_dir, "orders/order1.json", json.dumps({"id": 1}))
+
+    results = di.ingest_directory_to_bronze(
+        spark,
+        source_dir,
+        catalog=None,
+        schema_name="default",
+        base_config={"source_format": "csv"},
+    )
+
+    assert results[0]["reason"] == "no csv files in folder"

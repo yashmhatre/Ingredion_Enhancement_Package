@@ -1,15 +1,16 @@
 """
-Configuration schema for the bronze JSON ingestion package.
+Configuration schema for the multi-format bronze ingestion package.
 
-A single IngestionConfig object drives the whole pipeline: where the JSON
-comes from, how nested fields should be handled, and where/how the result
-is written as a Delta bronze table.
+A single IngestionConfig object drives the whole pipeline: where source data
+comes from, how it is parsed, and where/how the result is written as a Delta
+bronze table.
 """
 
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from . import formats
 from .logging_utils import logger
 from .sql_utils import validate_identifier, validate_identifiers
 
@@ -24,53 +25,26 @@ VALID_INGESTION_MODES = ("batch", "streaming")
 VALID_SCHEMA_EVOLUTION_MODES = ("addNewColumns", "rescue", "failOnNewColumns", "none")
 VALID_TRIGGER_MODES = ("availableNow", "once", "processingTime")
 
-#: Spark JSON-reader options this package will pass through without
-#: complaint (#154). `reader_options` goes straight to `spark.read.option()`,
-#: and configs are loaded from a Unity Catalog Volume - anyone with WRITE
-#: VOLUME can influence their content, which is a wider set of people than
-#: those with CREATE TABLE on the target schema.
+#: Spark reader options this package will pass through without complaint
+#: (#154). `reader_options` goes straight to `spark.read.option()`, and
+#: configs are loaded from a Unity Catalog Volume - anyone with WRITE VOLUME
+#: can influence their content, which is a wider set of people than those
+#: with CREATE TABLE on the target schema.
 #:
 #: The specific thing an allowlist buys here: `path` is a reader option, so an
 #: unfiltered passthrough lets a config redirect the read at a location the
 #: config was never meant to touch, while every log line and audit row still
 #: reports `source_path`. Parsing and formatting options cannot do that, so
 #: they are allowed.
-ALLOWED_READER_OPTIONS = frozenset(
-    {
-        # Parsing behaviour
-        "multiLine",
-        "mode",
-        "columnNameOfCorruptRecord",
-        "primitivesAsString",
-        "prefersDecimal",
-        "allowComments",
-        "allowUnquotedFieldNames",
-        "allowSingleQuotes",
-        "allowNumericLeadingZeros",
-        "allowBackslashEscapingAnyCharacter",
-        "allowUnquotedControlChars",
-        "dropFieldIfAllNull",
-        "ignoreNullFields",
-        "samplingRatio",
-        "rescuedDataColumn",
-        "inferTimestamp",
-        "enableDateTimeParsingFallback",
-        # Formats, encoding, locale
-        "dateFormat",
-        "timestampFormat",
-        "timestampNTZFormat",
-        "timeZone",
-        "locale",
-        "encoding",
-        "charset",
-        "lineSep",
-        # File selection - these narrow what is read, they cannot redirect it
-        "recursiveFileLookup",
-        "pathGlobFilter",
-        "modifiedBefore",
-        "modifiedAfter",
-    }
-)
+#:
+#: The allowlist is now looked up PER-FORMAT - `formats.allowed_reader_options`
+#: is the registry that decides what each `source_format` accepts, since not
+#: every reader option means the same thing (or exists at all) for every
+#: format (see `formats.py`'s module docstring). This name survives as a true
+#: alias to the "json" entry of that registry, not a second copy of the set,
+#: so existing importers of `config.ALLOWED_READER_OPTIONS` keep working
+#: unchanged - `tests/test_formats.py` asserts the two stay equal.
+ALLOWED_READER_OPTIONS = formats.allowed_reader_options("json")
 
 #: Prefixes allowed wholesale. Auto Loader's surface is large, versioned and
 #: entirely namespaced, so enumerating it would go stale faster than it would
@@ -84,11 +58,50 @@ class IngestionConfig:
     # --- Source ---
     # any Spark-readable URI: abfss://, s3://, gs://, dbfs:/, /Volumes/..., file:/...
     source_path: str
+    # Drives both what discovery lists (formats.extensions_for) and which
+    # reader_options are valid (formats.allowed_reader_options) - see
+    # formats.py's module docstring for why one field controls both. Must be
+    # one of formats.supported_formats(); checked in __post_init__.
+    source_format: str = "json"
     multiline: bool = True  # set True if each file is a single JSON document (not JSON-lines)
-    # optional DDL string to enforce a read schema instead of inferring it
+    # CSV-only; ignored for every other source_format. Spark's CSV reader
+    # defaults this to False, which yields positional column names
+    # ("_c0".."_cN") instead of the real header row - see the __post_init__
+    # check below for why that default would be unsafe here.
+    csv_header: bool = True
+    # CSV-only; ignored for every other source_format. False on purpose,
+    # matching Spark's own default (#371). Inference reads an 18-character
+    # zero-padded SAP MATNR ('000000000001000001') as the integer 1000001
+    # and the padding is gone - no error, no warning, no quarantine row, and
+    # a row count that reconciles perfectly. It survives a referential-
+    # integrity check too, because Spark coerces the string side of the join
+    # to a number and finds the match; the silver-layer join written the
+    # obvious way, string to string, then matches nothing. JSON and Parquet
+    # carry their own types and are unaffected. Every CSV column lands as a
+    # string and a caller casts what it actually wants cast, which is also
+    # how a migration extract is really shaped. Set True to opt back in.
+    csv_infer_schema: bool = False
+    # CSV-only; ignored for every other source_format. CSV's own multiLine
+    # knob, separate from the JSON-only `multiline` field above precisely
+    # because the two options share a name and mean different things - see
+    # csv_reader.read_csv's docstring. Defaults False, matching Spark: a
+    # multiLine CSV file cannot be split across tasks, so turning it on
+    # costs parallelism on exactly the large single-file extracts this
+    # package targets. Set it True when quoted fields may contain newlines;
+    # without it such a record is split in two and the tail lands as a row
+    # of values shifted under the wrong column names (#375).
+    csv_multiline: bool = False
+    # XML-only. Spark's XML data source cannot infer the repeated record
+    # element safely; there is deliberately no second rowTag source in
+    # reader_options.
+    xml_row_tag: Optional[str] = None
+    # optional DDL string to enforce a read schema instead of inferring it.
+    # XML v1 rejects this because Spark binds raw prefixed names before this
+    # package canonicalizes them; accepting canonical hints can yield nulls.
     schema_hint_ddl: Optional[str] = None
     # extra options passed straight to spark.read.options();
-    # keys must be on ALLOWED_READER_OPTIONS
+    # keys must be on the allowlist for this source_format
+    # (formats.allowed_reader_options(source_format))
     reader_options: Dict[str, Any] = field(default_factory=dict)
     # opt out of the reader_options allowlist (#154); logs what it lets through
     allow_unsafe_reader_options: bool = False
@@ -119,6 +132,18 @@ class IngestionConfig:
     fail_on_quality_error: bool = True
     # e.g. "bronze.orders_raw_quarantine" - defaults to f"{table}_quarantine"
     quarantine_table: Optional[str] = None
+    # Replay stops offering a row after this many failed attempts (#159 item
+    # 4). None means "no limit", which is the pre-existing behaviour and stays
+    # the default: turning this on changes which rows a recovery tool
+    # considers, and that should be a choice rather than something that starts
+    # happening on upgrade.
+    #
+    # Exhausted rows are SKIPPED, never deleted. A row that has failed five
+    # times may still pass after a genuine source fix, and deletion is
+    # irreversible - the counter exists to stop rescanning hopeless rows, not
+    # to throw them away. `reprocess_quarantine(max_replay_attempts=...)` can
+    # override this per call to sweep them back in.
+    max_replay_attempts: Optional[int] = None
 
     # --- Reliability ---
     retry_attempts: int = 3
@@ -128,8 +153,28 @@ class IngestionConfig:
     # minutes of driver sleep with no way to bound it. None means unbounded,
     # which is the previous behaviour.
     retry_max_total_seconds: Optional[float] = 120.0
-    # txnAppId/txnVersion for batch append/overwrite when batch_id is explicit (see #63)
+    # txnAppId/txnVersion for batch append/overwrite (#63). Gates the feature;
+    # it does nothing on its own until idempotent_txn_version supplies a
+    # version, which is deliberate - see that field.
     idempotent_batch_writes: bool = True
+    # The Delta txnVersion to write under. Opt-in, and there is no default
+    # that can be derived safely (#366).
+    #
+    # This used to be derived from batch_id, and every deployed job sets
+    # batch_id to the Databricks job run ID. Delta SILENTLY DISCARDS a write
+    # whose txnVersion is at or below one already committed for the same
+    # txnAppId - that is the whole mechanism - and job run IDs are globally
+    # unique but NOT increasing. So any run drawing an ID below one already
+    # used for that table wrote nothing, reported success, and had its
+    # source file archived. Stable across retries and increasing across
+    # batches are different properties; Delta needs both and a run ID has
+    # only the first.
+    #
+    # Supply this only with a counter you control and know to increase per
+    # table, and hold it constant across retries of the same logical batch.
+    # Left unset, writes are not idempotent-protected: a retried batch can
+    # duplicate rows, which is recoverable, where a discarded write is not.
+    idempotent_txn_version: Optional[int] = None
 
     # --- Target table ---
     catalog: Optional[str] = None  # Unity Catalog catalog name, omit for hive_metastore
@@ -137,6 +182,39 @@ class IngestionConfig:
     table: str = ""  # target table name (required)
     write_mode: str = "append"  # "append" | "overwrite" | "merge"
     merge_keys: Optional[List[str]] = None  # required when write_mode == "merge"
+    # --- Content-addressed merge key (#84) - an alternative to merge_keys,
+    # not a variant of it. write_mode == "merge" requires exactly one of the
+    # two; they are mutually exclusive.
+    #
+    # merge_keys answers "is this the same business entity?" - on an
+    # upstream UPDATE the key still matches, so the row updates in place
+    # (true upsert). content_hash_columns answers "are these the same
+    # bytes?" - on an upstream UPDATE the hash no longer matches, so the row
+    # INSERTS, leaving both versions in the table. That is correct for an
+    # append-only bronze layer capturing every version of a record, and it
+    # is NOT upsert semantics: content_hash_columns gives idempotent
+    # re-ingestion of identical payloads, nothing more. Pick it when a
+    # source has no reliable non-null natural key - the #47 nullable-key
+    # guard below has nothing to check for this strategy, so it's skipped.
+    #
+    # Must be an explicit, non-empty column list - never "hash every
+    # column". Hashing a column bronze adds itself (audit_ingest_ts_col,
+    # audit_batch_id_col, audit_source_file_col, rescued_data_column,
+    # corrupt_record_column) would make the hash depend on ingest-time
+    # metadata rather than row content, so identical payloads ingested on
+    # different runs would never match; those names are rejected if listed
+    # here (see _validate_content_hash_columns). SHA-256 collisions are not
+    # a practical concern and are not guarded against separately.
+    content_hash_columns: Optional[List[str]] = None
+    # Generated column that carries the computed hash and is used as the
+    # sole merge key when content_hash_columns is set. Computed on the
+    # DataFrame immediately before the write and excluded from the MERGE's
+    # matched-row update in bronze_writer._write_core rather than included
+    # in a blanket updateAll - a genuine match implies source and target
+    # hash are already equal, so excluding it documents that the column is
+    # never meant to move rather than relying on that being incidentally
+    # true.
+    content_hash_key_col: str = "_content_hash_key"
     # hive-style partitioning - discouraged for new tables, see cluster_by
     partition_by: Optional[List[str]] = None
     merge_schema: bool = True  # allow schema evolution on write (mergeSchema)
@@ -160,14 +238,78 @@ class IngestionConfig:
     cluster_by: Optional[List[str]] = None
     # CLUSTER BY AUTO - Databricks Runtime only, not supported by OSS/local Delta
     cluster_by_auto: bool = False
-    # e.g. {"delta.enableChangeDataFeed": "true"}
+    # Free-form Delta properties. Merged OVER the CDF defaults below, so an
+    # explicit entry here always wins - see resolved_table_properties.
     table_properties: Dict[str, str] = field(default_factory=dict)
+
+    # --- Change Data Feed (#58) ---
+    # ON by default, and that default is the point of the issue: CDF only
+    # captures changes from the moment it is enabled, so every run before it
+    # is switched on is history no Silver consumer can ever read
+    # incrementally. `docs/bronze_silver_contract.md` §1 decides Silver reads
+    # Bronze via CDF, which makes this an obligation on Bronze rather than a
+    # nice-to-have. Cost is negligible on an append-heavy layer.
+    #
+    # Applies to bronze AND quarantine tables. Not to the audit or schema
+    # registry tables: they are this package's own metadata, nothing consumes
+    # them incrementally, and #159 is separately concerned with their growth.
+    #
+    # None, not True, and for the reason #54 established elsewhere in this
+    # class: config load must be able to tell an explicit choice from silence.
+    #   None  -> decide from write_mode: on for append/merge, OFF for
+    #            overwrite, because `docs/bronze_silver_contract.md` §2 puts
+    #            overwrite-mode tables out of contract for incremental reads
+    #            (CDF there emits the whole table as deletes then inserts, so
+    #            Silver would do strictly more work than a full rescan while
+    #            carrying all of CDC's complexity).
+    #   True  -> explicit opt-in. REFUSED with write_mode="overwrite", which
+    #            is the enforcement §2 asked for when #58 landed - without it
+    #            the restriction is violated by someone configuring a table
+    #            reasonably and having no way to know.
+    #   False -> explicit opt-out, always honoured.
+    # A plain default of True would have made the refusal unreachable: every
+    # overwrite config in existence would have started failing at load.
+    enable_change_data_feed: Optional[bool] = None
+    # The CDF window, and the reason this field exists rather than leaving
+    # Delta's defaults in place: enabling a feed whose data is then deleted by
+    # an unconfigured maintenance operation is a guarantee that looks real and
+    # is not (#58, #159). Delta bounds readable change data by BOTH the commit
+    # log (delta.logRetentionDuration, default 30 days) and the underlying
+    # files (delta.deletedFileRetentionDuration, default 7 days), so the real
+    # window is the SHORTER of the two - 7 days by default, which is not what
+    # a reader of "log retention 30 days" would assume. Both are set from this
+    # one number so they cannot silently disagree.
+    #
+    # 30 days is a floor chosen to be written down, not derived from a
+    # measured consumer lag: Silver does not exist yet (#205), so there is no
+    # lag to measure. Revisit when there is a real consumer. A VACUUM with an
+    # explicit RETAIN shorter than this overrides the property and silently
+    # shortens the window - that interaction belongs to #159.
+    change_data_feed_retention_days: int = 30
 
     # --- Catalog documentation (see catalog_metadata.py, #64) ---
     # COMMENT ON TABLE - catalog documentation for the bronze table
     table_comment: Optional[str] = None
     # {column_name: comment}; top-level columns only
     column_comments: Dict[str, str] = field(default_factory=dict)
+
+    # --- Unity Catalog tags (#64) ---
+    # FREE-FORM tags only. Governed keys - the `class.*` PII taxonomy and
+    # anything else with a tag policy attached - must NEVER be applied from
+    # config, and `apply_catalog_tags` refuses them.
+    #
+    # The reason is access control, not tidiness: a governed tag can carry an
+    # ABAC policy, so writing one can silently change who can read the data
+    # (verified live 2026-08-12 - 63 `class.*` policies, ABAC endpoint
+    # answering). Config loads from a Volume, which #154 established is a
+    # wider trust boundary than the repo, so a YAML file that could opt a
+    # table into a policy-bearing key is a privilege-escalation path.
+    # Governed keys go through `apply_reviewed_tags` and a review step only.
+    # See docs/decisions/2026-08_uc_tag_mechanism.md.
+    table_tags: Dict[str, str] = field(default_factory=dict)
+    # {column_name: {tag_key: tag_value}}; top-level columns only, same as
+    # column_comments.
+    column_tags: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
     # --- Audit / lineage columns added automatically ---
     add_audit_columns: bool = True
@@ -195,12 +337,103 @@ class IngestionConfig:
             raise ValueError("source_path is required")
         if not self.table:
             raise ValueError("table is required")
+        if self.source_format not in formats.supported_formats():
+            raise ValueError(
+                f"source_format must be one of {formats.supported_formats()}, "
+                f"got {self.source_format!r}"
+            )
+        # Refused at config load, before a cluster starts, for the same reason
+        # every other config defect is: this repo's 96%-compute-cost finding
+        # makes a late failure the expensive one. The format is registered and
+        # its reader is tested - what is missing is the Tier 2 sign-off on the
+        # decision records that govern it, so the block belongs at the point an
+        # operator selects it rather than anywhere downstream.
+        blocker = formats.signoff_blocker(self.source_format)
+        if blocker:
+            raise ValueError(blocker)
+        if self.source_format == "xml" and "rowTag" in (self.reader_options or {}):
+            raise ValueError(
+                "reader_options must not contain 'rowTag'; xml_row_tag is the sole "
+                "source for the XML record element, including when "
+                "allow_unsafe_reader_options=True."
+            )
+        if self.source_format == "xml":
+            if "mode" in (self.reader_options or {}):
+                raise ValueError(
+                    "reader_options must not contain 'mode' for XML; XML ingestion "
+                    "always uses FAILFAST, including when allow_unsafe_reader_options=True."
+                )
+            if "ignoreNamespace" in (self.reader_options or {}):
+                raise ValueError(
+                    "reader_options must not contain 'ignoreNamespace' for XML; namespace "
+                    "prefixes are preserved and canonicalized deterministically."
+                )
+            if self.xml_row_tag is None:
+                raise ValueError("xml_row_tag is required when source_format='xml'")
+            if not isinstance(self.xml_row_tag, str) or not self.xml_row_tag.strip():
+                raise ValueError("xml_row_tag must be non-empty when source_format='xml'")
+            if self.schema_hint_ddl:
+                raise ValueError(
+                    "schema_hint_ddl is not supported for source_format='xml': Spark "
+                    "binds schemas before namespace-prefix canonicalization, which can "
+                    "silently return nulls. Use inference until the XML name-mapping "
+                    "contract is signed off."
+                )
+        # Type-checked before the guard below reads them. Both are plain
+        # `bool` with no meaningful third state, so - unlike the
+        # `Optional[bool]` fields that use `is True` to tell "user said so"
+        # from "unset" - an identity comparison here would buy nothing and
+        # cost correctness: `csv_header: "false"` from YAML is the truthy
+        # string 'false', which Spark's CSV reader then reads as false. The
+        # deployed job writes booleans as quoted strings as a matter of habit
+        # (`resources/bronze_ingest_jobs.yml` ships `multiline: "true"`,
+        # `fail_on_quality_error: "false"`), and `per_file_config_json`
+        # reaches IngestionConfig with only its KEYS validated - so a string
+        # here is the realistic input, not a hypothetical one. Fail loudly
+        # rather than let the guard below silently not fire.
+        for _name, _value in (
+            ("csv_header", self.csv_header),
+            ("csv_infer_schema", self.csv_infer_schema),
+            ("csv_multiline", self.csv_multiline),
+        ):
+            if not isinstance(_value, bool):
+                raise ValueError(
+                    f"{_name} must be a bool, got {_value!r}. A quoted YAML value like "
+                    f"`{_name}: \"false\"` is the string 'false', which is truthy in Python "
+                    "but false to Spark - the two would disagree silently. Write it "
+                    f"unquoted: `{_name}: false`."
+                )
+
+        if self.source_format == "csv" and not self.csv_header and not self.schema_hint_ddl:
+            raise ValueError(
+                "source_format='csv' with csv_header=False and no schema_hint_ddl. Headerless "
+                "CSV produces positional column names ('_c0', '_c1', ...) instead of the real "
+                "ones - required_columns, merge_keys, unique_columns, cluster_by, "
+                "column_comments and the data contract all become unusable without hand-mapping "
+                "positions. Worse, those names are positional: an upstream column insertion "
+                "silently shifts data under the same stable '_cN' name and the write still "
+                "succeeds, because '_c0' is a perfectly legal Delta column name. Set "
+                "schema_hint_ddl to name the columns explicitly, or set csv_header=True if "
+                "the file does have a header row."
+            )
         if self.write_mode not in VALID_WRITE_MODES:
             raise ValueError(
                 f"write_mode must be one of {VALID_WRITE_MODES}, got {self.write_mode!r}"
             )
-        if self.write_mode == "merge" and not self.merge_keys:
-            raise ValueError("merge_keys must be provided when write_mode='merge'")
+        if self.merge_keys and self.content_hash_columns:
+            raise ValueError(
+                "merge_keys and content_hash_columns are mutually exclusive (#84) - "
+                "merge_keys answers 'is this the same business entity?', "
+                "content_hash_columns answers 'are these the same bytes?'. Setting both "
+                "leaves it ambiguous which guarantee the write is making. Pick one merge "
+                "key strategy."
+            )
+        if self.write_mode == "merge" and not self.merge_keys and self.content_hash_columns is None:
+            raise ValueError(
+                "write_mode='merge' requires either merge_keys (a natural business key) "
+                "or content_hash_columns (a content-addressed dedup key, #84) - see "
+                "content_hash_columns' field comment in config.py for how the two differ."
+            )
         if self.write_mode == "merge" and self.merge_keys:
             unguarded = [k for k in self.merge_keys if k not in self.required_columns]
             if unguarded:
@@ -214,6 +447,33 @@ class IngestionConfig:
         if self.unique_columns is not None and len(self.unique_columns) == 0:
             raise ValueError(
                 "unique_columns, if provided, must be a non-empty list of column names."
+            )
+        if self.enable_change_data_feed is True and self.write_mode == "overwrite":
+            # The enforcement docs/bronze_silver_contract.md §2 asked for when
+            # #58 landed. Under overwrite, CDF emits the entire table as
+            # deletes then inserts on every run, so a Silver consumer does
+            # strictly more work than a full rescan while carrying all of
+            # CDC's complexity. Only an EXPLICIT True lands here - the default
+            # (None) resolves to off for overwrite rather than failing, so
+            # existing overwrite configs keep loading.
+            raise ValueError(
+                "enable_change_data_feed=True is not supported with write_mode='overwrite'. "
+                "Overwrite emits the entire table as deletes then inserts on every run, so "
+                "the feed carries no incremental information - docs/bronze_silver_contract.md "
+                "§2 puts overwrite-mode tables out of contract for incremental Silver "
+                "reads. Leave enable_change_data_feed unset (it defaults to off for "
+                "overwrite), or change write_mode."
+            )
+        if self.resolved_enable_change_data_feed and self.change_data_feed_retention_days < 1:
+            # Zero or negative would render as "interval 0 days", which either
+            # errors or sets a window that discards change data immediately -
+            # a CDF guarantee that is enabled and empty is the exact
+            # looks-real-and-is-not failure #58 set out to avoid.
+            raise ValueError(
+                "change_data_feed_retention_days must be >= 1 when "
+                f"the change data feed is on, got {self.change_data_feed_retention_days}. "
+                "Set enable_change_data_feed=False to turn the feed off instead of "
+                "configuring a zero-length retention window."
             )
         if self.column_comments:
             blank = [k for k in self.column_comments if not str(k).strip()]
@@ -237,6 +497,11 @@ class IngestionConfig:
                 f"ingestion_mode must be one of {VALID_INGESTION_MODES}, "
                 f"got {self.ingestion_mode!r}"
             )
+        if self.ingestion_mode == "streaming" and self.source_format != "json":
+            raise ValueError(
+                "streaming ingestion currently supports JSON only; batch multi-format "
+                "support does not enable CSV, Parquet, or XML Auto Loader reads."
+            )
         if self.schema_evolution_mode not in VALID_SCHEMA_EVOLUTION_MODES:
             raise ValueError(
                 f"schema_evolution_mode must be one of {VALID_SCHEMA_EVOLUTION_MODES}, "
@@ -258,6 +523,7 @@ class IngestionConfig:
 
         self._validate_numeric_ranges()
         self._validate_identifiers()
+        self._validate_content_hash_columns()
         self._validate_reader_options()
         self._warn_on_ignored_settings()
 
@@ -333,6 +599,7 @@ class IngestionConfig:
             "audit_batch_id_col",
             "rescued_data_column",
             "corrupt_record_column",
+            "content_hash_key_col",
         ):
             value = getattr(self, name)
             if value is not None:
@@ -345,6 +612,7 @@ class IngestionConfig:
         validate_identifiers(self.required_columns, "required_columns")
         validate_identifiers(self.unique_columns, "unique_columns")
         validate_identifiers(self.merge_keys, "merge_keys")
+        validate_identifiers(self.content_hash_columns, "content_hash_columns")
         validate_identifiers(self.partition_by, "partition_by")
         validate_identifiers(self.cluster_by, "cluster_by")
         if self.dedupe_order_by is not None:
@@ -372,6 +640,48 @@ class IngestionConfig:
             for i, part in enumerate(str(key).split(".")):
                 validate_identifier(part, f"table_properties key {key!r} part {i + 1}")
 
+    def _validate_content_hash_columns(self):
+        """
+        content_hash_columns is the source list for a content-addressed
+        merge key (#84) - deliberately separate from merge_keys and
+        validated separately, because the two answer different questions
+        (see the field comment above). Identifier syntax is already checked
+        by `_validate_identifiers`; this covers the parts specific to the
+        hash strategy.
+        """
+        if self.content_hash_columns is None:
+            return
+        if len(self.content_hash_columns) == 0:
+            raise ValueError(
+                "content_hash_columns, if provided, must be a non-empty list of column names."
+            )
+
+        # Columns bronze adds itself, AFTER the quality gate runs (or that
+        # exist purely to carry ingest-time metadata). Hashing any of these
+        # would make the hash depend on when/how a row was ingested rather
+        # than on its content, so two runs ingesting byte-identical source
+        # data would never produce a matching hash - defeating the point of
+        # a content-addressed key. Rejected explicitly rather than silently
+        # dropped: the #84 design note is specific that "the next added
+        # column silently breaks it" is the failure mode to avoid.
+        reserved = {
+            self.audit_ingest_ts_col,
+            self.audit_batch_id_col,
+            self.audit_source_file_col,
+            self.rescued_data_column,
+            self.corrupt_record_column,
+            self.content_hash_key_col,
+        }
+        blocked = [c for c in self.content_hash_columns if c in reserved]
+        if blocked:
+            raise ValueError(
+                f"content_hash_columns contains column(s) {blocked} that bronze adds "
+                "itself (an audit/rescued-data/corrupt-record column, or the hash key "
+                "column's own name). These are either absent at hash time or differ on "
+                "every run regardless of row content, so hashing them defeats "
+                "content-addressed dedup - remove them from content_hash_columns."
+            )
+
     def _validate_reader_options(self):
         """
         reader_options is passed straight to spark.read.option() (#154).
@@ -381,15 +691,21 @@ class IngestionConfig:
         CREATE TABLE on the target schema. Unknown keys are rejected rather
         than silently applied; `allow_unsafe_reader_options` is the documented
         way out, and it logs what it let through.
+
+        The allowlist is looked up PER `source_format` (formats.py) - what is
+        valid for one format is not necessarily valid for another. This runs
+        after the source_format check in __post_init__, so self.source_format
+        is always a registered format by the time it gets here.
         """
         options = self.reader_options or {}
         if not options:
             return
 
+        allowed = formats.allowed_reader_options(self.source_format)
         unknown = sorted(
             k
             for k in options
-            if k not in ALLOWED_READER_OPTIONS and not k.startswith(ALLOWED_READER_OPTION_PREFIXES)
+            if k not in allowed and not k.startswith(ALLOWED_READER_OPTION_PREFIXES)
         )
         if not unknown:
             return
@@ -403,8 +719,9 @@ class IngestionConfig:
             return
 
         raise ValueError(
-            f"reader_options contains key(s) not on the allowlist: {unknown}. "
-            f"Allowed: {sorted(ALLOWED_READER_OPTIONS)}. reader_options is applied "
+            f"reader_options contains key(s) not on the allowlist for "
+            f"source_format={self.source_format!r}: {unknown}. "
+            f"Allowed: {sorted(allowed)}. reader_options is applied "
             "verbatim to the Spark reader and configs are loaded from a Volume, so "
             "unrecognised keys are refused rather than applied silently. Set "
             "allow_unsafe_reader_options=True to override deliberately."
@@ -542,6 +859,57 @@ class IngestionConfig:
             if p
         ]
         return ".".join(parts)
+
+    @property
+    def resolved_enable_change_data_feed(self) -> bool:
+        """
+        Whether CDF is actually applied, once silence is resolved (#58).
+
+        `enable_change_data_feed=None` means "nobody said", and the answer
+        then comes from `write_mode`: on for append and merge, off for
+        overwrite. See the field comment and
+        `docs/bronze_silver_contract.md` §2 — an overwrite-mode feed is not
+        wrong so much as useless, emitting the entire table as deletes then
+        inserts every run.
+
+        `resolved_`, not the raw field, for the #54 reason: the raw one is
+        `None` by default so an explicit choice is distinguishable from
+        silence, and `None` is falsy, so reading it directly would quietly
+        disable the feed everywhere.
+        """
+        if self.enable_change_data_feed is None:
+            return self.write_mode != "overwrite"
+        return self.enable_change_data_feed
+
+    @property
+    def resolved_table_properties(self) -> Dict[str, str]:
+        """
+        The Delta properties actually applied to bronze and quarantine tables:
+        the CDF defaults (#58) with `table_properties` merged OVER them.
+
+        **Precedence is explicit-dict-wins, and it is decided here rather than
+        left to whichever code path runs last.** Someone who writes
+        `table_properties: {"delta.enableChangeDataFeed": "false"}` has said
+        something more specific than the boolean default, and silently
+        overriding it would be the worse surprise of the two. The same holds
+        for the retention keys - a caller pinning
+        `delta.deletedFileRetentionDuration` by hand keeps their value.
+
+        Returning a fresh dict each call, never the stored one: the writer
+        diffs this against DESCRIBE DETAIL and callers have historically
+        treated config fields as inert, so handing out a mutable reference to
+        `table_properties` would let a caller edit config by accident.
+        """
+        props: Dict[str, str] = {}
+        if self.resolved_enable_change_data_feed:
+            props["delta.enableChangeDataFeed"] = "true"
+            # Both keys from one number - see change_data_feed_retention_days
+            # for why the shorter of the two is what actually bounds the feed.
+            interval = f"interval {self.change_data_feed_retention_days} days"
+            props["delta.logRetentionDuration"] = interval
+            props["delta.deletedFileRetentionDuration"] = interval
+        props.update(self.table_properties or {})
+        return props
 
     # ---- constructors ----
     @classmethod

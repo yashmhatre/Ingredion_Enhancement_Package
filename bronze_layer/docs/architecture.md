@@ -1,316 +1,358 @@
-# Target Architecture — Bronze Ingestion Framework with Async AI-Assisted Metadata Layer
+# Bronze ingestion architecture
 
-## Overview
+Target-state design for `bronze_ingest` (`bronze_layer/`): today's shipped
+bronze layer, the multi-format ingestion it's built to grow into, and the
+AI-assisted metadata layer planned on top of it. Decisions here carry their
+reasoning and the alternatives that were rejected, not just the outcome —
+that's deliberate, and it's why this document stays long even after a pass
+for readability.
 
-This document describes the target-state architecture for `bronze_ingest`
-(in the `bronze_layer/` folder), extending the current bronze ingestion
-pipeline to (a) support multiple source formats beyond JSON, and (b)
-incorporate AI-assisted metadata generation — without introducing risk to
-the ingestion pipeline's reliability guarantees.
+**Companion docs:** `docs/overview.md` for a plain-language summary of the
+same architecture aimed at non-engineers; `docs/roadmap.md` for what order
+this gets built in and why; `docs/bronze_silver_contract.md` for exactly
+what Bronze hands Silver;
+`docs/decisions/2026-08_autonomous_remediation.md` for the bounds on the
+one approved exception to the rule governing the AI lane, below.
 
-![Ingestion architecture with async AI layer](images/bronze_target_architecture_v2.png)
+## At a glance
 
-## Architecture Summary
+```mermaid
+flowchart LR
+    subgraph Deterministic ingestion path
+        S[Sources on a Volume] --> D[Discovery + reader dispatch]
+        D --> Q[Quality gate]
+        Q -->|good rows| B[(Bronze Delta table)]
+        Q -->|bad rows| QT[(Quarantine table)]
+        QT -. replay .-> Q
+    end
+    B --> AT[(_ingestion_audit)]
+    B --> SR[(_schema_registry)]
+    subgraph "Async, decoupled — advisory only (see the amended rule)"
+        AT --> AI[AI metadata job]
+        SR --> AI
+        AI --> AM[(_ai_metadata)]
+    end
+```
 
-The design is partitioned into two isolated execution lanes.
+Two lanes, deliberately isolated from each other:
 
-### 1. Deterministic ingestion path
+| Lane | What it does | Character |
+| --- | --- | --- |
+| **Deterministic ingestion** | Discover files → read → quality gate → write Delta, with lineage and audit columns on every row | Synchronous, config-driven, no AI, no external calls |
+| **AI-assisted metadata** | A separate scheduled job reads the audit trail and schema registry, drafts PII flags / drift summaries / descriptions | Asynchronous, advisory-only, human-reviewed before anything it writes affects the catalog — plus one bounded write-path exception, amended below, whose eligible set is currently empty |
 
-Sources → format-aware discovery and reader dispatch → existing pipeline
-(quality gate, audit columns, write) → Delta bronze table.
+**The one rule that governs the second lane — amended 2026-08-07.** As
+originally written, and still true of everything except one clause:
 
-Everything in this lane is deterministic, config-driven, and synchronous.
-No AI, no external API calls, no non-deterministic behavior.
+> **The one rule that governs the second lane:** it never sits in the write
+> path and never gates an ingestion decision. Acceptance, rejection, and
+> quarantine are decided exclusively by `quality.py`, deterministically. If
+> a future proposal would have an AI model decide whether a row is
+> accepted, that's a different, bigger decision this document does not make
+> — see `docs/business_requirements.md` BR-001 for a live instance of that
+> question being asked.
 
-### 2. Asynchronous AI-assisted metadata layer
+That question got asked, and it got answered. On 2026-08-07 Yash (Project
+Lead) decided that BR-001's *"AI agents ... suggest fixes"* means autonomous
+remediation rather than advisory-only. The reasoning — and the fact that
+this conflict was stated to him in exactly these terms before the decision
+was made — is recorded in `docs/business_requirements.md` ("Decisions —
+2026-08-07"). **"Never sits in the write path" is therefore superseded, with
+conditions. Nothing else in the paragraph above is.** In particular, the
+"different, bigger decision" it anticipated — an AI deciding whether a row
+is accepted — remains unmade, and is now an explicit prohibition rather
+than an open question.
 
-A **separate scheduled job**, entirely decoupled from ingestion. Reads
-the audit trail and schema registry, generates advisory output (PII
-flagging, schema drift summarization, draft column/table descriptions),
-and writes to a dedicated metadata table for human review prior to any
-catalog update.
+The conditions are not restated here, because a bound maintained in two
+documents drifts. They live in
+`docs/decisions/2026-08_autonomous_remediation.md`, which is the
+authoritative statement of how far this exception reaches and is **draft
+pending Yash's explicit, named sign-off** — no autonomous-execution work
+may start before that. What follows quotes it.
 
-## Design Principle
+**The eligible set is empty, and that is the finding, not a placeholder.**
+The record's §3 verdict, from the evidence gathered for it: *"There is
+therefore **no fix class today that is both mechanically fixable and an
+actual remediation**. The intersection is empty, and the eligible set is
+its intersection."* A class enters only through §3's seven-condition
+promotion gate — *"**None. The eligible set starts empty**, and a class
+earns entry through the promotion gate in §3 — a gate whose first use is a
+Tier 2 sign-off, not an engineering judgement call."* So nothing in this
+package remediates autonomously today, and nothing will until a specific
+class has been promoted by name.
 
-The AI layer is intentionally decoupled from the write path: no shared
-transactions, no blocking calls, no gating decisions, and — critically —
-**no execution inside any ingestion job**. All AI output is advisory and
-routed through human review. Acceptance, rejection, and quarantine
-decisions remain governed exclusively by the deterministic quality logic
-in `quality.py`.
+**What a promoted class may reach is a ceiling, not a default.** §2 bounds
+the outer surface — `_ai_metadata`, file placement within a source dir's own
+`quarantine_files/`, retry-state entries under `_state/`, and a named
+allowlist of `IngestionConfig` fields whose worst case is a re-run — and is
+explicit that reaching it is not automatic: *"Only the ceiling in §2, and
+only the subset of it that a promoted class names. Nothing is in scope by
+virtue of not being forbidden."*
 
-This satisfies the requirement that AI adoption introduce no bottleneck
-or deadlock risk to the core ingestion SLA.
+**The quality gate's verdict did not move, and the separation is
+load-bearing.** §2's NEVER list, item 2: *"Yash's decision reverses 'the AI
+never sits in the write path.' It does **not** make the AI the arbiter of
+whether a row is acceptable. These are separable, and separating them
+explicitly is load-bearing, because conflating them is precisely how a
+bounded exception silently becomes an unbounded one."* Acceptance,
+rejection and quarantine remain `quality.py`'s alone, deterministically,
+exactly as the superseded paragraph says. Also on that NEVER list, and so
+outside this exception entirely: `_ingestion_audit` and `_schema_registry`
+(both **Fact**, below), business column values in a bronze row, any delete
+against any table, any Tier 2 or Tier 3 action under
+`docs/agent_governance.md`, any config field that redirects where data is
+read from or written to, the safety mechanisms themselves, and anything
+outside the bronze layer.
+
+**None of the machinery this exception depends on exists yet.** The kill
+switch (§4) and the rollback path (§5) each carry the same verdict — *"Does
+not exist and must be built."* — and the remediation record (§6) must
+**fail closed**, deliberately inverting this codebase's convention for
+advisory surfaces: *"the audit trail must never fail the ingestion it
+observes; the remediation record must always fail the action it
+authorizes."* The record's own one-sentence summary is the honest state of
+this exception today: *"autonomous remediation currently has nothing safe to
+do and none of the machinery it would need to do it safely, so #209's
+realistic first deliverable is the safety harness shipped with an empty
+eligible set."*
+
+**Why this is amended as an exception with an edge, rather than rewritten
+into a rule that permits writing.** Restating the lane as "the AI may write,
+within bounds" was the tidier option and it was rejected: a reader arriving
+later would see a principle that had eroded, with no way to tell it had been
+deliberately overridden, by whom, or on what terms — and the terms are the
+entire content of what was approved. The decision record makes the same
+argument about itself, *"An exception with no stated edge is not an
+exception — it is a repeal that nobody wrote down"*, and its §7 states the
+relationship to this document in one line: *"this record is the documented
+**exception** to its one rule, of stated shape, not a repeal."*
 
 ---
 
+## Status of each piece
+
+| Piece | Status |
+| --- | --- |
+| JSON bronze ingestion, quality gate, quarantine, retries | **Shipped** |
+| Directory ingestion (folder-as-table, archival, retry-limit-before-quarantine) | **Shipped** |
+| Run-level audit trail + schema registry | **Shipped** |
+| Batch multi-format ingestion (CSV/Parquet) | **Shipped**; workspace validation outstanding (#311) |
+| Batch XML ingestion | **Implemented, and refused at config load.** `formats._PENDING_SIGNOFF` blocks `source_format="xml"` until #336 and #337 are signed off; the notebooks do not offer it, and `notebooks/validate_xml_reader.py` is the only caller that lifts the gate |
+| Schema registry as AI-layer input | **Shipped** |
+| AI-assisted metadata layer (advisory) | **Implemented**; #208 closed after code and scheduled-job evidence were reconciled |
+| Autonomous remediation (the write-path exception) | **Not built, and blocked.** `docs/decisions/2026-08_autonomous_remediation.md` is draft pending the Project Lead's named sign-off; its eligible fix-class set is empty, and the kill switch, rollback path and fail-closed remediation record it requires do not exist |
+| Silver layer | **Not built** — see `docs/bronze_silver_contract.md` for what it will be handed |
+
 ## Multi-format ingestion
 
-### Format dispatch: config drives both discovery and reading
-
-`source_format` in `IngestionConfig` determines **which files are
-discovered** and **which reader handles them**. One config value, applied
-consistently at both stages.
+**Rule: `source_format` in `IngestionConfig` decides both what's discovered and how it's read** — one config value, two consistent effects:
 
 ```
 source_format: json     ->  discovers .json, .jsonl   ->  json_reader
 source_format: csv      ->  discovers .csv            ->  csv_reader
 source_format: xml      ->  discovers .xml            ->  xml_reader
-source_format: parquet  ->  discovers .parquet        ->  parquet_reader
+source_format: parquet  ->  discovers .parquet         ->  parquet_reader
 ```
 
-`list_json_files` generalizes to `list_source_files(spark, source_dir,
-source_format)`, using an extension map rather than hardcoded
-`.json`/`.jsonl`.
+- **Files of other formats are invisible**, same as `notes.txt` is invisible
+  to JSON discovery today — not an error, the existing behavior generalized.
+- **Mixed-format folders aren't supported.** Two configs pointing at the
+  same path is clearer than implicit per-file routing.
+- **Format is never inferred from the file extension**, even though that
+  would need less config. Rejected because it would silently ingest a
+  `.csv` that today sits harmlessly beside `.json` files — the same class of
+  surprise as a stray fixture folder getting auto-ingested (recorded in
+  `testing_directory_ingestion.md`'s history). Explicit configuration
+  beats implicit discovery here.
+- **`multiline` (JSON only) *is* inferred per file, and that's not a
+  contradiction.** `source_format` controls which files get pulled in at
+  all — getting it wrong means unexpected data, which is recoverable and
+  noisy. `multiline` controls how an already-selected file is parsed —
+  getting it wrong on a `.jsonl` file silently returns one row instead of
+  thousands, with no error. Inference is fine where the failure mode is
+  loud; it's rejected where the failure mode is silent data loss.
+- **Everything downstream of the reader is already format-agnostic** — the
+  quality gate, audit columns, retry logic, archival, and audit trail all
+  operate on a DataFrame and need no changes for this to ship.
+- **XML fails closed before Spark parsing.** Every physical document must be
+  well formed; Spark then reads in `FAILFAST` mode. Namespace-prefix spelling is
+  preserved by recursively canonicalizing `:` to `__`, with collisions
+  rejected before a write.
+- **XML is refused at config load until its decisions are signed.** The two
+  records governing it are proposed, not signed, so `formats._PENDING_SIGNOFF`
+  makes `source_format="xml"` raise in `IngestionConfig.__post_init__` and both
+  ingestion notebooks build their dropdown from `formats.approved_formats()`
+  instead of the full registry. This exists because the block was previously
+  written only here and in the CHANGELOG while the code offered the format
+  anyway — a block that lives in prose is not a block. Lifting it is deleting
+  one dict entry; the reader, its tests and its allowlist do not move.
 
-**Files of other formats are simply invisible**, exactly as `notes.txt`
-is invisible to JSON discovery today. This is not an error case — it's
-the existing behavior generalized, and there is already a test asserting
-it.
-
-**Mixed-format folders are not supported.** A folder containing both CSV
-and JSON needs two configs pointing at the same path, which is clearer
-than implicit per-file routing anyway.
-
-**Why not infer format per file from its extension?** It would silently
-change existing behavior — a `.csv` sitting beside `.json` files would
-suddenly get ingested where today it's ignored. That is the same class of
-surprise as the fixture-folder incident documented in
-`docs/testing_directory_ingestion.md`, where a test folder left in a real
-source directory was auto-ingested unnoticed. Explicit configuration is
-preferred over implicit discovery.
-
-**Why `multiline` IS inferred per file, when `source_format` is not.** The
-two look like the same decision and are not, so the apparent inconsistency
-is deliberate (#146).
-
-`source_format` decides **which files are ingested**. Inferring it can
-surprise someone with data they never asked for, and the failure is
-recoverable but noisy — a table exists that should not.
-
-`multiline` decides **how a file already selected for ingestion is
-parsed**. Inferring it cannot pull in unexpected data; the only thing it
-can change is whether a `.jsonl` file yields all its records or just the
-first. Getting it wrong destroys data *silently*: `multiLine=true` on
-JSON-lines returns one row, with no error and nothing in
-`_corrupt_record`.
-
-So the asymmetry follows from the consequences, not from a general
-preference. Inference is rejected where the downside is unexpected data
-and accepted where the downside is silent data loss. `.json` stays
-config-driven in both directions, because it is genuinely ambiguous — it
-may be one pretty-printed document or JSON-lines — and only `.jsonl` /
-`.ndjson` state their format unambiguously.
-
-The rule is applied per file on the batch path, where discovery
-enumerates files and reads them one at a time. Auto Loader cannot work
-that way: it is given a directory and a fixed `multiLine` at stream start,
-and files arriving later cannot be classified in advance. The streaming
-path therefore pairs the same extension rule (for single-file sources)
-with a per-micro-batch guard that fails the batch rather than committing a
-truncated read — see `streaming_reader.assert_no_silent_truncation`, and
-the README's "Streaming and JSON-lines" table.
-
-### What multi-format does not change
-
-Everything downstream of the reader is already format-agnostic — it
-operates on a DataFrame. The quality gate, audit columns, retry logic,
-archival, retry-limit quarantine, folder-as-table merging, and the
-run-level audit trail all work unchanged regardless of source format.
-
-Note that `flatten_mode` no longer exists in bronze (see below), which
-removes what would otherwise have been the trickiest cross-format
-question — what "auto-flatten" means for an inherently flat format like
-CSV versus an inherently nested one like XML.
-
----
-
-## Metadata: three tables, facts separated from interpretation
+## Metadata: three tables, facts kept separate from opinion
 
 | Table | Contains | Written by | Trust level |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `_ingestion_audit` | One row per run: status, row counts, timings, errors | Pipeline, synchronously | Fact |
-| `_schema_registry` | One row per table: current schema, fingerprint, when it last changed | Pipeline, synchronously | Fact |
-| `_ai_metadata` | Interpretations, suggestions, drafted descriptions, PII flags | AI layer, asynchronously | Advisory |
+| `_schema_registry` | One row per table: current schema, fingerprint, last-changed | Pipeline, synchronously | Fact |
+| `_ai_metadata` | Drafted interpretations, PII flags, descriptions | AI layer, asynchronously | Advisory |
 
-**The separation is deliberate and structural.** The first two record
-things the pipeline knows with certainty. The third records opinion,
-generated later, never treated as authoritative.
+This split makes "AI output is advisory, never authoritative" true by
+construction: **nothing in the write path ever reads `_ai_metadata`.** The
+registry answers "did the schema change, and to what?" — cheap and factual.
+The AI layer answers "what does that change probably mean, and should
+someone care?" — commentary built on top of the registry's output, never a
+replacement for it.
 
-This makes the "advisory only" principle enforceable by construction
-rather than by convention: **nothing in the write path ever reads
-`_ai_metadata`.**
+**The write-path exception does not move any table across this split.**
+`_ai_metadata` stays **Advisory**, and nothing in the write path reads it —
+the exception permits a promoted fix class to *write* `_ai_metadata`, since
+it sits on §2's ceiling; it does not make anything downstream treat what it
+finds there as **Fact**. `_ingestion_audit` and `_schema_registry` stay
+**Fact** and are on the NEVER list, for the reason the decision record gives:
+*"If the remediator can rewrite facts, the audit trail stops being evidence
+of what happened and becomes evidence of what something decided should have
+happened."* A remediation is recorded somewhere else again — §6 rejects
+extending `AUDIT_SCHEMA` and reusing `_ingestion_audit` (one row per
+*ingestion* run, and a writer that *"never raises, by design and by
+contract"*), and gives the remediation record its own home because it is
+*"a record of an **action taken**, and it needs its own home."* That table
+is future work, not a fourth member of this split, and when it is built it
+must be joinable to `_ingestion_audit` by run identity — without that, *"a
+person debugging bad data has no way to discover that anything other than
+ingestion ever wrote to that table."*
 
-It also clarifies an overlap that would otherwise be ambiguous. The
-schema registry answers *"did the schema change, and to what?"* — cheap,
-deterministic, factual. The AI layer answers *"what does that change
-likely mean, and should someone care?"* — interpretation, built on top of
-the registry's output. The registry is the input; the AI output is
-commentary on it.
+## How the AI layer runs
 
----
+**A standalone, scheduled Databricks job** — nothing else. It reads recent
+`_ingestion_audit` / `_schema_registry` activity, drafts output, writes to
+`_ai_metadata`. Ingestion jobs never call it and never wait on it.
 
-## How the AI layer actually runs
+Two mechanisms were considered and rejected:
 
-### Mechanism: a separate scheduled job
+- **A background thread at the end of the ingestion job** — not actually
+  async, since the cluster stays warm until the AI call finishes. A cost
+  review already found 96% of this project's Databricks spend is compute
+  time; keeping a cluster warm for LLM calls fights that finding directly.
+- **Event-driven triggers** — more infrastructure for a workload nobody
+  needs within seconds of ingestion. Nothing here is latency-sensitive.
 
-The AI layer is a **standalone Databricks job on its own schedule**. It
-reads recent activity from `_ingestion_audit` and `_schema_registry`,
-generates output, and writes to `_ai_metadata`.
+**Failure handling, consistent with the rest of this codebase's failure
+story** (retry-with-backoff, quarantine fallbacks, an audit writer that
+never raises): a failed or timed-out call logs and skips that table; the
+job continues with the rest; there's no aggressive retry, since the next
+scheduled run naturally picks up anything still showing as changed;
+malformed AI output is discarded rather than written, because a bad row in
+`_ai_metadata` is worse than no row.
 
-Ingestion jobs know nothing about it, never call it, and never wait on
-it.
+**Cost is bounded by design** — zero AI cost per ingestion run, one
+scheduled job amortizing cluster startup across every table it touches,
+and only tables with genuinely new activity get reprocessed.
 
-**Why not a background thread at the end of the ingestion job?** Because
-that isn't genuinely async — the cluster stays alive until the AI work
-finishes, extending job duration and cost. A recent Azure cost review
-found 96% of Databricks spend was compute time, so keeping a cluster warm
-to make LLM calls is precisely the pattern worth avoiding.
+**This section describes the advisory job, and only it.** The remediation
+lane approved on 2026-08-07 is a second thing, not a new mode of this one,
+and three of the properties above invert for it — which is the clearest
+statement available of how much of this design a write-capable AI lane
+cannot reuse.
 
-**Why not event-driven triggers?** Meaningfully more infrastructure for a
-workload that is inherently non-urgent. Nobody needs a PII flag within
-seconds of ingestion.
+Its failure convention inverts. A failed advisory call logs and skips that
+table because its failure costs an observation; every remediation
+prerequisite **fails closed** because its failure costs a write, and the
+decision record is deliberate about the collision — *"`_write_audit_row`'s
+never-raise contract now has an exception in the same codebase, and the two
+conventions sit one module apart."* The next person to find them should not
+"fix" the fail-closed path into consistency with the fail-open one.
 
-### Failure handling
+Its control channel inverts. This job's behaviour, like every job here, is
+fixed at the moment it starts; the kill switch is required to be *"reachable
+without a deploy"* and *"effective mid-flight, between actions"*, which is
+why §5 of the decision record names "What's left" item 4 below — control-
+table driven dynamic config, **not started** — as a prerequisite for it.
 
-Consistent with every other component in this codebase, which has an
-explicit failure story (retry-with-backoff, quarantine fallbacks,
-retry-limits, archival fallback chains, `_write_audit_row` which never
-raises):
+Its isolation from ingestion becomes a guarantee to be built rather than a
+property of being decoupled. Pulling the kill switch *"does not stop
+ingestion"*: deterministic ingestion continues with remediation disabled,
+because *"if pulling the switch also stops data landing, operators will
+hesitate at the exact moment hesitation is most expensive."* That is the
+two-lane isolation at the top of this document, restated for a lane that can
+write. None of it exists, and none of it may be started before the decision
+record is signed off.
 
-- A failed or timed-out LLM call **logs the failure and skips that table**
-- The job **continues** with remaining tables — one bad response never
-  halts the batch
-- **No aggressive retry.** The next scheduled run picks the table up
-  again naturally, since it will still show as changed
-- Malformed or unparseable AI output is **discarded, not written** — a
-  partial or nonsensical row in `_ai_metadata` is worse than no row
-- **Ingestion is unaffected in every case**, because it is not in the
-  loop at all
+## Explicitly out of scope: `flatten_mode`
 
-### Cost position
+Removed from Bronze entirely. Flattening is a reshaping decision for
+downstream consumers — a Silver concern (see
+`docs/bronze_silver_contract.md`), not a Bronze one; Bronze preserves
+source fidelity. The working `flattener.py` and its tests are archived at
+`silver_layer/_archive/` for reuse once Silver is built, not deleted.
 
-Bounded and predictable by design:
+## What's built, in delivery order
 
-- **Not per-ingestion-run.** Ingestion jobs incur zero AI cost.
-- **One scheduled job**, amortizing cluster startup across all tables
-  processed in that run
-- **Only processes what changed** since the last run — tables with an
-  unchanged schema fingerprint and no new audit activity are skipped
-  entirely, so steady-state cost stays low even as table count grows
-- Schedule frequency is the primary cost lever and can be tuned
-  independently of ingestion frequency
+1. **Bronze core** — config-driven ingestion, quality gate, quarantine, retries, Unity Catalog integration
+2. **Directory ingestion resilience** — per-file failure isolation, automatic archival, retry-limit-before-quarantine, folder-as-table merging
+3. **Enterprise-hardening phase 1** — run-level audit trail wired into every ingestion path, CI enforcement with branch protection
 
----
+## What's left, in dependency order
 
-## Removed from scope: `flatten_mode`
+**Enterprise hardening, remaining:**
 
-`flatten_mode` (with `explode_arrays` and `auto_flatten_threshold`) has
-been **removed from bronze entirely**. Flattening is a reshaping decision
-about how downstream consumers want data — a silver-layer concern, not a
-bronze one. Bronze preserves source fidelity.
+| # | Item | Status |
+| --- | --- | --- |
+| 4 | Control-table driven dynamic config | Not started |
+| 5 | Concurrency locking (#153) | Job-level done (`max_concurrent_runs: 1`); library-level (two direct callers racing on one `source_dir`) still open |
+| 6 | Config validation and allowlist governance | Substance tracked in #154/#54, not implemented |
+| 7 | Secrets via Databricks secret scopes (#115) | Not started, blocked on #112 provisioning |
 
-The working, tested `flattener.py` and its test suite were **archived to
-`silver_layer/_archive/`** for reuse when the silver layer is built,
-rather than deleted.
+**Target-state build, in the order each piece unblocks the next:**
 
-Nested structures now land in bronze exactly as read.
+1. **Schema registry** — cheapest, unblocks the most (AI drift summaries need schema history to exist first). **Done.**
+2. **Batch multi-format ingestion** — CSV and Parquet are implemented and reachable.
+   XML is implemented and gated: the code is complete and tested, and config load
+   refuses it until #336 and #337 are signed off.
+3. **AI metadata layer** — implemented; #208 is closed with its acceptance evidence recorded.
 
----
+**What Bronze owes Silver**, from `docs/bronze_silver_contract.md`, in dependency order:
 
-## Delivery Sequencing
+1. Change Data Feed enabled on bronze and quarantine tables (#58), paired with a retention floor (#159) — VACUUM deletes CDF history, so shipping one without the other is a guarantee that isn't real.
+2. `overwrite` rejected together with CDF at config load — under `overwrite`, CDF emits the whole table as deletes-plus-inserts every run, which is strictly worse than a full rescan.
+3. A `layer` column on `AUDIT_SCHEMA` — decided now because deciding it after #62's dashboard exists would mean rebuilding the dashboard.
 
-### Completed
+Silver's own build isn't scheduled here — see `docs/roadmap.md`. Its
+gating prerequisite is "§5 of the Bronze→Silver contract is answered and
+the buy-vs-build call is made," both of which are done
+(`docs/buy_vs_build_2026-08.md`: build).
 
-1. **Bronze layer core** — config-driven ingestion, quality gate,
-   quarantine, retries, Unity Catalog integration
-2. **Directory ingestion resilience** — per-file failure isolation,
-   automatic archival, retry-limit-before-quarantine, folder-as-table
-   merging
-3. **Phase 1 of enterprise hardening** — run-level audit trail
-   (`audited_run()` wired into all three ingestion paths) and CI
-   enforcement via GitHub Actions with branch protection
+## Measured operational characteristics
 
-### Remaining enterprise-hardening phases
+Numbers, not impressions — `testing_directory_ingestion.md` owns the
+benchmark; this section and the `_archive_files_parallel` docstring both
+defer to it rather than carrying an independent figure.
 
-4. **Control-table driven dynamic config** — not started.
-5. **Concurrency locking** (#153) — *partly done*. The deployed job sets
-   `max_concurrent_runs: 1` with `queue.enabled`, so two runs of the *same
-   job* can no longer race on discovery, archival and `_state/`. That is
-   the deployment-level half. The library-level half is still open: two
-   callers invoking `ingest_directory_to_bronze` against one `source_dir`
-   from anywhere else are still unguarded.
-6. **Config validation and allowlist governance** — *barely started*.
-   #166 rejects unknown keys passed to `ingest_directory_to_bronze`, which
-   is the shallowest part of it. The substance is open and tracked in
-   **#154** (identifier validation, SQL escaping, `reader_options`
-   allowlist) and **#54** (numeric ranges, identifier safety). Neither is
-   implemented.
-
-   *(An earlier revision of this list said phase 6 was "partly done via
-   #154". That was wrong — #154 is the issue describing the remaining
-   work, not work delivered.)*
-7. **Secrets via Databricks secret scopes** (#115) — not started; blocked
-   on the workspace provisioning in #112.
-
-This list and `bronze_layer/README.md` § "Not yet implemented" describe
-the same set of gaps from two angles: this one is phased and
-architectural, that one is issue-linked and reader-facing. If they
-disagree, the open issues are the tiebreak.
-
-### Target-state work, in dependency order
-
-1. **Schema registry** — cheapest of the three, and unblocks the most.
-   AI-driven schema drift summarization has nothing to summarize without
-   schema history, so this genuinely must come first.
-2. **Multi-format ingestion** — independent of the AI layer; can proceed
-   in parallel with the registry if useful.
-3. **AI metadata layer** — depends on both the audit trail (done) and the
-   schema registry as its input surfaces.
-
-This ordering corrects an earlier version of this document, which placed
-the AI layer before the schema registry — an ordering that would have
-left it with no drift data to work from.
-
----
-
-## Known operational characteristics
-
-Measured, not assumed — see `docs/testing_directory_ingestion.md` for
-full benchmark detail.
-
-- **Archival costs ~0.45s per file** and is the dominant linear cost in
-  folder ingestion. This is irreducible on serverless: `dbutils.fs.mv`
-  calls serialize through the Spark Connect client and do not
-  parallelize, confirmed by benchmark.
-
-  The folder-as-table path still submits archival through a 10-worker
-  `ThreadPoolExecutor` (`_archive_files_parallel`). That is not a
-  contradiction and not stale code: the pool was measured *after* it was
-  added and produced no speedup — 163.0s threaded vs 161.3s sequential,
-  with files completing in exact input order at ~0.45s intervals, which
-  is what serialization in the Connect client looks like from the caller's
-  side. It is kept because it costs nothing, is correct either way, and
-  would start paying off if a future runtime lifts that serialization.
-  The function's docstring says the same; this document and that docstring
-  both defer to `docs/testing_directory_ingestion.md`, which owns the
-  number.
-- **100 files per folder ≈ 163s total**, of which ~45s is archival.
-- **Beyond roughly 100 files per folder, use Auto Loader**
-  (`ingestion_mode: streaming`) rather than folder-as-table. Auto Loader
-  handles high volume by design — incremental discovery, batched
-  processing, checkpoint-based tracking — and avoids per-file archival
-  entirely.
-
-This sizing guidance matters for multi-format planning: a new source's
-expected file volume should determine its ingestion mode before its
-format does.
-
----
+- **Archival costs ~0.45s/file**, and is the dominant linear cost of
+  folder ingestion. Irreducible on serverless today: `dbutils.fs.mv` calls
+  serialize through the Spark Connect client.
+- **100 files/folder ≈ 163s total**, ~45s of it archival.
+- **Past roughly 100 files/folder, use Auto Loader** (`ingestion_mode:
+  streaming`) instead of folder-as-table — it avoids per-file archival
+  entirely. A new source's expected file volume should decide its
+  ingestion mode before its format does.
 
 ## Open questions
 
-None blocking. All previously-open design questions (format dispatch
-mechanism, metadata store boundaries, async trigger mechanism,
-`flatten_mode` across formats, AI failure handling, cost position) have
-been resolved and are documented above.
+- **CDF retention floor — settled**, not open. #58 shipped 2026-08-11 with
+  `change_data_feed_retention_days = 30`, the number
+  `docs/bronze_silver_contract.md` recommended, and it now lives in code
+  rather than in a doc that can drift from it. One correction landed with
+  it: the readable CDF window is bounded by the SHORTER of
+  `delta.logRetentionDuration` (30 days) and
+  `delta.deletedFileRetentionDuration` (7), so the pre-#58 state advertised
+  30 days of feed and would have delivered 7. Both keys now derive from the
+  one number. What remains is enforcement rather than the value: a
+  `VACUUM ... RETAIN` shorter than the floor still overrides it silently,
+  which is why #159's maintenance job reads each table's own floor back
+  instead of taking a second configured number.
+- **Buy-vs-build — resolved**, not open. `docs/buy_vs_build_2026-08.md`
+  verdicts every framework feature in the backlog against a real fixture,
+  not a README: Silver's rule engine is **build** (DQX can't be
+  constructed without an authenticated workspace, which would make the
+  322-test local suite unable to cover it); Lakeflow Declarative Pipelines
+  is **not adopted** (no equivalent for folder-as-table, per-file
+  archival, cross-run retry-limit, or quarantine replay).

@@ -4,11 +4,16 @@ import uuid
 import pytest
 
 from bronze_ingest.bronze_writer import (
+    EMPTY_WRITE_METRICS,
     DuplicateMergeKeyError,
     NullMergeKeyError,
+    WriteNotCommittedError,
     _resolve_idempotent_txn_version,
     add_audit_columns,
+    read_write_metrics,
+    table_version,
     write_bronze,
+    write_bronze_micro_batch,
 )
 from bronze_ingest.config import IngestionConfig
 
@@ -120,6 +125,79 @@ def test_merge_updates_matched_and_inserts_new_rows(spark):
     assert rows == {1: "a-updated", 2: "b", 3: "c"}
 
 
+def test_merge_write_metrics_are_populated_not_null(spark):
+    """
+    #376: every row-accounting column in the audit trail came back NULL for
+    a merge write, including rows_inserted/rows_updated/rows_deleted, which
+    exist in the schema specifically for merge. Root cause was reading the
+    unqualified `numTargetRowsUpdated`/`numTargetRowsDeleted` metric keys -
+    absent from a plain MERGE's operationMetrics, which only carries the
+    `...Matched...` variants because this package never issues a `WHEN NOT
+    MATCHED BY SOURCE` clause.
+    """
+    table = f"bw_merge_metrics_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+
+    full = _table(table)
+    version_before = table_version(spark, full)
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated"), (3, "c")], ["id", "name"]), cfg)
+
+    metrics = read_write_metrics(spark, full, "merge", since_version=version_before)
+
+    assert metrics["rows_inserted"] == 1
+    assert metrics["rows_updated"] == 1
+    assert metrics["rows_deleted"] == 0
+    assert metrics["row_count"] == 2
+    assert metrics["source_row_count"] == 2
+
+
+def test_merge_write_metrics_survive_an_intervening_optimize_commit(spark):
+    """
+    #385: staging re-verification of #376 showed row_count/source_row_count
+    NULL again for a genuine merge, because auto-optimize committed an
+    OPTIMIZE immediately after the MERGE, which became the new "latest"
+    commit before read_write_metrics ran. OPTIMIZE's operationMetrics has
+    no numTargetRows* keys, so every _num(...) call returned None.
+
+    Reproduced here without needing auto-optimize actually enabled: commit
+    the merge, then commit a real OPTIMIZE on top of it by hand, then read
+    metrics with since_version bracketing the merge. The fix must look past
+    the OPTIMIZE commit to the merge's own operationMetrics.
+    """
+    table = f"bw_merge_optimize_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+
+    full = _table(table)
+    version_before = table_version(spark, full)
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated"), (3, "c")], ["id", "name"]), cfg)
+
+    spark.sql(f"OPTIMIZE {full}")
+
+    metrics = read_write_metrics(spark, full, "merge", since_version=version_before)
+
+    assert metrics["rows_inserted"] == 1
+    assert metrics["rows_updated"] == 1
+    assert metrics["rows_deleted"] == 0
+    assert metrics["row_count"] == 2
+    assert metrics["source_row_count"] == 2
+
+
 def test_merge_dedupes_duplicate_keys_before_merge(spark):
     """#48: a source batch with more than one row per merge key used to
     make Delta MERGE throw a cryptic 'multiple source rows matched' error.
@@ -175,6 +253,104 @@ def test_merge_dedupe_missing_order_column_raises_clear_error(spark):
 
     with pytest.raises(ValueError, match="_ingested_at"):
         write_bronze(spark, df, cfg)
+
+
+def test_content_hash_merge_key_column_is_added_and_populated(spark):
+    """#84: the hash strategy computes its own key column onto the
+    DataFrame and persists it, named _content_hash_key by default."""
+    table = f"bw_hash_col_{uuid.uuid4().hex[:8]}"
+    # dedupe_before_merge is orthogonal to this test - disable it so this
+    # test doesn't depend on audit columns being present (see #48 tests).
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    written = spark.read.table(_table(table))
+    assert "_content_hash_key" in written.columns
+    assert written.select("_content_hash_key").collect()[0][0] is not None
+
+
+def test_content_hash_key_col_name_is_configurable(spark):
+    table = f"bw_hash_col_name_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        content_hash_key_col="_my_dedup_key",
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    written = spark.read.table(_table(table))
+    assert "_my_dedup_key" in written.columns
+    assert "_content_hash_key" not in written.columns
+
+
+def test_content_hash_merge_dedupes_identical_rows_within_one_batch(spark):
+    """Rows that are identical across the HASHED columns collide on the
+    computed key, so dedupe_before_merge (default True) collapses them the
+    same way it would collapse a duplicate natural merge key - and picks the
+    highest dedupe_order_by value, exactly as #48 specified for merge_keys.
+
+    `version` differs between the two rows and is deliberately NOT in
+    content_hash_columns, which also pins the other half of this: the hash
+    covers the named columns only, so a column outside the list can't stop
+    two rows from colliding. dedupe_order_by is explicit here because
+    write_bronze doesn't add audit columns, so the default order column
+    (_ingested_at) isn't on a raw DataFrame - see
+    test_merge_dedupe_missing_order_column_raises_clear_error."""
+    table = f"bw_hash_dupe_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_order_by="version",
+    )
+
+    df = spark.createDataFrame(
+        [(1, "a", 1), (1, "a", 2), (2, "b", 1)],
+        ["id", "name", "version"],
+    )
+    write_bronze(spark, df, cfg)
+
+    rows = {r["id"]: r["version"] for r in spark.read.table(_table(table)).collect()}
+    assert rows == {1: 2, 2: 1}
+
+
+def test_content_hash_merge_key_gives_idempotent_reingestion_not_upsert(spark):
+    """#84's central design point: content_hash_columns answers 'are these
+    the same bytes', not 'is this the same business entity'. Re-ingesting
+    byte-identical rows is a no-op (idempotent). An upstream UPDATE against
+    the same business key (id=1 here) produces a NEW row instead of
+    updating in place, because the hash no longer matches - the opposite of
+    what a natural merge_keys=['id'] would do, and the whole reason this is
+    a separate, explicitly-named strategy rather than a variant of
+    merge_keys."""
+    table = f"bw_hash_merge_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        content_hash_columns=["id", "name"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    assert spark.read.table(_table(table)).count() == 2
+
+    # Re-ingest the exact same bytes - idempotent, no new rows.
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+    assert spark.read.table(_table(table)).count() == 2
+
+    # Same business key (id=1), different content - INSERTS as a new row.
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated")], ["id", "name"]), cfg)
+    rows = {(r["id"], r["name"]) for r in spark.read.table(_table(table)).collect()}
+    assert rows == {(1, "a"), (2, "b"), (1, "a-updated")}
 
 
 def test_append_mode_does_not_require_merge_keys(spark):
@@ -342,43 +518,60 @@ def test_cluster_by_auto_degrades_gracefully_when_unsupported(spark, caplog):
 # ---- idempotent batch writes (#63) ----
 
 
-def test_resolve_idempotent_txn_version_cases():
-    cfg_int_str = _cfg("t", batch_id="12345")
-    assert _resolve_idempotent_txn_version(cfg_int_str) == 12345
+def test_resolve_idempotent_txn_version_is_the_configured_value_only():
+    """#366: nothing is derived any more.
 
-    cfg_timestamp = _cfg("t", batch_id="20260728T120000000000Z")
-    version = _resolve_idempotent_txn_version(cfg_timestamp)
-    assert isinstance(version, int) and version > 0
-    # Same string must always resolve to the same version (stable, not wall-clock-dependent).
-    assert _resolve_idempotent_txn_version(cfg_timestamp) == version
-
-    cfg_arbitrary = _cfg("t", batch_id="not-a-number-or-timestamp")
-    assert _resolve_idempotent_txn_version(cfg_arbitrary) is None
-
-    cfg_none = _cfg("t")
-    assert _resolve_idempotent_txn_version(cfg_none) is None
-
-
-def test_idempotent_batch_writes_prevents_duplicate_append_on_retry(spark):
+    batch_id used to feed this, and every deployed job sets batch_id to a
+    Databricks job run ID. Run IDs are unique but not increasing, and Delta
+    silently discards a write whose txnVersion is at or below one already
+    committed - so a low run ID lost the data without raising.
     """
-    #63: a retried batch job (write succeeded, a downstream step then
-    failed) re-running with the SAME explicit batch_id must converge to
-    one copy of the data, not duplicate it.
-    """
-    table = f"bw_idempotent_append_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="append", batch_id="1001")
+    assert _resolve_idempotent_txn_version(_cfg("t", idempotent_txn_version=7)) == 7
+    assert _resolve_idempotent_txn_version(_cfg("t")) is None
 
-    df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
-    write_bronze(spark, df, cfg)
-    write_bronze(spark, df, cfg)  # simulated retry - same batch_id, same data
+    # An integer-looking batch_id must NOT be picked up. This is the exact
+    # shape of a job run ID and the exact regression #366 was.
+    assert _resolve_idempotent_txn_version(_cfg("t", batch_id="90849223213432")) is None
+    assert _resolve_idempotent_txn_version(_cfg("t", batch_id="20260728T120000000000Z")) is None
+
+
+def test_batch_id_alone_no_longer_makes_a_write_idempotent(spark):
+    """The #366 regression test.
+
+    Two writes with the same integer batch_id and no idempotent_txn_version
+    must both land. Before the fix the second was discarded by Delta, and
+    with a LOWER batch_id it was discarded while reporting success.
+    """
+    table = f"bw_batch_id_not_idempotent_{uuid.uuid4().hex[:8]}"
+    df = spark.createDataFrame([(1, "a")], ["id", "name"])
+
+    write_bronze(spark, df, _cfg(table, write_mode="append", batch_id="900000000000000"))
+    write_bronze(spark, df, _cfg(table, write_mode="append", batch_id="100000000000000"))
 
     assert spark.read.table(_table(table)).count() == 2
 
 
-def test_idempotent_batch_writes_different_batch_ids_append_normally(spark):
+def test_idempotent_txn_version_prevents_duplicate_append_on_retry(spark):
+    """
+    #63 still works when the version is supplied explicitly: a retried batch
+    re-running with the SAME version converges to one copy.
+    """
+    table = f"bw_idempotent_append_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", idempotent_txn_version=1001)
+
+    df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
+    write_bronze(spark, df, cfg)
+    with pytest.raises(WriteNotCommittedError):
+        write_bronze(spark, df, cfg)  # simulated retry - same version
+
+    # The retry committed nothing, which is the point, and it said so.
+    assert spark.read.table(_table(table)).count() == 2
+
+
+def test_idempotent_txn_version_increasing_appends_normally(spark):
     table = f"bw_idempotent_diff_batch_{uuid.uuid4().hex[:8]}"
-    cfg1 = _cfg(table, write_mode="append", batch_id="2001")
-    cfg2 = _cfg(table, write_mode="append", batch_id="2002")
+    cfg1 = _cfg(table, write_mode="append", idempotent_txn_version=2001)
+    cfg2 = _cfg(table, write_mode="append", idempotent_txn_version=2002)
 
     write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg1)
     write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg2)
@@ -386,35 +579,62 @@ def test_idempotent_batch_writes_different_batch_ids_append_normally(spark):
     assert spark.read.table(_table(table)).count() == 2
 
 
-def test_idempotent_batch_writes_skipped_when_batch_id_none(spark, caplog):
-    """An auto-generated (None) batch_id can't provide retry protection,
-    since it's a fresh value on every attempt - document this rather than
-    pretending it's protected. The write itself must still succeed."""
-    table = f"bw_idempotent_no_batch_id_{uuid.uuid4().hex[:8]}"
+def test_decreasing_idempotent_txn_version_raises_rather_than_losing_rows(spark):
+    """The heart of #366: a lower version is discarded by Delta. It must
+    surface as a failure, never as a successful write of nothing."""
+    table = f"bw_idempotent_decreasing_{uuid.uuid4().hex[:8]}"
+    write_bronze(
+        spark,
+        spark.createDataFrame([(1, "a")], ["id", "name"]),
+        _cfg(table, write_mode="append", idempotent_txn_version=900000000000000),
+    )
+
+    with pytest.raises(WriteNotCommittedError) as excinfo:
+        write_bronze(
+            spark,
+            spark.createDataFrame([(2, "b")], ["id", "name"]),
+            _cfg(table, write_mode="append", idempotent_txn_version=100000000000000),
+        )
+
+    assert "nothing was committed" in str(excinfo.value)
+    assert spark.read.table(_table(table)).count() == 1
+
+
+def test_metrics_are_not_borrowed_from_an_earlier_commit(spark):
+    """#366's second defect: a run that commits nothing must not report the
+    previous commit's row counts."""
+    table = f"bw_metrics_since_{uuid.uuid4().hex[:8]}"
     cfg = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
 
-    with caplog.at_level("DEBUG"):
-        write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+    full = _table(table)
+    version = table_version(spark, full)
 
-    assert spark.read.table(_table(table)).count() == 1
+    # Reading with since_version equal to the current version means "no
+    # commit happened after that point", so there are no metrics to report.
+    assert read_write_metrics(spark, full, "append", since_version=version) == EMPTY_WRITE_METRICS
+    # Without the guard, the earlier commit's numbers come back.
+    assert read_write_metrics(spark, full, "append")["row_count"] == 2
 
 
-def test_idempotent_batch_writes_warns_on_unparseable_batch_id(spark, caplog):
-    table = f"bw_idempotent_bad_batch_id_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="append", batch_id="release-2026-07-28")
+def test_write_not_committed_is_permanent_and_not_retried(spark):
+    """A discarded write is discarded identically on every attempt, so the
+    retry loop must not spend attempts on it."""
+    from bronze_ingest.errors import PERMANENT_ERRORS
 
-    with caplog.at_level("WARNING"):
-        write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
-
-    assert spark.read.table(_table(table)).count() == 1
-    assert any("can't derive a stable txnVersion" in rec.message for rec in caplog.records)
+    assert WriteNotCommittedError in PERMANENT_ERRORS
 
 
 def test_idempotent_batch_writes_disabled_via_config(spark):
-    """Opt-out must be honored - the same batch_id written twice with
+    """Opt-out must be honored - the same version written twice with
     idempotent_batch_writes=False duplicates, as a plain append would."""
     table = f"bw_idempotent_disabled_{uuid.uuid4().hex[:8]}"
-    cfg = _cfg(table, write_mode="append", batch_id="3001", idempotent_batch_writes=False)
+    cfg = _cfg(
+        table,
+        write_mode="append",
+        idempotent_txn_version=3001,
+        idempotent_batch_writes=False,
+    )
 
     df = spark.createDataFrame([(1, "a")], ["id", "name"])
     write_bronze(spark, df, cfg)
@@ -492,3 +712,186 @@ def test_resolve_batch_id_generates_a_distinct_value_when_unset():
     cfg = _cfg("t")
     first = resolve_batch_id(cfg)
     assert first and first.endswith("Z")
+
+
+# ---------------------------------------------------------------------------
+# Change Data Feed (#58)
+# ---------------------------------------------------------------------------
+
+
+def test_cdf_is_enabled_on_a_table_that_configures_nothing(spark):
+    """The default has to reach tables nobody configured, which is exactly the
+    case that used to skip the property path entirely: before #58 the writer
+    returned early unless cluster_by/cluster_by_auto/table_properties were
+    set, so a plain append table got no Delta properties at all."""
+    table = f"bw_cdf_default_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append")
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+    assert props.get("delta.logRetentionDuration") == "interval 30 days"
+    assert props.get("delta.deletedFileRetentionDuration") == "interval 30 days"
+
+
+def test_second_run_against_an_already_configured_table_issues_no_ddl(spark, caplog):
+    """#58's acceptance criterion. The writer logs a warning naming the
+    changed properties whenever it issues the ALTER, so silence on the second
+    run is the observable for 'no DDL' - and it is what keeps CDF from
+    re-ALTERing the table on every single ingestion."""
+    table = f"bw_cdf_idempotent_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    caplog.clear()
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), cfg)
+
+    assert "Table properties changed" not in caplog.text
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "true"
+
+
+def test_existing_table_without_cdf_is_upgraded_without_rewriting_data(spark):
+    """Tables created before this shipped must gain CDF on the next run, and
+    keep their rows - the upgrade is an ALTER, not a rewrite."""
+    table = f"bw_cdf_upgrade_{uuid.uuid4().hex[:8]}"
+    off = _cfg(table, write_mode="append", enable_change_data_feed=False)
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), off)
+    _, before = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in before
+
+    on = _cfg(table, write_mode="append")
+    write_bronze(spark, spark.createDataFrame([(2, "b")], ["id", "name"]), on)
+
+    _, after = _layout(spark, table)
+    assert after.get("delta.enableChangeDataFeed") == "true"
+    assert spark.read.table(_table(table)).count() == 2, "the upgrade must not drop rows"
+
+
+def test_explicitly_disabling_cdf_is_respected_end_to_end(spark):
+    table = f"bw_cdf_off_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="append", enable_change_data_feed=False)
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in props
+
+
+def test_raw_table_property_beats_the_cdf_default_end_to_end(spark):
+    """Precedence is decided in config; this pins that the writer honours it
+    rather than re-adding the default further down."""
+    table = f"bw_cdf_override_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="append",
+        table_properties={"delta.enableChangeDataFeed": "false"},
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert props.get("delta.enableChangeDataFeed") == "false"
+
+
+def test_overwrite_mode_gets_no_cdf_by_default(spark):
+    """docs/bronze_silver_contract.md 2: overwrite emits the whole table as
+    deletes then inserts every run, so the feed carries no incremental
+    information. Silence resolves to off rather than raising, so existing
+    overwrite configs keep working."""
+    table = f"bw_cdf_overwrite_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(table, write_mode="overwrite")
+
+    write_bronze(spark, spark.createDataFrame([(1, "a")], ["id", "name"]), cfg)
+
+    _, props = _layout(spark, table)
+    assert "delta.enableChangeDataFeed" not in props
+
+
+def test_a_refused_merge_creates_no_table_even_though_cdf_wants_one(spark):
+    """The regression #58 introduced and CI caught.
+
+    _ensure_liquid_clustering_and_properties creates the table when it has
+    something to apply. Before CDF was on by default it usually had nothing,
+    returned early, and a merge refused for a bad key left no table behind.
+    With CDF always on it always has something to apply - so unless the
+    refusals run FIRST, a run that is about to be rejected leaves an empty
+    table sitting in the catalog.
+
+    test_merge_refuses_null_merge_keys already asserts the no-table property
+    and is what failed. This one exists to say why, so the ordering in
+    _write_core is not 'simplified' back later."""
+    table = f"bw_cdf_refusal_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        retry_attempts=1,
+    )
+    assert cfg.resolved_table_properties, "precondition: CDF gives this config properties to apply"
+
+    with pytest.raises(NullMergeKeyError):
+        write_bronze(spark, spark.createDataFrame([(1, "a"), (None, "b")], ["id", "name"]), cfg)
+
+    assert not spark.catalog.tableExists(_table(table))
+
+
+# ---- streaming micro-batch: Spark Connect compatibility (#248) ----
+
+
+class _ConnectLikeDataFrame:
+    """Stands in for a Spark Connect DataFrame.
+
+    Everything works except `.rdd`, which raises the way serverless does:
+    `PySparkNotImplementedError: [NOT_IMPLEMENTED] rdd is not implemented.`
+    """
+
+    def __init__(self, empty):
+        self._empty = empty
+
+    @property
+    def rdd(self):
+        raise NotImplementedError("[NOT_IMPLEMENTED] rdd is not implemented.")
+
+    def isEmpty(self):  # noqa: N802 - mirrors the PySpark DataFrame API
+        return self._empty
+
+
+def test_micro_batch_empty_check_does_not_touch_rdd():
+    """#248. `write_bronze_micro_batch` used `micro_batch_df.rdd.isEmpty()`,
+    and `.rdd` does not exist on Spark Connect - which is every compute this
+    project has, since the trial subscription's vCPU quota rules out classic
+    compute. It failed the FIRST micro-batch of every streaming run.
+
+    Nothing caught it: cloudFiles is Databricks-only so the suite cannot
+    start a stream, and local pyspark is classic Spark where `.rdd` works
+    fine. So the regression test is a fake that raises exactly where
+    serverless raises, and needs no stream and no Spark.
+    """
+    cfg = _cfg("micro_batch_rdd_guard", checkpoint_location="/tmp/al248_cp")
+
+    # Empty batch: must return early, and must not consult `.rdd` to find out.
+    write_bronze_micro_batch(None, _ConnectLikeDataFrame(empty=True), 0, cfg)
+
+
+def test_micro_batch_writes_a_non_empty_batch_without_touching_rdd(monkeypatch):
+    """The other half: a non-empty batch must get past the emptiness check
+    and reach the write, still without `.rdd`."""
+    import bronze_ingest.bronze_writer as bw
+
+    seen = {}
+
+    def fake_write_core(spark, df, config, txn_options=None):
+        seen["txn_options"] = txn_options
+        return config.full_table_name
+
+    monkeypatch.setattr(bw, "_write_core", fake_write_core)
+
+    cfg = _cfg("micro_batch_rdd_guard_write", checkpoint_location="/tmp/al248_cp")
+    write_bronze_micro_batch(None, _ConnectLikeDataFrame(empty=False), 7, cfg)
+
+    # Keyed on the checkpoint location and the streaming batch id - the
+    # idempotency this function exists to provide.
+    assert seen["txn_options"] == {"txnAppId": "/tmp/al248_cp", "txnVersion": "7"}

@@ -1,3 +1,10 @@
+> **ARCHIVED — point-in-time record, not maintained.** Moved from
+> `bronze_layer/docs/testing_end_to_end_deployment.md` on 2026-08-06 as
+> part of a documentation refresh; content is unchanged. Names the
+> catalog as it was at the time (`ingredion_en_dev`), later renamed to
+> `ingredion_en` — the run is the record, the names are not current. See
+> `docs/README.md` for what's current.
+
 # End-to-End Deployment Validation — bronze_ingest
 
 ## Purpose

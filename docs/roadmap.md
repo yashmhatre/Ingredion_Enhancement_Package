@@ -1,160 +1,83 @@
-# Roadmap — where the package stands and what is left
+# Roadmap — current sequencing and gates
 
-Audit of all 15 open issues against `dev` @ `1744f5b`, July 2026. Every
-"already done?" claim below was checked by reading the code, not by reading
-the issue.
+This is the single source of truth for sequencing. GitHub issues own the acceptance criteria; this document owns order, dependencies, and approval gates.
 
-This is a living document: phases and ordering change as decisions are made.
-The open GitHub issues are the source of truth for *what* is left; this
-document is the source of truth for *what order* and *why*.
+## Current repo state
 
----
+- Bronze is the only implemented pipeline layer.
+- Batch multi-format is in flight: CSV/Parquet/XML are the active workstream.
+- Silver is not yet a working execution layer.
+- Gold does not exist.
+- Deployment, grants, and environment isolation remain real blockers.
+- A green `dev` branch is not a promotion signal.
 
-## Where we stand
+## Delivery order
 
-The bronze layer's correctness work is essentially complete. In the last
-wave the package closed every known silent-data-loss and silent-corruption
-defect:
+### 1) Finish multi-format Bronze
 
-| Class | Issues | What it was |
-| --- | --- | --- |
-| Silent data loss | #146, #147 | `.jsonl` read as one record; the quality gate's split not being a partition of its input |
-| Silent duplication | #148 | Quarantine keyed on `uuid()`, so a retry inserted beside the original |
-| Meaningless audit data | #149, #156 | `row_count` meaning something different per write mode; streaming rewriting per-run metadata every micro-batch |
-| Unsafe SQL construction | #154, #54 | Config values interpolated into `spark.sql()` unescaped and unvalidated |
-| Structural | #150, #151, #183 | Three copies of the orchestration body; four modules in one file; two competing failure policies |
-| Engineering hygiene | #158, #157, #74, #152, #155 | No lint/types/security/coverage in CI; untested notebook layer; Windows; retry discrimination; driver-collect at scale |
+Primary work: #301, #310–#322.
 
-**Nothing in the open list is stale.** All 15 are genuinely outstanding.
+- CSV: register and validate the reader via #310/#311.
+- Parquet: implement and register the batch reader via #312/#313.
+- XML: sign off on #336/#337 before implementation; then complete #314–#318.
+- Keep this batch-only. Do not widen Auto Loader beyond JSON; #323 stays deferred.
 
-### The one thing that is not on any issue
+### 2) Establish the platform boundary
 
-`dev` is **38 commits ahead of `staging`, and `staging` is identical to
-`main`.** Every fix in the table above exists only on `dev`. Production is
-running the code from before all of it.
+Primary work: #112, #113, #115, #160, #64, #238.
 
-That is the highest-value action available and it is not tracked anywhere,
-which is exactly why it is Phase 0.
+- Provisioning, Key Vault, secret scopes, deploy readiness, and per-environment Volumes are gates before broader product work.
+- #64 cannot be marked complete without governed-tag permissions and workspace proof.
 
----
+### 3) Make Bronze operationally reliable
 
-## Phase 0 — Promote what is already built
+Primary work: #159, #62, #61, #250, #258–#261.
 
-**Nothing new is worth building until the work that exists is running.**
+- Activate the maintenance policy and prove it in practice.
+- Build the operational dashboard and alerting surface over the corrected audit model.
+- Use that audit history for volume anomaly baselines.
+- Add business invariants and cost/freshness signals only after the pipeline is stable.
 
-1. `dev` → `staging`, deploy, smoke-test
-2. `staging` → `main`, deploy to prod
+### 4) Build the deterministic Bronze→Silver path
 
-Needs a consolidated release note, because the wave carries behaviour
-changes that will look like breakages to whoever operates the job:
+Primary work: #205, #298, #109, #265, #255.
 
-- `audit_schema_name` / `registry_schema_name` now default to `schema_name`
-  instead of the literal `"bronze"` (#54)
-- A streaming source reading `.jsonl` with `multiLine=true` now **fails**
-  where it previously truncated silently (#146)
-- Config load now rejects identifiers outside `[A-Za-z_][A-Za-z0-9_]*`, and
-  `reader_options` keys outside the allowlist (#154)
-- `retry_attempts` below 1, negative delays, and `streaming` + `overwrite`
-  now raise at config load (#54)
-- Quarantine rows written before this wave keep UUID `_quarantine_id`s and
-  will not deduplicate against new content-hash ids (#148)
+- Use the now-closed #324 storage boundary as the common foundation.
+- Keep Silver deterministic and lossless; Bronze retains source versions, while Silver owns the standardized transformations and rules.
+- Do not move Silver-owned value/range logic into Bronze.
 
-**Exit criteria:** prod runs a real ingestion on the new code, with correct
-audit and registry rows.
+### 5) Product and serving layers
 
----
+Primary work: #213, #206, #209, #228, #210, #211.
 
-## Phase 1 — Finish what is in flight
+- #228 is the gate for Genie and the executive dashboard.
+- Keep operational dashboard #62 separate from executive dashboard #211.
+- Autonomous remediation stays within the named, signed guardrails; the eligible fix classes start empty and expand only with approval.
 
-| Issue | Status |
-| --- | --- |
-| #183 — one failure → retry-count → quarantine policy | PR #184 open |
+### 6) Self-service and public surface
 
----
+Primary work: #266–#269.
 
-## Phase 2 — Decide before building
-
-Two issues are **decisions, not tasks**. Both are cheap to answer now and
-expensive to answer after the thing they govern has been built.
-
-### #163 — Buy-vs-build checkpoint (DQX, Lakeflow Declarative Pipelines)
-
-Gates **#109**, the single largest remaining item. If Databricks Labs DQX
-covers the silver-layer rule engine, building one is a straight loss. Answer
-this before #109 starts, not after.
-
-### #162 — Define the Bronze→Silver contract
-
-The medallion is one layer deep. Gates **#58** (Change Data Feed is listed
-as a silver prerequisite — enabling it "by default" is only justified if
-silver actually consumes it), **#109**, and the shape of anything downstream.
-
-Building more bronze without the contract risks building the wrong bronze.
-
----
-
-## Phase 3 — Provisioning, and the deploy path
-
-A chain, in strict order. Everything here is Azure/Databricks work rather
-than package work.
-
-```
-#112  Phase B provisioning (staging + prod grants, Key Vault, verification)
-  ├── #113  CI/CD: deploy the bundle from GitHub Actions via OIDC
-  ├── #115  Databricks secret scopes for source credentials
-  └── #160  Per-environment Volumes
-```
-
-**#113 is the one with compounding value.** Phase 0 exists because
-promotion is manual and drifted 38 commits; automated deployment is the fix
-for the *cause*, not just this instance.
-
-**#160 closes a gap no grant can close.** All three environments read
-subpaths of one Volume, and Unity Catalog grants `READ VOLUME` at volume
-granularity — there is no sub-path grant. Any principal that can read its
-own subpath can read `PROD/Raw/`. Tables, audit and registry are isolated by
-schema; source files are not. This is a naming convention presented as a
-boundary.
-
----
-
-## Phase 4 — Operational maturity
-
-Bronze is now *correct*. This phase makes it *operable*.
-
-| Issue | Why now |
-| --- | --- |
-| **#159** — lifecycle: OPTIMIZE, VACUUM, retention, small files | No table this package creates has any lifecycle policy. Directory ingestion writes one small file per source file, so the small-file problem grows linearly with every run. Costs compound silently |
-| **#62** — observability: dashboard + SQL alerts over the audit table | **Newly worth doing.** #149, #156 and #148 just made the audit trail mean one consistent thing; before that, a dashboard would have visualised numbers that were not comparable across write modes |
-| **#61** — volume anomaly detection from audit-trail baselines | Depends on #62's baseline work. Build after, not alongside |
-
----
-
-## Phase 5 — Features and interoperability
-
-Gated on the Phase 2 decisions and, for the Unity Catalog ones, on a real
-workspace from Phase 3.
-
-| Issue | Gate | Notes |
-| --- | --- | --- |
-| **#84** — sha2 row-hash as a merge-key strategy | none | **Cheapest item on the board.** `sql_utils.row_content_hash` already exists and is tested; it is currently used only as a window tie-break. This needs exporting and wiring as a `merge_keys` strategy |
-| **#58** — Change Data Feed on by default | #162 | "By default" is a decision about what silver needs, not a bronze preference |
-| **#109** — silver-layer business-rule quality engine | #163, #162 | The largest remaining item. Do not start before the buy-vs-build answer |
-| **#64** — Unity Catalog TAGS | #112 | The COMMENT half shipped. Tags are Databricks-Runtime-only and raise `ParseException` on OSS Delta, so they cannot be validated by the local suite at all — this needs a real workspace or it ships unverified. The surviving item from discussion #98 |
-| **#65** — Delta UniForm / Iceberg interop | — | **Recommend parking.** No stated consumer. Speculative until an external engine actually needs to read these tables |
-
----
+- Only proceed after one source can traverse the implemented Bronze→Silver path.
+- Park #65 and #323 until a real consumer exists.
 
 ## Suggested order
 
-```
-Phase 0   promote dev → staging → main            ← do first, blocks nothing
-Phase 1   #183 (PR #184 open)
-Phase 2   #163, #162                              ← decisions; cheap now
-Phase 3   #112 → #113, #115, #160                 ← Azure work
-Phase 4   #159, #62 → #61
-Phase 5   #84 (quick), then #58 / #109 / #64 per Phase 2 and 3 outcomes
-```
+1. #301 and #310–#322, with #336/#337 signed before XML implementation
+2. Resolve #256’s rescued-data contract and record one real drift run
+3. #112 → #113/#115/#160 → #64/#238
+4. #159 → #62 → #61, then #250 and #258–#261
+5. #298/#205/#109 → #265/#255
+6. #213 → #206/#209 and #228 → #210/#211
+7. #266 → #267/#268 → #269
+8. #65 and #323 stay deferred until a named consumer exists
 
-Phases 2 and 3 can run in parallel — one is a decision, the other is
-provisioning, and neither blocks the other.
+## Important constraints
+
+- Code wins over issue text when the repo state and the issue description diverge.
+- The repo remains Bronze-first; Silver and Gold are not yet working layers.
+- Promotion from `dev` to `staging` or `main` remains a separate, named Project Lead decision.
+
+---
+
+This is the master roadmap. Detailed one-session backlog work should live in issue-level tasks, not as a second roadmap file.

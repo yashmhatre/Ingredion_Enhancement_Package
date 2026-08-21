@@ -1,9 +1,9 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Bronze JSON Directory Ingestion - Job Entrypoint
-# MAGIC Discovers all .json files in `source_dir` and loads each into its own
+# MAGIC # Bronze Directory Ingestion - Job Entrypoint
+# MAGIC Discovers files of the selected `source_format` and loads each into its own
 # MAGIC bronze table, named from the filename via `table_name_template`
-# MAGIC (e.g. orders.json -> orders_bronze). Meant to be run as a scheduled
+# MAGIC (e.g. orders.csv -> orders_bronze). Meant to be run as a scheduled
 # MAGIC Databricks Job task - all parameters come from job/task parameters.
 
 # COMMAND ----------
@@ -18,16 +18,18 @@
 # the same wheel into the session first:
 #   %pip install /Volumes/<catalog>/<schema>/<volume>/bronze_ingest-<version>-py3-none-any.whl
 
-from bronze_ingest import get_logger, ingest_directory_to_bronze
+from bronze_ingest import approved_formats, get_logger, ingest_directory_to_bronze
 
 logger = get_logger()
 
 # COMMAND ----------
 
-dbutils.widgets.text("source_dir", "", "Directory containing JSON files")
+dbutils.widgets.text("source_dir", "", "Directory containing source files")
 dbutils.widgets.text("catalog", "workspace", "Catalog")
 dbutils.widgets.text("schema_name", "default", "Target schema")
 dbutils.widgets.text("table_name_template", "{filename}_bronze", "Table name template")
+dbutils.widgets.dropdown("source_format", "json", list(approved_formats()), "Source format")
+dbutils.widgets.text("xml_row_tag", "", "XML row tag (required for XML)")
 dbutils.widgets.dropdown("write_mode", "append", ["append", "overwrite", "merge"], "Write mode")
 dbutils.widgets.dropdown("multiline", "true", ["true", "false"], "Multiline JSON")
 dbutils.widgets.text("max_files", "", "Max files (blank = no limit)")
@@ -84,15 +86,22 @@ import json as _json
 per_file_raw = dbutils.widgets.get("per_file_config_json").strip()
 per_file_config = _json.loads(per_file_raw) if per_file_raw else None
 
-id_overrides = {}
-for key in ("batch_id", "run_id", "audit_schema_name", "registry_schema_name"):
+config_overrides = {}
+for key in (
+    "batch_id",
+    "run_id",
+    "audit_schema_name",
+    "registry_schema_name",
+    "xml_row_tag",
+):
     val = dbutils.widgets.get(key).strip()
     if val:
-        id_overrides[key] = val
+        config_overrides[key] = val
 
 results = ingest_directory_to_bronze(
     spark,
     source_dir=source_dir,
+    source_format=dbutils.widgets.get("source_format").strip(),
     table_name_template=dbutils.widgets.get("table_name_template").strip(),
     max_files=max_files,
     stop_on_error=dbutils.widgets.get("stop_on_error") == "true",
@@ -103,7 +112,7 @@ results = ingest_directory_to_bronze(
     multiline=dbutils.widgets.get("multiline") == "true",
     required_columns=required_columns,
     fail_on_quality_error=dbutils.widgets.get("fail_on_quality_error") == "true",
-    **id_overrides,
+    **config_overrides,
 )
 
 # COMMAND ----------
@@ -112,7 +121,11 @@ results = ingest_directory_to_bronze(
 # Reporting a failure here would page someone because a watched directory
 # happened to be empty.
 if not results:
-    logger.info("Nothing to ingest - no JSON files or subfolders found in %s.", source_dir)
+    logger.info(
+        "Nothing to ingest - no %s files or subfolders found in %s.",
+        dbutils.widgets.get("source_format").strip(),
+        source_dir,
+    )
     dbutils.notebook.exit("SUCCESS: nothing to ingest (source directory is empty)")
 
 # Built from an EXPLICIT schema rather than inferred, which is what removed
@@ -170,8 +183,15 @@ logger.info(
 # folder with no JSON in it) is deliberately not a failure: there is no bad
 # data and nothing for a human to fix, so failing the task on it would fire
 # alerts for a non-event and bury genuine failures in the same run.
+#
+# `raise`, NOT dbutils.notebook.exit("FAILED: ...") (#247). exit() hands a
+# STRING back to the caller and always exits 0, so "alerting/retries kick in"
+# above was never true: the Jobs UI marked a run with failed units Succeeded,
+# and nothing keyed on task failure fired. Only an uncaught exception marks a
+# notebook task Failed. The summary table above has already been displayed, so
+# the per-unit detail is still in the run output either way.
 if failed:
-    dbutils.notebook.exit(
+    raise RuntimeError(
         f"FAILED: {len(failed)}/{len(results)} unit(s) failed: {[f['file'] for f in failed]}"
     )
 

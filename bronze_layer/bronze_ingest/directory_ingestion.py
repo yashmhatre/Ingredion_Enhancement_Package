@@ -29,21 +29,23 @@ this module used to define are re-exported below, so no caller moves.
 import os
 from typing import Any, Dict, List, Optional
 
+from .audit import buffered_audit_writes
 from .config import IngestionConfig
 from .fs import (
     RetryState,
     archive_files_parallel,
     archive_ingested_file,
     list_json_files,
+    list_source_files,
     list_subfolders,
     local_path_from_uri,
     move_file,
     move_file_direct,
     retry_state_path,
 )
-from .json_reader import read_json
 from .logging_utils import logger
 from .naming import build_table_name, sanitize_table_name
+from .readers import read_source
 
 # Re-exported for backwards compatibility. `sanitize_table_name` and
 # `build_table_name` are in the package's `__all__`, and the CI wheel check
@@ -163,21 +165,29 @@ def _ingest_folder_as_table(
     from .pipeline import BronzeIngestion
 
     folder_name = os.path.basename(folder_path.rstrip("/"))
-    inner_files = list_json_files(spark, folder_path)
+    # `shared_config` is `item_config` from the caller: `shared` (base_config +
+    # config_overrides + the explicit `source_format` param, see
+    # `ingest_directory_to_bronze`) with any `per_file_config` override for
+    # this folder layered on top - the same precedence discovery at line 363
+    # already resolved. Falls back to "json" (IngestionConfig's own default)
+    # only if `source_format` is absent from both, so this never disagrees
+    # with what IngestionConfig will read the files as below.
+    source_format = shared_config.get("source_format", "json")
+    inner_files = list_source_files(spark, folder_path, source_format=source_format)
 
     if not inner_files:
         # A folder with nothing to ingest is not an error - there is no bad
         # data, no unreadable file, and nothing a human needs to fix. Marking
         # it "failed" made the job task exit non-zero and fire alerting for a
-        # directory that simply had no JSON in it, which also masked genuine
-        # failures in the same run. Reported as its own status so it is
-        # neither counted as a success nor treated as a failure.
-        logger.warning("Folder %s contains no JSON files - skipping.", folder_path)
+        # directory that simply had no matching files in it, which also
+        # masked genuine failures in the same run. Reported as its own status
+        # so it is neither counted as a success nor treated as a failure.
+        logger.warning("Folder %s contains no %s files - skipping.", folder_path, source_format)
         return {
             "file": folder_path,
             "table": table,
             "status": "skipped",
-            "reason": "no JSON files in folder",
+            "reason": f"no {source_format} files in folder",
         }
 
     validated_dataframes = []
@@ -190,7 +200,7 @@ def _ingest_folder_as_table(
             cfg = IngestionConfig.from_dict(
                 {**shared_config, "source_path": file_path, "table": table}
             )
-            df = read_json(spark, cfg)
+            df = read_source(spark, cfg)
             df.count()  # eagerly validate this file is actually readable,
             # without persisting - files stay in place, safe to
             # re-read again later at final write time
@@ -214,6 +224,23 @@ def _ingest_folder_as_table(
             )
 
     retry_state.flush()
+
+    # XML document integrity is atomic at the folder ingestion-unit boundary:
+    # one malformed member invalidates the whole attempt. Other formats retain
+    # their established per-file isolation semantics.
+    if source_format == "xml" and file_results:
+        logger.error(
+            "At least one XML file in folder %s failed validation - no table will be "
+            "written and no successfully validated sibling will be archived.",
+            folder_path,
+        )
+        return {
+            "file": folder_path,
+            "table": table,
+            "status": "failed",
+            "error": "one or more XML documents failed validation",
+            "file_results": file_results,
+        }
 
     if not validated_dataframes:
         logger.error("All files in folder %s failed to read - no table written.", folder_path)
@@ -280,16 +307,20 @@ def ingest_directory_to_bronze(
     allow_overwrite_in_directory_mode: bool = False,
     base_config: Optional[Dict[str, Any]] = None,
     per_file_config: Optional[Dict[str, Dict[str, Any]]] = None,
+    source_format: Optional[str] = None,
     **config_overrides,
 ) -> List[Dict[str, Any]]:
     """
-    Discovers JSON files in source_dir and loads each into its own bronze
-    table named via table_name_template.
+    Discovers `source_format` files in source_dir and loads each into its
+    own bronze table named via table_name_template. Discovery and reading
+    always agree on format (#307): both are driven by the one resolved
+    `source_format` value below, never a JSON-only assumption.
 
     Args:
         spark: active SparkSession.
-        source_dir: directory containing the .json files (any Spark-readable
-            path: /Volumes/..., dbfs:/, abfss://, s3://, gs://, file:/...).
+        source_dir: directory containing the source files (any
+            Spark-readable path: /Volumes/..., dbfs:/, abfss://, s3://,
+            gs://, file:/...).
         table_name_template: "{filename}_bronze" (default) or
             "bronze_{filename}" - anything containing '{filename}'.
         max_files: optionally cap how many files to process (e.g. 20).
@@ -309,6 +340,23 @@ def ingest_directory_to_bronze(
             (e.g. a folder that's always fully repopulated before a run).
         base_config: optional dict of IngestionConfig fields shared by every
             file (catalog, schema_name, flatten_mode, required_columns, ...).
+        per_file_config: per-file IngestionConfig overrides, keyed by
+            discovered file/folder basename.
+        source_format: which format to discover and read (must be one of
+            `formats.supported_formats()`; "json" if left unresolved by
+            either route below). Lets a caller set the format without
+            building a full `base_config`/`config_overrides` dict for it.
+
+            Precedence when `source_format` is ALSO present in `base_config`
+            (it cannot collide with `config_overrides` - a keyword named
+            `source_format` binds to this parameter, not to
+            `**config_overrides`): this explicit parameter wins whenever it
+            is not None, overriding `base_config`'s value - the same
+            "explicit kwarg beats base_config" precedence `config_overrides`
+            already has for every other field, so the two routes are never
+            silently followed at once. Leave this None to let
+            `base_config`'s `source_format` (or the IngestionConfig default
+            of "json") apply unchanged.
         **config_overrides: same as base_config, as keyword args (take
             precedence over base_config). 'source_path' and 'table' are set
             per-file and cannot be overridden here.
@@ -320,9 +368,10 @@ def ingest_directory_to_bronze(
          "rows" | "error" | "reason"}
 
         "skipped" means there was nothing to ingest and nothing to fix -
-        currently only a folder containing no JSON files. Callers deciding
-        whether to fail a job task should test for "failed" explicitly
-        rather than treating anything that isn't "success" as a failure.
+        currently only a folder containing no files matching the resolved
+        `source_format`. Callers deciding whether to fail a job task should
+        test for "failed" explicitly rather than treating anything that
+        isn't "success" as a failure.
     """
     # Imported here to avoid a circular import (pipeline imports nothing from
     # this module, but keeping the dependency one-directional at import time).
@@ -330,6 +379,13 @@ def ingest_directory_to_bronze(
 
     shared: Dict[str, Any] = dict(base_config or {})
     shared.update(config_overrides)
+    # The explicit `source_format` parameter wins over a `source_format` key
+    # set via `base_config` when both are given - see the precedence note in
+    # the docstring above. Left alone (None), `shared["source_format"]`
+    # (from base_config, if set) or IngestionConfig's own "json" default
+    # applies, unchanged from before this parameter existed.
+    if source_format is not None:
+        shared["source_format"] = source_format
     for forbidden in ("source_path", "table"):
         if forbidden in shared:
             raise ValueError(
@@ -359,16 +415,28 @@ def ingest_directory_to_bronze(
             "full-refresh-per-run semantics."
         )
 
-    files = list_json_files(spark, source_dir, max_files=max_files)
+    # Resolved once here and reused unchanged by every per-unit IngestionConfig
+    # built below (`shared` is threaded into `item_config` in the loop, and
+    # into `_ingest_folder_as_table`'s `shared_config`), so discovery and the
+    # reader dispatch in `readers.read_source` never disagree on format.
+    effective_source_format = shared.get("source_format", "json")
+    files = list_source_files(
+        spark, source_dir, source_format=effective_source_format, max_files=max_files
+    )
     subfolders = list_subfolders(spark, source_dir)
     logger.info(
-        "Discovered %d JSON file(s) and %d subfolder(s) in %s",
+        "Discovered %d %s file(s) and %d subfolder(s) in %s",
         len(files),
+        effective_source_format,
         len(subfolders),
         source_dir,
     )
     if not files and not subfolders:
-        logger.warning("No .json files or subfolders found in %s - nothing to do.", source_dir)
+        logger.warning(
+            "No %s files or subfolders found in %s - nothing to do.",
+            effective_source_format,
+            source_dir,
+        )
         return []
 
     # Resolve table names up front and de-duplicate collisions deterministically
@@ -420,79 +488,87 @@ def ingest_directory_to_bronze(
     # read-modify-write of the entire map per file (#151).
     retry_state = RetryState.load(source_dir)
 
-    for item in plan:
-        table = item["table"]
-        overrides = per_file_config.get(os.path.basename(item["source"].rstrip("/")), {})
-        item_config = {**shared, **overrides}
-        if overrides:
-            logger.info(
-                "Applying per-file config override for %s: %s",
-                item["source"],
-                sorted(overrides),
-            )
-
-        if item["type"] == "file":
-            file_path = item["source"]
-            logger.info("Ingesting %s -> %s", file_path, table)
-            try:
-                cfg = IngestionConfig.from_dict(
-                    {**item_config, "source_path": file_path, "table": table}
+    # Same shape as RetryState above, one layer down (#159). Each unit below
+    # opens its own audited_run, so an unbuffered 50-file directory wrote 50
+    # single-row commits - measured as one file per run on the deployed audit
+    # table. This collects them and writes one commit per audit table on exit,
+    # including when the loop raises: the flush is in a finally block, so a run
+    # that dies halfway still records the units that completed.
+    with buffered_audit_writes(spark):
+        for item in plan:
+            table = item["table"]
+            overrides = per_file_config.get(os.path.basename(item["source"].rstrip("/")), {})
+            item_config = {**shared, **overrides}
+            if overrides:
+                logger.info(
+                    "Applying per-file config override for %s: %s",
+                    item["source"],
+                    sorted(overrides),
                 )
-                summary = BronzeIngestion(spark, cfg).run()
 
-                retry_state.clear(file_path)
-
-                move_result = archive_ingested_file(source_dir, file_path)
-                results.append(
-                    {
-                        "file": file_path,
-                        "table": summary["table"],
-                        "status": "success",
-                        "rows": summary["row_count"],
-                        "quarantined_rows": summary.get("quarantined_row_count", 0),
-                        **move_result,
-                    }
-                )
-            except Exception as exc:
-                logger.error("Failed to ingest %s: %s", file_path, exc)
-                if stop_on_error:
-                    raise
-
-                results.append(
-                    _handle_unit_failure(
-                        source_dir=source_dir,
-                        file_path=file_path,
-                        exc=exc,
-                        attempts=retry_state.increment(file_path),
-                        max_ingestion_retries=max_ingestion_retries,
-                        retry_state=retry_state,
-                        extra_fields={"table": table},
+            if item["type"] == "file":
+                file_path = item["source"]
+                logger.info("Ingesting %s -> %s", file_path, table)
+                try:
+                    cfg = IngestionConfig.from_dict(
+                        {**item_config, "source_path": file_path, "table": table}
                     )
+                    summary = BronzeIngestion(spark, cfg).run()
+
+                    retry_state.clear(file_path)
+
+                    move_result = archive_ingested_file(source_dir, file_path)
+                    results.append(
+                        {
+                            "file": file_path,
+                            "table": summary["table"],
+                            "status": "success",
+                            "rows": summary["row_count"],
+                            "quarantined_rows": summary.get("quarantined_row_count", 0),
+                            **move_result,
+                        }
+                    )
+                except Exception as exc:
+                    logger.error("Failed to ingest %s: %s", file_path, exc)
+                    if stop_on_error:
+                        raise
+
+                    results.append(
+                        _handle_unit_failure(
+                            source_dir=source_dir,
+                            file_path=file_path,
+                            exc=exc,
+                            attempts=retry_state.increment(file_path),
+                            max_ingestion_retries=max_ingestion_retries,
+                            retry_state=retry_state,
+                            extra_fields={"table": table},
+                        )
+                    )
+            elif item["type"] == "folder":
+                folder_path = item["source"]
+                folder_result = _ingest_folder_as_table(
+                    spark,
+                    source_dir,
+                    folder_path,
+                    table,
+                    item_config,
+                    stop_on_error=stop_on_error,
+                    max_ingestion_retries=max_ingestion_retries,
                 )
-        elif item["type"] == "folder":
-            folder_path = item["source"]
-            folder_result = _ingest_folder_as_table(
-                spark,
-                source_dir,
-                folder_path,
-                table,
-                item_config,
-                stop_on_error=stop_on_error,
-                max_ingestion_retries=max_ingestion_retries,
-            )
-            results.append(folder_result)
+                results.append(folder_result)
 
-    # One write for the whole run, and none at all if nothing changed.
-    retry_state.flush()
+        # One write for the whole run, and none at all if nothing changed.
+        retry_state.flush()
 
-    ok = sum(1 for r in results if r["status"] == "success")
-    failed = sum(1 for r in results if r["status"] == "failed")
-    skipped = sum(1 for r in results if r["status"] == "skipped")
-    logger.info(
-        "Directory ingestion finished: %d succeeded, %d failed, %d skipped (of %d unit(s))",
-        ok,
-        failed,
-        skipped,
-        len(results),
-    )
+        ok = sum(1 for r in results if r["status"] == "success")
+        failed = sum(1 for r in results if r["status"] == "failed")
+        skipped = sum(1 for r in results if r["status"] == "skipped")
+        logger.info(
+            "Directory ingestion finished: %d succeeded, %d failed, %d skipped (of %d unit(s))",
+            ok,
+            failed,
+            skipped,
+            len(results),
+        )
+
     return results

@@ -2,7 +2,7 @@
 Top-level orchestrator: BronzeIngestion.
 
 This is the single entry point most users need. It wires together:
-  json_reader.read_json -> add audit columns -> bronze_writer.write_bronze
+  readers.read_source -> add audit columns -> bronze_writer.write_bronze
 """
 
 from typing import Any, Dict, Optional
@@ -12,14 +12,19 @@ from .bronze_writer import (
     add_audit_columns,
     read_write_metrics,
     resolve_batch_id,
+    table_version,
     write_bronze,
     write_bronze_micro_batch,
 )
-from .catalog_metadata import apply_catalog_metadata
+from .catalog_metadata import (
+    apply_catalog_metadata,
+    apply_catalog_tags,
+    summarise_tag_outcome,
+)
 from .config import IngestionConfig
-from .json_reader import read_json
 from .logging_utils import logger
 from .quality import enforce_quality, write_quarantine
+from .readers import read_source
 from .schema_registry import record_schema
 from .streaming_reader import assert_no_silent_truncation, get_trigger_kwargs, read_json_stream
 
@@ -48,7 +53,7 @@ class BronzeIngestion:
 
     # ---- core run ----
     def read(self):
-        return read_json(self.spark, self.config)
+        return read_source(self.spark, self.config)
 
     def transform(self, df):
         df = add_audit_columns(df, self.config)
@@ -65,6 +70,7 @@ class BronzeIngestion:
         build_summary=True,
         stream_batch_id=None,
         record_metadata=True,
+        schema_audit=None,
     ):
         """
         The single ingestion sequence, shared by all three entry points:
@@ -105,6 +111,15 @@ class BronzeIngestion:
             are per-STREAM concerns that were being re-executed per batch -
             2,880 times a day on a 30-second trigger (#156). run_streaming
             does them once at stream start instead.
+
+        schema_audit: schema fields already resolved by the CALLER, to stamp
+            onto this run's audit row. This is how streaming gets its drift
+            onto the audit trail at all: record_metadata=False means this
+            method resolves nothing itself, so run_streaming resolves it once
+            per stream and hands it to exactly one micro-batch (#256).
+            Stamped before the read, so a batch that fails still carries it -
+            a run that drifted and then broke is precisely the one worth
+            being able to find.
         """
         with audited_run(
             self.spark,
@@ -112,6 +127,9 @@ class BronzeIngestion:
             source_path=self.config.source_path,
             stream_batch_id=stream_batch_id,
         ) as audit:
+            if schema_audit:
+                audit.update(schema_audit)
+
             logger.info(start_message, self.config.full_table_name)
 
             try:
@@ -140,6 +158,10 @@ class BronzeIngestion:
                 self.config,
             )
 
+            # Read before the write so the metrics below can prove the commit
+            # they describe is this run's and not an earlier one's (#366).
+            version_before = table_version(self.spark, self.config.full_table_name)
+
             try:
                 table_name = writer(final_df)
             except Exception as exc:
@@ -151,17 +173,29 @@ class BronzeIngestion:
             # quality gate to produce a number Delta already had, and under
             # merge it was the wrong number anyway.
             metrics = read_write_metrics(
-                self.spark, table_name or self.config.full_table_name, self.config.write_mode
+                self.spark,
+                table_name or self.config.full_table_name,
+                self.config.write_mode,
+                since_version=version_before,
             )
             audit.update(metrics)
             audit["quarantined_row_count"] = bad_count
             row_count = metrics["row_count"]
 
             if record_metadata:
-                fingerprint, schema_changed = record_schema(self.spark, self.config, final_df)
+                fingerprint, schema_changed, schema_drift = record_schema(
+                    self.spark, self.config, final_df
+                )
                 audit["schema_fingerprint"] = fingerprint
                 audit["schema_changed"] = schema_changed
+                audit["schema_drift_json"] = schema_drift
                 apply_catalog_metadata(self.spark, self.config)
+                # Tags travel with comments: both are catalog documentation
+                # applied after a successful write, both diff before writing,
+                # and both are non-fatal. Governed keys are refused here -
+                # they reach the catalog only via apply_reviewed_tags (#64).
+                tag_outcome = apply_catalog_tags(self.spark, self.config)
+                audit.update(summarise_tag_outcome(tag_outcome))
 
             logger.info(
                 "Wrote %s row(s) to %s (%d quarantined)",
@@ -264,10 +298,41 @@ class BronzeIngestion:
         # Deliberately not fatal: a metadata failure must not stop a stream
         # that is otherwise writing correctly, matching the never-raise
         # contract these modules already have.
-        record_schema(self.spark, self.config, stream_df)
+        fingerprint, schema_changed, schema_drift = record_schema(
+            self.spark, self.config, stream_df
+        )
         apply_catalog_metadata(self.spark, self.config)
+        apply_catalog_tags(self.spark, self.config)
+
+        # #256: this return value used to be discarded, and that was the whole
+        # bug. record_schema wrote the drift to _schema_registry and told us
+        # about it, and we dropped it on the floor - so `schema_changed` and
+        # `schema_drift_json` were NULL on every streaming audit row that has
+        # ever been written. A bronze table could gain a column, from a run
+        # reporting SUCCESS, with nothing in the audit trail marking it.
+        # Confirmed against dev under #248, not theorised.
+        #
+        # Stamped on exactly ONE micro-batch, not all of them. The schema is
+        # resolved once per stream, so N batches carrying schema_changed=True
+        # would report one drift as N drifts - and `schema_changed` exists
+        # precisely so a dashboard can COUNT drift (audit.py). One row per
+        # actual event is the honest shape.
+        #
+        # Known limit: a run that drifts and then processes no batches records
+        # nothing here, because an empty micro-batch is skipped before
+        # audited_run opens. The registry still has it. Fixing that needs an
+        # audit row with no batch behind it, which is a bigger change than
+        # this issue.
+        pending_schema_audit: Optional[Dict[str, Any]] = {
+            "schema_fingerprint": fingerprint,
+            "schema_changed": schema_changed,
+            "schema_drift_json": schema_drift,
+        }
 
         def _process_batch(micro_batch_df, batch_id):
+            nonlocal pending_schema_audit
+            schema_audit, pending_schema_audit = pending_schema_audit, None
+
             # #174's truncation guard runs as part of "reading" this
             # micro-batch, rather than as a separate step before the shared
             # body. That placement is what preserves both of its properties
@@ -289,6 +354,7 @@ class BronzeIngestion:
                 build_summary=False,
                 stream_batch_id=batch_id,
                 record_metadata=False,
+                schema_audit=schema_audit,
             )
 
         query = (
@@ -304,14 +370,14 @@ class BronzeIngestion:
         return query
 
 
-def ingest_json_to_bronze(
+def ingest_to_bronze(
     spark, config: Optional[Dict[str, Any]] = None, config_path: Optional[str] = None, **kwargs
 ) -> Dict[str, Any]:
     """
     One-shot convenience function for the simplest plug-and-play usage:
 
-        from bronze_ingest import ingest_json_to_bronze
-        ingest_json_to_bronze(
+        from bronze_ingest import ingest_to_bronze
+        ingest_to_bronze(
             spark,
             source_path="abfss://raw@mystorage.dfs.core.windows.net/orders/",
             schema_name="bronze",
@@ -329,3 +395,8 @@ def ingest_json_to_bronze(
     if cfg.ingestion_mode == "streaming":
         return job.run_streaming()
     return job.run()
+
+
+# Compatibility alias for every existing JSON caller. A direct alias, not a
+# wrapper, so introspection and future behavior cannot diverge between names.
+ingest_json_to_bronze = ingest_to_bronze

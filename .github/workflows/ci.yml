@@ -335,7 +335,7 @@ jobs:
           # Notebooks ARE watched here, unlike the test job. They are the
           # deployed entrypoints, and #157 records that both known live
           # defects were in that layer precisely because nothing looked at it.
-          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^\.github/workflows/ci\.yml$'
+          WATCHED: '^bronze_layer/(bronze_ingest|tests|notebooks)/|^bronze_layer/(setup\.py|pyproject\.toml)$|^scripts/(hooks/|configure_agent_skills\.py$|generate_codex_agents\.py$|test_configure_agent_skills\.py$|test_generate_codex_agents\.py$)|^\.codex/|^\.github/workflows/ci\.yml$'
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -381,6 +381,38 @@ jobs:
           # call-arg silently stops working.
           pip install -e ".[dev]"
 
+      # Orchestrator write-lockdown hook. Deliberately ungated: it guards who
+      # may edit implementation code, it needs no dependencies, and it runs in
+      # about a second. The first version of this hook shipped failing open on
+      # every Windows-shaped path and nothing caught it, because CI's pytest
+      # suite runs under bronze_layer/ and never sees scripts/.
+      - name: hook lockdown tests
+        if: '!cancelled()'
+        run: python3 scripts/hooks/test_block_orchestrator_writes.py
+
+      # Path ownership is the *enforcing* half of the write-lockdown rules.
+      # The PreToolUse hook above can only ever be advisory: it lives inside
+      # one vendor's agent runtime, matches an agent_type that exists nowhere
+      # else, and silently never loads when a session starts from the wrong
+      # directory -- which is exactly what happened on the primary dev machine
+      # for the hook's entire life. This check runs on the commit, so it binds
+      # Claude, Copilot and a human editing by hand alike.
+      - name: path ownership tests
+        if: '!cancelled()'
+        run: python3 scripts/test_check_path_ownership.py
+
+      - name: agent skill alias tests
+        if: '!cancelled()'
+        run: python3 scripts/test_configure_agent_skills.py
+
+      - name: Codex agent renderer tests
+        if: '!cancelled()'
+        run: python3 scripts/test_generate_codex_agents.py
+
+      - name: path ownership check
+        if: "!cancelled() && github.event_name == 'pull_request'"
+        run: python3 scripts/check_path_ownership.py --base "origin/${{ github.base_ref }}"
+
       # Each gate runs even if an earlier one failed, so one PR gets the full
       # picture instead of one finding per push.
       - name: ruff format
@@ -411,41 +443,38 @@ jobs:
         working-directory: bronze_layer
         run: pip-audit --progress-spinner off --skip-editable
 
-      # Catches malformed YAML, unresolved ${var.*} references and notebook
-      # paths that do not exist - the failure class of #118 and #122, both of
-      # which reached `dev` and were found only by an authenticated deploy
-      # (#157). Cheap to run here, expensive to find there.
+      # There is deliberately NO `databricks bundle validate` step here (#244).
       #
-      # `validate` is a local operation: it resolves the bundle and checks its
-      # shape. It does not need a workspace, so the required variables are
-      # supplied with placeholder values rather than credentials - the point
-      # is that every reference RESOLVES, not that the values are real.
+      # One lived here, non-blocking, on the premise that "validate is a local
+      # operation - it resolves the bundle and checks its shape, so it does not
+      # need a workspace." That premise is false, and the plan attached to it
+      # ("if it proves stable across a few runs, make it a real gate") could
+      # never be reached: it failed on 100% of runs, for auth, never once for a
+      # bundle error.
       #
-      # Non-blocking on purpose, for now. Newer CLI versions have at times
-      # required authentication even for `validate`, and a gate that fails for
-      # a reason unrelated to the change is a gate people learn to ignore. If
-      # it proves stable across a few runs, drop continue-on-error and make it
-      # a real gate - that is the intended end state, not this.
-      - name: Install Databricks CLI
-        if: '!cancelled() && steps.changes.outputs.run == ''true'''
-        uses: databricks/setup-cli@main
-
-      - name: databricks bundle validate
-        id: bundle_validate
-        if: '!cancelled() && steps.changes.outputs.run == ''true'''
-        continue-on-error: true
-        run: |
-          databricks bundle validate -t dev \
-            --var="notification_email=ci@example.invalid" \
-            --var="run_as_service_principal=00000000-0000-0000-0000-000000000000"
-
-      - name: Note bundle validate outcome
-        if: '!cancelled() && steps.changes.outputs.run == ''true'''
-        run: |
-          if [ "${{ steps.bundle_validate.outcome }}" = "success" ]; then
-            echo "::notice::bundle validate passed"
-          else
-            echo "::warning::bundle validate did not pass. It is non-blocking today \
-          (see the comment in ci.yml). If this is a real bundle error, fix it; if it \
-          is an auth requirement, record that on #157 and drop the step."
-          fi
+      # Measured before removing it, so this does not get re-litigated from
+      # memory: `bundle validate` unconditionally calls
+      # `GET /api/2.0/preview/scim/v2/Me` and cannot run without credentials.
+      #   - CLI v1.9.0, no credentials, `-t dev`     -> "cannot configure default credentials"
+      #   - same, `-t staging` (no ${workspace.current_user}, explicit root_path)
+      #                                              -> identical failure
+      #   - dummy DATABRICKS_HOST + DATABRICKS_TOKEN -> 403 on scim/v2/Me
+      # So this is not an unpinned-`@main` regression that pinning would fix,
+      # and it is not specific to `dev`'s `mode: development`. No target and no
+      # CLI version validates credential-free. Do not re-add this step with a
+      # pinned CLI, a different target, or placeholder credentials - all three
+      # were tried.
+      #
+      # What was lost: bundle errors (#118, #122 - a bad reference, a notebook
+      # path that does not exist) now reach `dev` without CI objecting. That is
+      # a real gap, and it is the same gap that existed before, because a step
+      # that reported identically whether the bundle was valid or broken was
+      # never closing it.
+      #
+      # The way to actually close it is a credential in CI - a service
+      # principal and repository secrets - which is Tier 2/3 and belongs with
+      # #113's OIDC federation, not here. Until then, run it locally against an
+      # authenticated profile when touching databricks.yml or
+      # bronze_layer/resources/*.yml:
+      #
+      #   databricks bundle validate -t dev --profile <your-profile>

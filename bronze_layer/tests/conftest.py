@@ -153,6 +153,16 @@ class NotebookExit(Exception):
     that matters: statements after an `exit()` do not run. A stub that merely
     recorded the value would let execution continue and quietly test a path
     production never takes.
+
+    **It models stopping, never failing (#247).** `run_notebook` catches this
+    and reports a normal outcome, because on Databricks `exit()` exits 0 - the
+    run is Succeeded whatever string it carried. Do not read an exit value of
+    "FAILED: ..." as a failed task: three notebooks reported failure that way,
+    the tests asserted on the string, and both the code and the tests were
+    wrong together for as long as that went unnoticed. A notebook that must
+    fail its task raises, and a test for it asserts `pytest.raises`, not an
+    exit value. `test_no_notebook_reports_failure_through_notebook_exit`
+    enforces that statically.
     """
 
     def __init__(self, value):
@@ -314,3 +324,26 @@ def run_notebook(monkeypatch):
         return NotebookRun(exit_value, displayed, fake_dbutils, fake_spark, namespace)
 
     return _run
+
+
+@pytest.fixture
+def xml_signed_off(monkeypatch):
+    """
+    Clear the sign-off gate so a test can construct an XML config.
+
+    `formats._PENDING_SIGNOFF` refuses `source_format="xml"` at config load
+    until #336 and #337 are signed, and it fires BEFORE the XML-specific
+    validation - which is the right order for an operator, who should be told
+    the format is blocked rather than that a row tag is missing. It also makes
+    every XML safety rule unreachable from a test.
+
+    Rather than reorder the checks to suit the tests, the tests that exercise
+    those rules take this fixture. Two properties follow, both deliberate: the
+    rules stay tested while the gate is up, and when the gate comes down these
+    tests keep passing with the fixture removed and nothing else changed. A
+    test that asserted the gate's own message instead would have to be
+    rewritten at exactly the moment the safety rules start mattering most.
+    """
+    from bronze_ingest import formats
+
+    monkeypatch.setattr(formats, "_PENDING_SIGNOFF", {})
