@@ -1,0 +1,480 @@
+<title>384/385 Staging Verification</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFCFD;
+    --surface:    #F1F4F8;
+    --surface-2:  #E7ECF3;
+    --line:       #D6DDE7;
+    --line-soft:  #E4EAF1;
+    --ink:        #14171C;
+    --muted:      #5A6474;
+    --accent:     #2E5AA8;
+    --accent-dim: #E8EEF9;
+    --blocked:    #B32B21;
+    --blocked-bg: #FBEAE8;
+    --gate:       #8A6008;
+    --gate-bg:    #FBF1DC;
+    --ok:         #15675A;
+    --ok-bg:      #E2F2EE;
+    --code-bg:    #14171C;
+    --code-ink:   #E6EAF0;
+    --code-line:  #2A303A;
+
+    --f-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0F1216;
+      --surface:    #161A21;
+      --surface-2:  #1D222B;
+      --line:       #272E39;
+      --line-soft:  #1F252E;
+      --ink:        #E3E8EF;
+      --muted:      #939DAC;
+      --accent:     #7FA6E8;
+      --accent-dim: #18202E;
+      --blocked:    #EE8073;
+      --blocked-bg: #2A1815;
+      --gate:       #DCA83F;
+      --gate-bg:    #2A2110;
+      --ok:         #4FBCA4;
+      --ok-bg:      #10241F;
+      --code-bg:    #0A0C0F;
+      --code-ink:   #DDE3EB;
+      --code-line:  #232A34;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0F1216;
+    --surface:    #161A21;
+    --surface-2:  #1D222B;
+    --line:       #272E39;
+    --line-soft:  #1F252E;
+    --ink:        #E3E8EF;
+    --muted:      #939DAC;
+    --accent:     #7FA6E8;
+    --accent-dim: #18202E;
+    --blocked:    #EE8073;
+    --blocked-bg: #2A1815;
+    --gate:       #DCA83F;
+    --gate-bg:    #2A2110;
+    --ok:         #4FBCA4;
+    --ok-bg:      #10241F;
+    --code-bg:    #0A0C0F;
+    --code-ink:   #DDE3EB;
+    --code-line:  #232A34;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 6rem;
+  }
+
+  .mast { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.1rem;
+    align-items: center;
+    margin: 0;
+  }
+  .eyebrow a { color: inherit; }
+
+  h1 {
+    font-size: clamp(2rem, 5.5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.024em;
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 1.075rem;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 1.6rem 0 0;
+    overflow: hidden;
+  }
+  .meta-cell { background: var(--surface); padding: 0.8rem 1rem; }
+  .meta-cell dt {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.28rem;
+  }
+  .meta-cell dd {
+    margin: 0;
+    font-family: var(--f-mono);
+    font-size: 0.86rem;
+    font-weight: 500;
+    word-break: break-word;
+  }
+
+  .score {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 2.5rem 0 0;
+    overflow: hidden;
+  }
+  .score div { background: var(--surface); padding: 1rem 1.1rem; }
+  .score .n {
+    font-family: var(--f-mono);
+    font-size: 1.85rem;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .score .l {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-top: 0.3rem;
+  }
+  .score .ok  .n { color: var(--ok); }
+  .score .bad .n { color: var(--blocked); }
+
+  section {
+    padding-top: 3rem;
+    margin-top: 3rem;
+    border-top: 1px solid var(--line);
+  }
+  section h2 {
+    font-size: clamp(1.35rem, 3vw, 1.7rem);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    line-height: 1.2;
+    text-wrap: balance;
+    margin: 0 0 0.5rem;
+  }
+  section h3 {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 2rem 0 0.7rem;
+  }
+  section p { margin: 0 0 1rem; max-width: var(--measure); }
+  section p:last-child { margin-bottom: 0; }
+  .lede { color: var(--muted); max-width: var(--measure); margin: 0 0 1.5rem; }
+
+  .panel {
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 1.3rem clamp(1.05rem, 3vw, 1.6rem);
+    margin: 0 0 1.5rem;
+  }
+  .panel:last-child { margin-bottom: 0; }
+  .panel h3 { margin-top: 0; }
+  .panel p:last-child { margin-bottom: 0; }
+  .panel.good { border-color: var(--ok); background: var(--ok-bg); }
+  .panel.good > .ttl { color: var(--ok); }
+  .panel.bad  { border-color: var(--blocked); background: var(--blocked-bg); }
+  .panel.bad  > .ttl { color: var(--blocked); }
+  .panel.warn { border-color: var(--gate); background: var(--gate-bg); }
+  .panel.warn > .ttl { color: var(--gate); }
+  .ttl {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 0 0 0.55rem;
+  }
+
+  .tbl-scroll { overflow-x: auto; margin: 0 0 1.25rem; border: 1px solid var(--line); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.85rem;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  thead th {
+    background: var(--surface-2);
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface); }
+  td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td.id  { font-family: var(--f-mono); font-weight: 600; white-space: nowrap; }
+  td.mono, th.mono { font-family: var(--f-mono); font-size: 0.82rem; }
+  tr.fail td { background: var(--blocked-bg); }
+  tr.fail:hover td { background: var(--blocked-bg); }
+  tr.pass td { background: var(--ok-bg); }
+  tr.pass:hover td { background: var(--ok-bg); }
+
+  .st {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .st.yes { color: var(--ok); }
+  .st.no  { color: var(--blocked); }
+
+  .sev {
+    font-family: var(--f-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.18rem 0.45rem;
+    border-radius: 2px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .sev.high { color: var(--blocked); border-color: var(--blocked); background: var(--blocked-bg); }
+  .sev.med  { color: var(--gate);    border-color: var(--gate);    background: var(--gate-bg); }
+  .sev.low  { color: var(--muted);   border-color: var(--line);    background: var(--surface); }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.875em;
+    background: var(--surface-2);
+    padding: 0.09em 0.34em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+  pre {
+    margin: 0 0 1.25rem;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--code-line);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  ul, ol { margin: 0 0 1rem; padding-left: 1.15rem; max-width: var(--measure); }
+  li { margin-bottom: 0.4rem; }
+
+  a { color: var(--accent); text-underline-offset: 0.15em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  .foot {
+    margin-top: 3.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow"><span>Bronze layer</span><span>Staging</span><span>2026-08-21</span><span>dev @ 9b32310</span><span>PR #388</span></p>
+    <h1>The two leftover defects are closed.</h1>
+    <p class="standfirst">
+      The 2026-08-21 re-verification of the #371&ndash;#376 promotion (#386) found two fixes that
+      did not hold: #374's EC-12 case still rejected the write, and #376's merge audit rows still
+      went <code>NULL</code> under an auto-optimize. Commit <code>99a30f0</code> (#384, #385) fixed
+      both. This is what happened when the exact failing shapes were re-run against a staging wheel
+      rebuilt from that commit.
+    </p>
+
+    <div class="score">
+      <div class="ok"><span class="n">2/2</span><span class="l">Confirmed fixed</span></div>
+      <div class="ok"><span class="n">0</span><span class="l">Still failing</span></div>
+      <div class="ok"><span class="n">0</span><span class="l">New issues filed</span></div>
+    </div>
+
+    <dl class="meta-grid">
+      <div class="meta-cell"><dt>Catalog / schema</dt><dd>ingredion_en.ingredion_stg</dd></div>
+      <div class="meta-cell"><dt>Runs as</dt><dd>SP 6ea945e0&hellip;</dd></div>
+      <div class="meta-cell"><dt>Package</dt><dd>bronze_ingest-0.6.0</dd></div>
+      <div class="meta-cell"><dt>Verified from</dt><dd>SQL warehouse ingredion-st</dd></div>
+    </dl>
+  </header>
+
+  <section>
+    <h2>What was re-run</h2>
+    <p class="lede">
+      Two hand-built fixtures, matching the exact failing shapes from the 2026-08-21 re-verification,
+      each in its own top-level folder under <code>STG/Raw/</code> so one case's <code>write_mode</code>
+      never applies to the other &mdash; the ingestion job treats every immediate child of
+      <code>source_dir</code> as its own folder-as-table unit.
+    </p>
+    <ul>
+      <li><code>verify_384_385_ec12/ec12_collision/zcollide.json</code> &mdash;
+        <code>{"Order Id": "A1", "Order.Id": "B2", "order_id": "C3"}</code>, the exact input #384 was filed against</li>
+      <li><code>verify_384_385_ec25/ec25_merge_optimize/</code> &mdash; two JSON batches landed one run
+        apart, <code>merge_keys: ["MATNR"]</code>, reproducing #385's insert-then-update-and-insert sequence</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Both cases, re-run against the fixed wheel</h2>
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Case</th><th>2026-08-21 (#386)</th><th>This run</th><th>Verdict</th></tr>
+        </thead>
+        <tbody>
+          <tr class="pass">
+            <td class="id">EC-12</td>
+            <td>fail &mdash; <code>COLUMN_ALREADY_EXISTS</code></td>
+            <td>pass &mdash; 3 distinct columns, 1 row</td>
+            <td><span class="st yes">fixed &middot; #384</span></td>
+          </tr>
+          <tr class="pass">
+            <td class="id">Merge + auto-OPTIMIZE</td>
+            <td>fail &mdash; audit row <code>NULL</code></td>
+            <td>pass &mdash; <code>row_count=2, rows_inserted=1, rows_updated=1</code></td>
+            <td><span class="st yes">fixed &middot; #385</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>EC-12: three colliding names, once</h2>
+    <p>
+      <code>ec12_collision_bronze</code> now has three columns &mdash; <code>Order_Id</code>,
+      <code>Order_Id_2</code>, <code>order_id_3</code> &mdash; instead of the write rejecting on the
+      second <code>order_id</code> collision. Queried directly:
+    </p>
+    <pre><code>Order_Id | Order_Id_2 | order_id_3
+A1       | B2         | C3</code></pre>
+    <div class="panel good">
+      <p class="ttl">All three source values survive, each under its own column</p>
+      <p>
+        The fix keys collision grouping on the lowercased canonical name, so
+        <code>Order Id</code>/<code>Order.Id</code>/<code>order_id</code> are recognized as three
+        colliding names up front, rather than two looking distinct until Delta's case-insensitive
+        column match rejected the write.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Merge audit row: survives an intervening OPTIMIZE</h2>
+    <p>
+      <code>ec25_merge_optimize_bronze</code>'s <code>DESCRIBE HISTORY</code> shows the same shape
+      that broke #385 before:
+    </p>
+    <pre><code>version 3  OPTIMIZE  auto=true, numRemovedFiles=2, numAddedFiles=1
+           &uarr; no numTargetRows* keys
+
+version 2  MERGE     numTargetRowsMatchedUpdated=1, numTargetRowsInserted=1
+           &uarr; this run's actual write &mdash; now the one read
+
+version 1  MERGE     numTargetRowsInserted=2</code></pre>
+    <p>
+      Auto-optimize committed immediately after the second <code>MERGE</code>, same as before. This
+      time the audit row for that run reads <code>row_count=2, rows_inserted=1, rows_updated=1</code>
+      &mdash; version 2's numbers, not version 3's nulls. <code>_read_write_metrics</code> now walks
+      back through history and skips the maintenance commit instead of reading only the latest one.
+    </p>
+    <div class="panel good">
+      <p class="ttl">Data was already correct; the audit row now matches it</p>
+      <p>
+        <code>MATNR ...001</code> updated <code>BRGEW</code> 25.0 &rarr; 27.5, <code>MATNR ...003</code>
+        inserted at 40.0, <code>MATNR ...002</code> untouched at 30.0 &mdash; 3 rows total, matching
+        the audit row's <code>row_count</code>.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Scope and what this didn't cover</h2>
+    <p>
+      Staging only. No <code>GRANT</code>, <code>REVOKE</code>, <code>DROP</code>, or
+      <code>VACUUM</code> ran. Only the two previously-failing cases were re-run, not the full
+      26-case matrix or the nine-table migration extract &mdash; both were already validated on
+      2026-08-20 and 2026-08-21, and neither exercises either changed code path.
+    </p>
+    <h3>Not covered</h3>
+    <ul>
+      <li>The full edge-case matrix and the nine-table migration extract</li>
+      <li>XML &mdash; still gated pending #336/#337</li>
+      <li>Streaming and Auto Loader</li>
+      <li>Scale</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Release status</h2>
+    <div class="panel warn">
+      <p class="ttl">PR #388 &mdash; open, unmerged, pending approval</p>
+      <p>
+        <code>release/promote-384-385-to-staging</code> fast-forwards cleanly onto the current
+        <code>staging</code> tip; no conflicts. CI-gated, not yet merged.
+      </p>
+    </div>
+  </section>
+
+  <p class="foot">
+    Full record: <a href="https://github.com/yashmhatre/Ingredion_Enhancement_Package/blob/dev/docs/staging_smoke_test_2026-08-21_384_385_verify.md">docs/staging_smoke_test_2026-08-21_384_385_verify.md</a>
+    &middot; follows <a href="https://github.com/yashmhatre/Ingredion_Enhancement_Package/blob/staging/docs/staging_smoke_test_2026-08-21_bugfix_verify.md">the 2026-08-21 six-fix re-verification</a>
+    that found these two defects
+  </p>
+
+</div>
