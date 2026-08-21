@@ -1,0 +1,539 @@
+<title>Six-Bugfix Staging Verification</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFCFD;
+    --surface:    #F1F4F8;
+    --surface-2:  #E7ECF3;
+    --line:       #D6DDE7;
+    --line-soft:  #E4EAF1;
+    --ink:        #14171C;
+    --muted:      #5A6474;
+    --accent:     #2E5AA8;
+    --accent-dim: #E8EEF9;
+    --blocked:    #B32B21;
+    --blocked-bg: #FBEAE8;
+    --gate:       #8A6008;
+    --gate-bg:    #FBF1DC;
+    --ok:         #15675A;
+    --ok-bg:      #E2F2EE;
+    --code-bg:    #14171C;
+    --code-ink:   #E6EAF0;
+    --code-line:  #2A303A;
+
+    --f-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0F1216;
+      --surface:    #161A21;
+      --surface-2:  #1D222B;
+      --line:       #272E39;
+      --line-soft:  #1F252E;
+      --ink:        #E3E8EF;
+      --muted:      #939DAC;
+      --accent:     #7FA6E8;
+      --accent-dim: #18202E;
+      --blocked:    #EE8073;
+      --blocked-bg: #2A1815;
+      --gate:       #DCA83F;
+      --gate-bg:    #2A2110;
+      --ok:         #4FBCA4;
+      --ok-bg:      #10241F;
+      --code-bg:    #0A0C0F;
+      --code-ink:   #DDE3EB;
+      --code-line:  #232A34;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0F1216;
+    --surface:    #161A21;
+    --surface-2:  #1D222B;
+    --line:       #272E39;
+    --line-soft:  #1F252E;
+    --ink:        #E3E8EF;
+    --muted:      #939DAC;
+    --accent:     #7FA6E8;
+    --accent-dim: #18202E;
+    --blocked:    #EE8073;
+    --blocked-bg: #2A1815;
+    --gate:       #DCA83F;
+    --gate-bg:    #2A2110;
+    --ok:         #4FBCA4;
+    --ok-bg:      #10241F;
+    --code-bg:    #0A0C0F;
+    --code-ink:   #DDE3EB;
+    --code-line:  #232A34;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 6rem;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .mast { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.1rem;
+    align-items: center;
+    margin: 0;
+  }
+  .eyebrow a { color: inherit; }
+
+  h1 {
+    font-size: clamp(2rem, 5.5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.024em;
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 1.075rem;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 1.6rem 0 0;
+    overflow: hidden;
+  }
+  .meta-cell { background: var(--surface); padding: 0.8rem 1rem; }
+  .meta-cell dt {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.28rem;
+  }
+  .meta-cell dd {
+    margin: 0;
+    font-family: var(--f-mono);
+    font-size: 0.86rem;
+    font-weight: 500;
+    word-break: break-word;
+  }
+
+  /* ---------- scoreboard ---------- */
+
+  .score {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 2.5rem 0 0;
+    overflow: hidden;
+  }
+  .score div { background: var(--surface); padding: 1rem 1.1rem; }
+  .score .n {
+    font-family: var(--f-mono);
+    font-size: 1.85rem;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .score .l {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-top: 0.3rem;
+  }
+  .score .ok  .n { color: var(--ok); }
+  .score .bad .n { color: var(--blocked); }
+
+  /* ---------- sections ---------- */
+
+  section {
+    padding-top: 3rem;
+    margin-top: 3rem;
+    border-top: 1px solid var(--line);
+  }
+  section h2 {
+    font-size: clamp(1.35rem, 3vw, 1.7rem);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    line-height: 1.2;
+    text-wrap: balance;
+    margin: 0 0 0.5rem;
+  }
+  section h3 {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 2rem 0 0.7rem;
+  }
+  section p { margin: 0 0 1rem; max-width: var(--measure); }
+  section p:last-child { margin-bottom: 0; }
+  .lede { color: var(--muted); max-width: var(--measure); margin: 0 0 1.5rem; }
+
+  /* ---------- callouts ---------- */
+
+  .panel {
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 1.3rem clamp(1.05rem, 3vw, 1.6rem);
+    margin: 0 0 1.5rem;
+  }
+  .panel:last-child { margin-bottom: 0; }
+  .panel h3 { margin-top: 0; }
+  .panel p:last-child { margin-bottom: 0; }
+  .panel.good { border-color: var(--ok); background: var(--ok-bg); }
+  .panel.good > .ttl { color: var(--ok); }
+  .panel.bad  { border-color: var(--blocked); background: var(--blocked-bg); }
+  .panel.bad  > .ttl { color: var(--blocked); }
+  .panel.warn { border-color: var(--gate); background: var(--gate-bg); }
+  .panel.warn > .ttl { color: var(--gate); }
+  .ttl {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 0 0 0.55rem;
+  }
+
+  /* ---------- tables ---------- */
+
+  .tbl-scroll { overflow-x: auto; margin: 0 0 1.25rem; border: 1px solid var(--line); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.85rem;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  thead th {
+    background: var(--surface-2);
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface); }
+  td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td.id  { font-family: var(--f-mono); font-weight: 600; white-space: nowrap; }
+  td.mono, th.mono { font-family: var(--f-mono); font-size: 0.82rem; }
+  tr.fail td { background: var(--blocked-bg); }
+  tr.fail:hover td { background: var(--blocked-bg); }
+  tr.pass td { background: var(--ok-bg); }
+  tr.pass:hover td { background: var(--ok-bg); }
+
+  .st {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .st.yes { color: var(--ok); }
+  .st.no  { color: var(--blocked); }
+
+  .sev {
+    font-family: var(--f-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.18rem 0.45rem;
+    border-radius: 2px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .sev.high { color: var(--blocked); border-color: var(--blocked); background: var(--blocked-bg); }
+  .sev.med  { color: var(--gate);    border-color: var(--gate);    background: var(--gate-bg); }
+  .sev.low  { color: var(--muted);   border-color: var(--line);    background: var(--surface); }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.875em;
+    background: var(--surface-2);
+    padding: 0.09em 0.34em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+  pre {
+    margin: 0 0 1.25rem;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--code-line);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  ul, ol { margin: 0 0 1rem; padding-left: 1.15rem; max-width: var(--measure); }
+  li { margin-bottom: 0.4rem; }
+
+  a { color: var(--accent); text-underline-offset: 0.15em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  .foot {
+    margin-top: 3.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow"><span>Bronze layer</span><span>Staging</span><span>2026-08-21</span><span>staging @ 77bfe4f</span><span>PR #383</span></p>
+    <h1>Six fixes promoted. Two of them aren't done yet.</h1>
+    <p class="standfirst">
+      The 2026-08-20 SAP migration smoke test found six defects and filed them as #371&ndash;#376.
+      All six merged to <code>dev</code>, CI passed, and PR #383 promoted the batch to <code>staging</code>.
+      This is what happened when the five that produced a failing edge case got run again, on real
+      compute, against the actual deployed wheel &mdash; not what the pull request descriptions say.
+    </p>
+
+    <div class="score">
+      <div class="ok"><span class="n">4/6</span><span class="l">Confirmed fixed</span></div>
+      <div class="bad"><span class="n">2</span><span class="l">Still fail</span></div>
+      <div class="bad"><span class="n">2</span><span class="l">New issues filed</span></div>
+      <div class="ok"><span class="n">3/3</span><span class="l">CI checks green</span></div>
+    </div>
+
+    <dl class="meta-grid">
+      <div class="meta-cell"><dt>Catalog / schema</dt><dd>ingredion_en.ingredion_stg</dd></div>
+      <div class="meta-cell"><dt>Runs as</dt><dd>SP 6ea945e0&hellip;</dd></div>
+      <div class="meta-cell"><dt>Package</dt><dd>bronze_ingest-0.6.0</dd></div>
+      <div class="meta-cell"><dt>Verified from</dt><dd>SQL warehouse ingredion-st</dd></div>
+    </dl>
+  </header>
+
+  <section>
+    <h2>Why re-run instead of trusting the merge</h2>
+    <p class="lede">
+      A PR description says what the author intended. The 2026-08-20 run existed because a job's
+      own return value said <code>SUCCESS</code> on a run that silently dropped rows &mdash; so this
+      round checked the same way: land the exact fixture that failed before, run the deployed
+      wheel, and read the result back out of Unity Catalog.
+    </p>
+    <div class="panel warn">
+      <p class="ttl">The discovery scope caught the first attempt</p>
+      <p>
+        The ingestion job treats every immediate child of <code>source_dir</code> as one
+        folder-as-table unit &mdash; it does not recurse further. Landing all five fixtures under
+        one generic <code>Raw/edge_cases_verify_bugfix/</code> root and running the job unscoped
+        produced <code>0 unit(s) ingested, 10 skipped</code>: every case folder sat one level too
+        deep to be discovered. Each case below was re-run with <code>source_dir</code> pointed
+        directly at its own parent, matching how the 2026-08-20 run must have been structured.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Five cases, re-run against the fixed wheel</h2>
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Case</th><th>2026-08-20</th><th>2026-08-21</th><th>Verdict</th></tr>
+        </thead>
+        <tbody>
+          <tr class="pass">
+            <td class="id">EC-11</td>
+            <td>fail &mdash; write rejected</td>
+            <td>pass &mdash; 1/1 row written</td>
+            <td><span class="st yes">fixed &middot; #374</span></td>
+          </tr>
+          <tr class="fail">
+            <td class="id">EC-12</td>
+            <td>fail &mdash; write rejected</td>
+            <td>fail &mdash; same rejection, different cause</td>
+            <td><span class="st no">open &middot; #384</span></td>
+          </tr>
+          <tr class="pass">
+            <td class="id">EC-13</td>
+            <td>fail &mdash; padding lost to inference</td>
+            <td>pass &mdash; all keys stayed <code>string</code></td>
+            <td><span class="st yes">fixed &middot; #371</span></td>
+          </tr>
+          <tr class="pass">
+            <td class="id">EC-20</td>
+            <td>fail &mdash; record split into a garbage row</td>
+            <td>pass, with <code>csv_multiline</code> set explicitly</td>
+            <td><span class="st yes">fixed &middot; #375</span></td>
+          </tr>
+          <tr class="fail">
+            <td class="id">EC-25</td>
+            <td>audit gap filed as #376</td>
+            <td>data correct; audit gap reproduces on the real merge</td>
+            <td><span class="st no">open &middot; #385</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede">
+      Two of the four re-tested defects &mdash; #371 and #374's EC-11 case &mdash; are cleanly
+      fixed. #375 is fixed for what it targeted, the escape default; <code>multiLine</code> was
+      never part of that fix's scope, so EC-20 needed an explicit override before it could be
+      tested at all. #374's EC-12 case and #376 both reproduce, under conditions different from
+      the ones the original fix addressed.
+    </p>
+  </section>
+
+  <section>
+    <h2>EC-12: fixed for the case #374 targeted, not for a real collision</h2>
+    <p>
+      <code>identifiers.py</code>'s <code>_resolve_names</code>/<code>_disambiguate</code>, read on
+      their own, correctly suffix colliding names: <code>order_id</code>,
+      <code>order_id_2</code>, <code>order_id_3</code>. The deployed write for
+      <code>{"Order Id": "A1", "Order.Id": "B2", "order_id": "C3"}</code> still raises the same
+      error as before #374 shipped, three times over.
+    </p>
+    <pre><code>[COLUMN_ALREADY_EXISTS] The column `order_id` already exists.
+Choose another name or rename the existing column. SQLSTATE: 42711</code></pre>
+    <div class="panel bad">
+      <p class="ttl">Filed as #384</p>
+      <p>
+        The disambiguation code path is evidently not reached for this input shape. Root-causing
+        it needs a debugger against the deployed wheel, not another staging run &mdash; the logic
+        that should apply is correct when read in isolation.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>#376: fixed for the metric keys, not for auto-optimize racing the read</h2>
+    <p>
+      <code>bronze_writer.py</code>'s <code>_read_write_metrics</code> now reads
+      <code>numTargetRowsMatchedUpdated</code> / <code>numTargetRowsInserted</code> &mdash; the
+      fix's actual target &mdash; and its <code>since_version</code> guard correctly rejects a
+      commit older than the write. A genuine two-batch merge (insert, then a batch that both
+      updates and inserts) still writes a <code>NULL</code> audit row for the second batch.
+      <code>DESCRIBE HISTORY</code> shows why:
+    </p>
+    <pre><code>version 3  OPTIMIZE  {"numRemovedFiles": "2", ...}
+           &uarr; no numTargetRows* keys &mdash; read as this run's metrics
+
+version 2  MERGE     {"numTargetRowsMatchedUpdated": "1",
+                       "numTargetRowsInserted": "1", ...}
+           &uarr; this run's actual write &mdash; never read
+
+version 1  MERGE     {"numTargetRowsInserted": "2", ...}</code></pre>
+    <p>
+      Auto-optimize committed an <code>OPTIMIZE</code> immediately after the <code>MERGE</code>.
+      <code>_read_write_metrics</code> reads <code>.history(1)</code> &mdash; the single latest
+      commit at read time &mdash; and the guard against a stale read only rejects a commit
+      <em>older</em> than expected, so a newer-but-wrong commit sails through.
+    </p>
+    <div class="panel bad">
+      <p class="ttl">Filed as #385 &mdash; data is correct, only the audit row is wrong</p>
+      <p>
+        The merge itself is right: 3 rows, the matched key's <code>BRGEW</code> updated 25.0 &rarr;
+        27.5, the new key inserted. Only <code>row_count</code>/<code>source_row_count</code> come
+        back <code>NULL</code>.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Scope and what this didn't cover</h2>
+    <p>
+      Staging only. No <code>GRANT</code>, <code>REVOKE</code>, <code>DROP</code>, or
+      <code>VACUUM</code> ran. <code>fabricyash@gmail.com</code>'s <code>SELECT</code> grant on the
+      schema was still in place from 2026-08-20 &mdash; nothing new to grant.
+    </p>
+    <p>
+      Only the five previously-failing cases were re-run, not the full 26-case matrix: the 22 that
+      passed on 2026-08-20 don't exercise any of the six changed code paths, so re-running the full
+      nine-table extract wouldn't have changed the answer to what this run needed to check.
+    </p>
+    <h3>Not covered</h3>
+    <ul>
+      <li>The full nine-table migration extract &mdash; already validated 2026-08-20, unaffected by these six fixes outside the cases above</li>
+      <li>XML &mdash; still gated pending #336/#337</li>
+      <li>Streaming and Auto Loader</li>
+      <li>Scale &mdash; every table here is single-digit or low-hundreds rows</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Defects filed</h2>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>Issue</th><th>Severity</th><th>What</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="id"><a href="https://github.com/yashmhatre/Ingredion_Enhancement_Package/issues/384">#384</a></td>
+            <td><span class="sev high">high</span></td>
+            <td>Identifier collision disambiguation still fails the write instead of suffixing</td>
+          </tr>
+          <tr>
+            <td class="id"><a href="https://github.com/yashmhatre/Ingredion_Enhancement_Package/issues/385">#385</a></td>
+            <td><span class="sev med">medium</span></td>
+            <td>Merge audit row counts read an auto-OPTIMIZE commit instead of the MERGE commit</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <p class="foot">
+    Full record: <a href="https://github.com/yashmhatre/Ingredion_Enhancement_Package/blob/staging/docs/staging_smoke_test_2026-08-21_bugfix_verify.md">docs/staging_smoke_test_2026-08-21_bugfix_verify.md</a>
+    &middot; companion to <a href="https://github.com/yashmhatre/Ingredion_Enhancement_Package/blob/staging/docs/staging_smoke_test_2026-08_sap_migration.md">the 2026-08-20 SAP migration run</a>
+  </p>
+
+</div>
