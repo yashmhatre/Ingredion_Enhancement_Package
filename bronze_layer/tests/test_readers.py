@@ -232,7 +232,17 @@ def test_csv_batch_reader_options_match_the_public_config_contract():
         "header": True,
         "inferSchema": False,
         "mode": "PERMISSIVE",
+        "escape": '"',
+        "multiLine": False,
     }
+
+
+def test_csv_batch_reader_options_take_multiline_from_csv_multiline():
+    """CSV's own field, never config.multiline (#375)."""
+    cfg = _cfg(source_path="/tmp/x.csv", source_format="csv", multiline=True, csv_multiline=False)
+    assert readers.batch_reader_options(cfg)["multiLine"] is False
+    cfg = _cfg(source_path="/tmp/x.csv", source_format="csv", multiline=False, csv_multiline=True)
+    assert readers.batch_reader_options(cfg)["multiLine"] is True
 
 
 def test_parquet_batch_reader_options_are_only_explicit_overrides():

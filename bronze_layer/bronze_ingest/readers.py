@@ -130,6 +130,8 @@ def _csv_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
         "header": config.csv_header,
         "inferSchema": config.csv_infer_schema,
         "mode": "PERMISSIVE",
+        "escape": '"',
+        "multiLine": config.csv_multiline,
     }
     if config.schema_hint_ddl:
         options["columnNameOfCorruptRecord"] = config.corrupt_record_column

@@ -946,8 +946,9 @@ def build_edge_cases(
         "EC-20",
         "ec20_csv_quoting/kna1.csv",
         "embedded comma, escaped double quotes, and a newline inside a quoted field",
-        "4 rows, not 5 - the embedded newline must not split a record",
-        "csv_reader multiLine and quote handling",
+        "with csv_multiline=true: 4 rows, not 5, and NAME1 reads "
+        'He said "premium grade" - the doubled quotes unescaped (#375)',
+        "csv_reader escape default and csv_multiline",
     )
 
     # EC-21 - headerless, which needs schema_hint_ddl to be ingestable at all.

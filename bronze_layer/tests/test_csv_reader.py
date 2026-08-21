@@ -107,16 +107,40 @@ def test_config_multiline_never_reaches_the_csv_reader(monkeypatch):
     would silently set multiLine=true on EVERY csv run.
 
     Asserted with multiline explicitly True, which is also the default.
+    Since #375 the reader does set `multiLine` - from `csv_multiline`, CSV's
+    own field - so the rule is now "the value is csv_multiline's, never
+    config.multiline's", which is what this asserts.
     """
     sink = _capture(_cfg(multiline=True), monkeypatch)
-    assert "multiLine" not in sink["option_dict"], sink["options"]
+    assert sink["option_dict"]["multiLine"] is False, sink["options"]
+
+
+def test_csv_multiline_drives_the_option(monkeypatch):
+    """A source whose quoted fields genuinely contain newlines turns it on
+    through CSV's own field, with config.multiline left off (#375)."""
+    sink = _capture(_cfg(multiline=False, csv_multiline=True), monkeypatch)
+    assert sink["option_dict"]["multiLine"] is True
 
 
 def test_multiline_still_reachable_explicitly_through_reader_options(monkeypatch):
-    """The escape hatch must remain: a source whose quoted fields genuinely
-    contain newlines sets it deliberately, and that value is what applies."""
+    """The escape hatch must remain: reader_options are applied last, so an
+    explicit value wins over csv_multiline."""
     sink = _capture(_cfg(multiline=False, reader_options={"multiLine": "true"}), monkeypatch)
     assert sink["option_dict"]["multiLine"] == "true"
+
+
+# ---- RFC4180 quoting (#375) ---------------------------------------------
+
+
+def test_escape_defaults_to_the_rfc4180_doubled_quote(monkeypatch):
+    """Spark defaults `escape` to a backslash; RFC4180 doubles the quote."""
+    sink = _capture(_cfg(), monkeypatch)
+    assert sink["option_dict"]["escape"] == '"'
+
+
+def test_escape_is_overridable_for_a_backslash_dialect(monkeypatch):
+    sink = _capture(_cfg(reader_options={"escape": "\\"}), monkeypatch)
+    assert sink["option_dict"]["escape"] == "\\"
 
 
 # ---- option shape --------------------------------------------------------
@@ -258,3 +282,65 @@ def test_read_csv_retries_transient_load_failure(spark, tmp_path, monkeypatch):
 
     assert calls["count"] == 2
     assert df.count() == 1
+
+
+# ---- RFC4180 behaviour, against real Spark (#375) ------------------------
+
+#: The EC-20 fixture row from `fixtures/generate_sap_migration.py`: an
+#: embedded comma, RFC4180 doubled quotes, and a newline inside a quoted
+#: field. Under Spark's own defaults this file parses as 5 rows, the last of
+#: them values shifted under the wrong column names.
+_RFC4180_CSV = (
+    '"KUNNR","NAME1","STRAS"\n'
+    '"0000100001","Müller, Meier & Co. KG","Hauptstr. 1"\n'
+    '"0000100002","He said ""premium grade""","Main St 2"\n'
+    '"0000100003","Line one\nLine two","Av. Central 3"\n'
+    '"0000100004","Trailing comma test,","Rua 4"\n'
+)
+
+
+def test_read_csv_parses_rfc4180_doubled_quotes(spark, tmp_path):
+    """The corruption #375 reports: with escape left at Spark's backslash
+    default the value keeps its outer quotes and doubled inner quotes."""
+    p = tmp_path / "kna1.csv"
+    # newline="\n" - the default would translate the quoted newline inside
+    # NAME1 to CRLF on Windows, changing what is being asserted.
+    p.write_text(_RFC4180_CSV, encoding="utf-8", newline="\n")
+
+    df = cr.read_csv(spark, _cfg(source_path=file_uri(p), csv_multiline=True))
+    names = {r["KUNNR"]: r["NAME1"] for r in df.collect()}
+
+    assert names["0000100002"] == 'He said "premium grade"', names
+
+
+def test_read_csv_with_csv_multiline_keeps_a_quoted_newline_in_one_row(spark, tmp_path):
+    """Without multiLine the quoted newline splits the record and the tail
+    lands as a 5th row with KUNNR='Av. Central 3' and NAME1 null."""
+    p = tmp_path / "kna1.csv"
+    # newline="\n" - the default would translate the quoted newline inside
+    # NAME1 to CRLF on Windows, changing what is being asserted.
+    p.write_text(_RFC4180_CSV, encoding="utf-8", newline="\n")
+
+    df = cr.read_csv(spark, _cfg(source_path=file_uri(p), csv_multiline=True))
+    rows = {r["KUNNR"]: r for r in df.collect()}
+
+    assert df.count() == 4, sorted(rows)
+    assert rows["0000100003"]["NAME1"] == "Line one\nLine two"
+    assert rows["0000100001"]["NAME1"] == "Müller, Meier & Co. KG"
+    assert rows["0000100004"]["NAME1"] == "Trailing comma test,"
+
+
+def test_read_csv_defaults_still_split_a_quoted_newline(spark, tmp_path):
+    """csv_multiline stays off by default (multiLine CSV cannot be split
+    across tasks), so the row-splitting is documented, not fixed, here."""
+    p = tmp_path / "kna1.csv"
+    # newline="\n" - the default would translate the quoted newline inside
+    # NAME1 to CRLF on Windows, changing what is being asserted.
+    p.write_text(_RFC4180_CSV, encoding="utf-8", newline="\n")
+
+    df = cr.read_csv(spark, _cfg(source_path=file_uri(p)))
+
+    assert df.count() == 5
+    # The quote fix is independent of multiLine and applies either way.
+    names = [r["NAME1"] for r in df.collect()]
+    assert 'He said "premium grade"' in names, names
