@@ -633,7 +633,7 @@ def build_edge_cases(
 
     # EC-01 - a required column arrives null.
     write_jsonl(
-        os.path.join(root, "ec01_null_required_key", "mara.json"),
+        os.path.join(root, "ec01_null_required_key", "mara.jsonl"),
         [
             mara_row(),
             mara_row(MATNR=None),
@@ -643,7 +643,7 @@ def build_edge_cases(
     )
     case(
         "EC-01",
-        "ec01_null_required_key/mara.json",
+        "ec01_null_required_key/mara.jsonl",
         "4 rows, 2 with MATNR null or absent",
         "required_columns quarantines the bad rows; bronze + quarantine = 4",
         "quality.split_good_bad",
@@ -651,7 +651,7 @@ def build_edge_cases(
 
     # EC-02 - the same business key twice.
     write_jsonl(
-        os.path.join(root, "ec02_duplicate_key", "mara.json"),
+        os.path.join(root, "ec02_duplicate_key", "mara.jsonl"),
         [
             mara_row(),
             mara_row(BRGEW=99.9),  # same MATNR, different payload
@@ -660,18 +660,30 @@ def build_edge_cases(
     )
     case(
         "EC-02",
-        "ec02_duplicate_key/mara.json",
+        "ec02_duplicate_key/mara.jsonl",
         "3 rows, 2 sharing one MATNR with different payloads",
         "unique_columns keeps one and quarantines the other, deterministically",
         "quality._duplicate_flag_column",
     )
 
-    # EC-03/04/05 - drift, as three separate second-batch files. Each is meant
-    # to be ingested into a table the baseline already created.
-    write_jsonl(os.path.join(root, "ec03_drift_added", "mara.json"), [mara_row(NEW_FIELD="X")])
+    # EC-03/04/05 - drift, as three separate second-batch files. Each ships
+    # with its own baseline/mara.jsonl: the mara_row() shape, three rows with
+    # distinct MATNR, meant to be ingested into the case's target table
+    # before the drift file so drift against an empty table (which is not
+    # drift at all) never happens.
+    drift_baseline = [
+        mara_row(),
+        mara_row(MATNR=matnr(1000002)),
+        mara_row(MATNR=matnr(1000003)),
+    ]
+
+    write_jsonl(os.path.join(root, "ec03_drift_added", "baseline", "mara.jsonl"), drift_baseline)
+    write_jsonl(
+        os.path.join(root, "ec03_drift_added", "mara.jsonl"), [mara_row(NEW_FIELD="X")]
+    )
     case(
         "EC-03",
-        "ec03_drift_added/mara.json",
+        "ec03_drift_added/baseline/mara.jsonl then ec03_drift_added/mara.jsonl",
         "baseline shape plus one new column",
         "schema_changed true, schema_drift_json names the added column, merge_schema adds it",
         "schema_registry + bronze_writer merge_schema",
@@ -679,26 +691,28 @@ def build_edge_cases(
 
     dropped = mara_row()
     dropped.pop("MATKL")
-    write_jsonl(os.path.join(root, "ec04_drift_removed", "mara.json"), [dropped])
+    write_jsonl(os.path.join(root, "ec04_drift_removed", "baseline", "mara.jsonl"), drift_baseline)
+    write_jsonl(os.path.join(root, "ec04_drift_removed", "mara.jsonl"), [dropped])
     case(
         "EC-04",
-        "ec04_drift_removed/mara.json",
+        "ec04_drift_removed/baseline/mara.jsonl then ec04_drift_removed/mara.jsonl",
         "baseline shape minus MATKL",
         "schema_drift_json names the removed column; existing rows keep their value",
         "schema_registry drift detection",
     )
 
-    write_jsonl(os.path.join(root, "ec05_drift_type", "mara.json"), [mara_row(BRGEW="25.0")])
+    write_jsonl(os.path.join(root, "ec05_drift_type", "baseline", "mara.jsonl"), drift_baseline)
+    write_jsonl(os.path.join(root, "ec05_drift_type", "mara.jsonl"), [mara_row(BRGEW="25.0")])
     case(
         "EC-05",
-        "ec05_drift_type/mara.json",
+        "ec05_drift_type/baseline/mara.jsonl then ec05_drift_type/mara.jsonl",
         "BRGEW arrives as a string where the baseline inferred a double",
         "type_changed is reported rather than silently coerced or dropped",
         "schema_registry type_changed",
     )
 
     # EC-06 - a record the reader can identify but not parse.
-    path = os.path.join(root, "ec06_corrupt_record", "mara.json")
+    path = os.path.join(root, "ec06_corrupt_record", "mara.jsonl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(mara_row(), ensure_ascii=False) + "\n")
@@ -706,7 +720,7 @@ def build_edge_cases(
         fh.write(json.dumps(mara_row(MATNR=matnr(1000004)), ensure_ascii=False) + "\n")
     case(
         "EC-06",
-        "ec06_corrupt_record/mara.json",
+        "ec06_corrupt_record/mara.jsonl",
         "3 lines, the middle one unparseable JSON",
         "PERMISSIVE puts it in _corrupt_record rather than failing the file",
         "json_reader mode=PERMISSIVE",
@@ -741,7 +755,7 @@ def build_edge_cases(
     # EC-09 - folder-as-table, split the way a real extract splits it.
     for part in (1, 2, 3):
         write_jsonl(
-            os.path.join(root, "ec09_folder_as_table", "vbap", f"vbap_part{part}.json"),
+            os.path.join(root, "ec09_folder_as_table", "vbap", f"vbap_part{part}.jsonl"),
             [
                 {
                     "MANDT": MANDT,
@@ -763,7 +777,7 @@ def build_edge_cases(
 
     # EC-10 - the control file sitting beside the data.
     d = os.path.join(root, "ec10_mixed_formats")
-    write_jsonl(os.path.join(d, "mara.json"), [mara_row()])
+    write_jsonl(os.path.join(d, "mara.jsonl"), [mara_row()])
     write_csv(os.path.join(d, "_control.csv"), [{"TABLE": "MARA", "ROWS": "1", "STATUS": "OK"}])
     with open(os.path.join(d, "extract.log"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("2026-08-20 03:00:01 INFO export finished rc=0\n")
@@ -777,7 +791,7 @@ def build_edge_cases(
 
     # EC-11 - field names an extract tool produces and a catalog will not take.
     write_jsonl(
-        os.path.join(root, "ec11_identifier_canonicalization", "zcustom.json"),
+        os.path.join(root, "ec11_identifier_canonicalization", "zcustom.jsonl"),
         [
             {
                 "Material Number": base["MATNR"],
@@ -792,7 +806,7 @@ def build_edge_cases(
     )
     case(
         "EC-11",
-        "ec11_identifier_canonicalization/zcustom.json",
+        "ec11_identifier_canonicalization/zcustom.jsonl",
         "field names with spaces, parentheses, slashes, dots, percent, dash and an umlaut",
         "names are canonicalized deterministically and identity is preserved, not flattened",
         "naming / identifier canonicalization",
@@ -800,12 +814,12 @@ def build_edge_cases(
 
     # EC-12 - two source names that canonicalize to the same thing.
     write_jsonl(
-        os.path.join(root, "ec12_canonicalization_collision", "zcollide.json"),
+        os.path.join(root, "ec12_canonicalization_collision", "zcollide.jsonl"),
         [{"Order Id": "A1", "Order.Id": "B2", "order_id": "C3"}],
     )
     case(
         "EC-12",
-        "ec12_canonicalization_collision/zcollide.json",
+        "ec12_canonicalization_collision/zcollide.jsonl",
         "three near-identical source names, two of which collapse to one canonical name",
         "the collision is detected and disambiguated, never silently last-wins",
         "naming collision detection",
@@ -829,7 +843,7 @@ def build_edge_cases(
 
     # EC-14 - the SAP empty date.
     write_jsonl(
-        os.path.join(root, "ec14_sap_null_dates", "mcha.json"),
+        os.path.join(root, "ec14_sap_null_dates", "mcha.jsonl"),
         [
             {"MANDT": MANDT, "CHARG": "B000000001", "VFDAT": "20271231", "LAEDA": "20250101"},
             {"MANDT": MANDT, "CHARG": "B000000002", "VFDAT": "00000000", "LAEDA": "00000000"},
@@ -838,7 +852,7 @@ def build_edge_cases(
     )
     case(
         "EC-14",
-        "ec14_sap_null_dates/mcha.json",
+        "ec14_sap_null_dates/mcha.jsonl",
         "'00000000', null and empty string in the same date column",
         "bronze keeps all three distinct; collapsing them is a Silver decision",
         "bronze source-faithfulness",
@@ -862,7 +876,7 @@ def build_edge_cases(
 
     # EC-16 - non-ASCII across scripts.
     write_jsonl(
-        os.path.join(root, "ec16_unicode", "t001w.json"),
+        os.path.join(root, "ec16_unicode", "t001w.jsonl"),
         [
             {"MANDT": MANDT, "WERKS": "3020", "NAME1": "San Juan del Río", "LAND1": "MX"},
             {"MANDT": MANDT, "WERKS": "4010", "NAME1": "Mogi Guaçu", "LAND1": "BR"},
@@ -872,7 +886,7 @@ def build_edge_cases(
     )
     case(
         "EC-16",
-        "ec16_unicode/t001w.json",
+        "ec16_unicode/t001w.jsonl",
         "accents, an en dash, and CJK in the same column",
         "UTF-8 survives read, write and the catalog round trip",
         "readers, bronze_writer",
@@ -970,7 +984,7 @@ def build_edge_cases(
 
     # EC-22 - numbers at the edges of their types.
     write_jsonl(
-        os.path.join(root, "ec22_numeric_extremes", "vbap.json"),
+        os.path.join(root, "ec22_numeric_extremes", "vbap.jsonl"),
         [
             {"VBELN": vbeln(2200001), "NETWR": 0.0, "KWMENG": 0.001},
             {"VBELN": vbeln(2200002), "NETWR": 99999999999.99, "KWMENG": 999999.999},
@@ -980,7 +994,7 @@ def build_edge_cases(
     )
     case(
         "EC-22",
-        "ec22_numeric_extremes/vbap.json",
+        "ec22_numeric_extremes/vbap.jsonl",
         "zero, a credit note's negative amount, 11 significant digits, and float noise",
         "precision is not silently lost and negatives are not treated as invalid",
         "bronze_writer type handling",
@@ -988,7 +1002,7 @@ def build_edge_cases(
 
     # EC-23 - the three kinds of nothing.
     write_jsonl(
-        os.path.join(root, "ec23_null_vs_empty", "kna1.json"),
+        os.path.join(root, "ec23_null_vs_empty", "kna1.jsonl"),
         [
             {"KUNNR": kunnr(100001), "REGIO": "BY", "TELF1": "+49 40123456"},
             {"KUNNR": kunnr(100002), "REGIO": "", "TELF1": None},
@@ -997,7 +1011,7 @@ def build_edge_cases(
     )
     case(
         "EC-23",
-        "ec23_null_vs_empty/kna1.json",
+        "ec23_null_vs_empty/kna1.jsonl",
         "null, empty string and a single space in the same columns",
         "all three stay distinct; required_columns treats only null as missing",
         "quality._missing_columns",
@@ -1007,10 +1021,10 @@ def build_edge_cases(
     wide = {"MANDT": MANDT, "MATNR": base["MATNR"]}
     for i in range(1, 121):
         wide[f"ZZFIELD{i:03d}"] = rng.choice(["X", " ", "", None, str(rng.randint(0, 999))])
-    write_jsonl(os.path.join(root, "ec24_wide_row", "zmara_ext.json"), [wide])
+    write_jsonl(os.path.join(root, "ec24_wide_row", "zmara_ext.jsonl"), [wide])
     case(
         "EC-24",
-        "ec24_wide_row/zmara_ext.json",
+        "ec24_wide_row/zmara_ext.jsonl",
         "122 columns, the append-a-Z-field pattern every SAP shop ends up with",
         "column count alone does not break the write or the catalog comment path",
         "bronze_writer, catalog_metadata",
@@ -1025,8 +1039,8 @@ def build_edge_cases(
         {"MANDT": MANDT, "MATNR": matnr(1000001), "MTART": "FERT", "BRGEW": 27.5},
         {"MANDT": MANDT, "MATNR": matnr(1000003), "MTART": "ROH", "BRGEW": 12.0},
     ]
-    write_jsonl(os.path.join(root, "ec25_merge_rerun", "batch1", "mara.json"), first)
-    write_jsonl(os.path.join(root, "ec25_merge_rerun", "batch2", "mara.json"), second)
+    write_jsonl(os.path.join(root, "ec25_merge_rerun", "batch1", "mara.jsonl"), first)
+    write_jsonl(os.path.join(root, "ec25_merge_rerun", "batch2", "mara.jsonl"), second)
     case(
         "EC-25",
         "ec25_merge_rerun/batch1|batch2",
@@ -1037,7 +1051,7 @@ def build_edge_cases(
 
     # EC-26 - strings that look like numbers and must not become them.
     write_jsonl(
-        os.path.join(root, "ec26_numeric_looking_strings", "zkeys.json"),
+        os.path.join(root, "ec26_numeric_looking_strings", "zkeys.jsonl"),
         [
             {
                 "MATNR": matnr(1000001),
@@ -1051,7 +1065,7 @@ def build_edge_cases(
     )
     case(
         "EC-26",
-        "ec26_numeric_looking_strings/zkeys.json",
+        "ec26_numeric_looking_strings/zkeys.jsonl",
         "keys, postal codes, phone numbers, EANs and a version that are all strings",
         "none are coerced to numbers; '1.10' must not become 1.1",
         "readers type inference",
