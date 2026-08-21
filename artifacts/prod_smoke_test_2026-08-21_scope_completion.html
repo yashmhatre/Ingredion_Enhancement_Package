@@ -1,0 +1,422 @@
+<title>Prod Scope Completion</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --surface: #ffffff;
+    --surface-2: #eeece6;
+    --ink: #1b1e1c;
+    --ink-soft: #4a4f4b;
+    --muted: #6f756f;
+    --border: #dcd9d0;
+    --border-soft: #e9e7e0;
+    --accent: #0e6e62;
+    --accent-soft: #e3efec;
+    --accent-ink: #084c43;
+    --pass: #1c7a3e;
+    --pass-bg: #e5f3e8;
+    --fail: #b3401f;
+    --fail-bg: #fbeae4;
+    --open: #8a6d1f;
+    --open-bg: #f7f0dd;
+    --code-bg: #f0efe9;
+    --shadow: 0 1px 2px rgba(27,30,28,0.06), 0 8px 24px -16px rgba(27,30,28,0.18);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161a;
+      --surface: #1b1e23;
+      --surface-2: #21252b;
+      --ink: #e9e9e4;
+      --ink-soft: #c2c4c0;
+      --muted: #8b8f8b;
+      --border: #33373d;
+      --border-soft: #2a2d33;
+      --accent: #4fb8a8;
+      --accent-soft: #1c2e2b;
+      --accent-ink: #8fd8ca;
+      --pass: #59c47f;
+      --pass-bg: #17271b;
+      --fail: #e07a5a;
+      --fail-bg: #2c1d17;
+      --open: #d8b559;
+      --open-bg: #2a2417;
+      --code-bg: #21252b;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 32px -18px rgba(0,0,0,0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a;
+    --surface: #1b1e23;
+    --surface-2: #21252b;
+    --ink: #e9e9e4;
+    --ink-soft: #c2c4c0;
+    --muted: #8b8f8b;
+    --border: #33373d;
+    --border-soft: #2a2d33;
+    --accent: #4fb8a8;
+    --accent-soft: #1c2e2b;
+    --accent-ink: #8fd8ca;
+    --pass: #59c47f;
+    --pass-bg: #17271b;
+    --fail: #e07a5a;
+    --fail-bg: #2c1d17;
+    --open: #d8b559;
+    --open-bg: #2a2417;
+    --code-bg: #21252b;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 12px 32px -18px rgba(0,0,0,0.6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 3.5rem 1.5rem 6rem;
+  }
+
+  .page {
+    max-width: 780px;
+    margin: 0 auto;
+  }
+
+  .kicker {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    margin: 0 0 0.9rem;
+  }
+
+  h1 {
+    font-family: "IBM Plex Sans", sans-serif;
+    font-weight: 700;
+    font-size: clamp(1.7rem, 3.4vw, 2.35rem);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0 0 1rem;
+  }
+
+  .dek {
+    color: var(--ink-soft);
+    font-size: 1.05rem;
+    max-width: 62ch;
+    margin: 0 0 2.2rem;
+  }
+
+  .stat-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 2.6rem;
+    box-shadow: var(--shadow);
+  }
+
+  .stat {
+    background: var(--surface);
+    padding: 1.1rem 1.2rem;
+  }
+
+  .stat .n {
+    font-family: "IBM Plex Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--accent-ink);
+    display: block;
+  }
+
+  .stat .l {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-top: 0.15rem;
+  }
+
+  h2 {
+    font-size: 1.24rem;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+    margin: 3rem 0 0.9rem;
+    padding-bottom: 0.55rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1.02rem;
+    font-weight: 600;
+    margin: 1.8rem 0 0.7rem;
+    color: var(--ink);
+  }
+
+  p { margin: 0 0 1rem; }
+  ul { margin: 0 0 1rem; padding-left: 1.3rem; }
+  li { margin-bottom: 0.45rem; }
+
+  strong { font-weight: 600; }
+
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 0.08em 0.35em;
+    font-size: 0.88em;
+  }
+
+  a { color: var(--accent-ink); }
+
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin: 0 0 1.4rem;
+    box-shadow: var(--shadow);
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    background: var(--surface);
+    font-size: 0.92rem;
+  }
+
+  th {
+    text-align: left;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--surface-2);
+    padding: 0.65rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  td:first-child { font-family: "IBM Plex Mono", monospace; font-size: 0.85rem; white-space: nowrap; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.76rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 0.18em 0.6em;
+    border-radius: 99px;
+    white-space: nowrap;
+  }
+  .pill.pass { background: var(--pass-bg); color: var(--pass); }
+  .pill.fail { background: var(--fail-bg); color: var(--fail); }
+  .pill.open { background: var(--open-bg); color: var(--open); }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .defect {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--fail);
+    border-radius: 8px;
+    padding: 1.1rem 1.3rem;
+    margin: 0 0 1.4rem;
+    box-shadow: var(--shadow);
+  }
+  .defect h3 { margin-top: 0; }
+
+  .callout {
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    font-size: 0.94rem;
+    color: var(--ink-soft);
+    margin: 0 0 1.4rem;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 3rem 0 2.4rem;
+  }
+
+  .env-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.5rem 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+    margin: 0 0 1.6rem;
+    font-size: 0.92rem;
+    box-shadow: var(--shadow);
+  }
+  .env-grid dt { color: var(--muted); }
+  .env-grid dd { margin: 0; font-family: "IBM Plex Mono", monospace; font-size: 0.86rem; }
+
+  footer {
+    margin-top: 3.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+</style>
+
+<div class="page">
+  <p class="kicker">Prod verification &middot; ingredion_prd &middot; 2026-08-21</p>
+  <h1>Prod scope completion: the gaps the 100k run left, closed with fresh data</h1>
+  <p class="dek">The 100k-row prod smoke test named eight uncovered items. This run closes three of them &mdash; the 26-case edge matrix, merge writes, and UC tag application &mdash; against fresh fixtures, and follows up on that run's archival observation.</p>
+
+  <div class="stat-strip">
+    <div class="stat"><span class="n">26/26</span><span class="l">edge cases pass</span></div>
+    <div class="stat"><span class="n">2</span><span class="l">defects found</span></div>
+    <div class="stat"><span class="n">3/8</span><span class="l">gaps closed this run</span></div>
+    <div class="stat"><span class="n">seed 002</span><span class="l">fresh fixture set</span></div>
+  </div>
+
+  <p>The 2026-08-21 100k-row prod smoke test (<code>docs/prod_smoke_test_2026-08_sap_migration.md</code>) proved the nine-table migration extract at scale, but its own &ldquo;Not covered&rdquo; section named eight gaps: the 26-case edge matrix, merge writes, streaming, XML, retry-under-failure, UC tag application, the two advisory jobs, and concurrency. This run closes the three that are realistically testable against <code>ingredion_prd</code> right now &mdash; the edge matrix, merge writes, and UC tags &mdash; plus follows up on that run's archival observation, all with fresh fixtures (<code>generate_sap_migration.py --seed 20260821002</code>) rather than reusing the 100k run's data. It does not attempt VACUUM/Tier-2-gated work, XML, streaming, or concurrency; see <strong>Scope and limits</strong> for why each stays out.</p>
+
+  <h2>Environment</h2>
+  <dl class="env-grid">
+    <dt>Workspace</dt><dd>adb-7405607398572130</dd>
+    <dt>Catalog / schema</dt><dd>ingredion_en.ingredion_prd</dd>
+    <dt>Runs as</dt><dd>prod-sp (8cbc9ba5&hellip;)</dd>
+    <dt>Branch / commit</dt><dd>main @ 0ceaf28 (unchanged, no redeploy)</dd>
+    <dt>Package</dt><dd>bronze_ingest-0.6.0</dd>
+    <dt>Fixtures</dt><dd>generate_sap_migration.py --rows 2000 --seed 20260821002</dd>
+    <dt>Verified from</dt><dd>SQL warehouse ingredion-st, as fabricyash@gmail.com</dd>
+  </dl>
+
+  <h2>Required scope, closed vs. still open</h2>
+  <p>Every item either the 100k run or this run named as scope. &ldquo;Closed here&rdquo; means fresh evidence exists in this run; &ldquo;closed prior&rdquo; means an earlier run already covered it and nothing here contradicts that.</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>Scope item</th><th>Status</th><th>Evidence</th></tr>
+      <tr><td>Nine-table migration extract at volume</td><td><span class="pill pass">closed prior</span></td><td>100k run, 2026-08-21</td></tr>
+      <tr><td>26-case edge matrix in prod</td><td><span class="pill pass">closed here</span></td><td>this run, all 26 pass</td></tr>
+      <tr><td>Merge writes + merge/OPTIMIZE audit</td><td><span class="pill pass">closed here</span></td><td>this run, ec25_merge_optimize_bronze</td></tr>
+      <tr><td>Referential integrity, trailing-space at scale</td><td><span class="pill pass">closed prior</span></td><td>100k run</td></tr>
+      <tr><td>Archival of source files</td><td><span class="pill fail">found broken</span></td><td>this run, reproduced 3&times;</td></tr>
+      <tr><td>UC tag application</td><td><span class="pill fail">found broken</span></td><td>this run, tag_check_bronze</td></tr>
+      <tr><td>Retry under real transient failure</td><td><span class="pill open">still open</span></td><td>needs a fault-injection harness</td></tr>
+      <tr><td>ai_metadata_prd / bronze_maintenance_prd</td><td><span class="pill open">still open</span></td><td>neither job was run</td></tr>
+      <tr><td>Streaming / Auto Loader</td><td><span class="pill open">still open</span></td><td>json-only streaming (#323), not exercised</td></tr>
+      <tr><td>XML</td><td><span class="pill open">still open</span></td><td>gated pending Tier 2 sign-off (#336/#337)</td></tr>
+      <tr><td>VACUUM</td><td><span class="pill open">still open</span></td><td>bronze_maintenance_prd paused, Tier 2</td></tr>
+      <tr><td>Concurrency / sustained load</td><td><span class="pill open">still open</span></td><td>out of scope for this pass</td></tr>
+    </table>
+  </div>
+
+  <h2>The 26-case edge matrix, run clean</h2>
+  <p>The first attempt collided: the fixture generator deliberately reuses real SAP table names (<code>mara</code>, <code>kna1</code>, <code>vbap</code>, &hellip;) across unrelated cases, and <code>table_name_template</code> only keys off the filename &mdash; so 17 different runs all wrote into one shared <code>mara_bronze</code>. Re-run with a per-case <code>--table_name_template "&lt;caseid&gt;_{filename}_bronze"</code> override, matching the pattern the 2026-08-20 staging run already used (<code>ec20_kna1_bronze</code>, <code>ec20ctl_kna1_bronze</code>). The first attempt's contaminated tables are left in place &mdash; dropping them needs <code>DROP TABLE</code>, which no agent runs &mdash; and are called out again under <strong>State left behind</strong>.</p>
+
+  <p>Two cases also needed a config field the first pass omitted, because a plain rerun would have only reproduced the default behavior, not the thing being proven:</p>
+  <ul>
+    <li><strong>EC-01/EC-02</strong> needed <code>required_columns</code>/<code>unique_columns</code> set explicitly &mdash; without them there's nothing to quarantine against.</li>
+    <li><strong>EC-20</strong> needed <code>csv_multiline: true</code> &mdash; the #375 fix corrected the default <em>escape</em> handling, not the multiline default, which stays <code>false</code> by design.</li>
+    <li><strong>EC-21</strong> needed <code>csv_header: false</code> <em>and</em> <code>schema_hint_ddl</code> &mdash; with only the hint set, the reader silently consumed the first data row as a header instead of refusing.</li>
+  </ul>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>ID</th><th>Proves</th><th>Result</th><th>Evidence</th></tr>
+      <tr><td>EC-01</td><td>required_columns quarantines bad rows</td><td><span class="pill pass">pass</span></td><td>2 bronze + 2 quarantined = 4 source rows</td></tr>
+      <tr><td>EC-02</td><td>unique_columns quarantines the duplicate deterministically</td><td><span class="pill pass">pass</span></td><td>2 bronze + 1 quarantined = 3 source rows</td></tr>
+      <tr><td>EC-03</td><td>schema drift (added column) detected and merged</td><td><span class="pill pass">pass</span></td><td>added:["NEW_FIELD"], column present</td></tr>
+      <tr><td>EC-04</td><td>schema drift (removed column), old rows keep value</td><td><span class="pill pass">pass</span></td><td>removed:["MATKL"]</td></tr>
+      <tr><td>EC-05</td><td>schema drift (type change) reported, not coerced</td><td><span class="pill pass">pass</span></td><td>type_changed: BRGEW double &rarr; string</td></tr>
+      <tr><td>EC-06</td><td>PERMISSIVE isolates a corrupt line</td><td><span class="pill pass">pass</span></td><td>3 rows; malformed line verbatim in _corrupt_record</td></tr>
+      <tr><td>EC-07</td><td>.jsonl overrides multiline=true (#146)</td><td><span class="pill pass">pass</span></td><td>5 rows, not 1</td></tr>
+      <tr><td>EC-08</td><td>nothing ingestable reports skipped, not failed</td><td><span class="pill pass">pass</span></td><td>0 unit(s) ingested, 1 skipped</td></tr>
+      <tr><td>EC-09</td><td>folder-as-table: 3 files become 1 table</td><td><span class="pill pass">pass</span></td><td>12 rows in one table</td></tr>
+      <tr><td>EC-10</td><td>format-aware discovery ignores non-matching files</td><td><span class="pill pass">pass</span></td><td>only mara.jsonl ingested</td></tr>
+      <tr><td>EC-11</td><td>canonicalization applies to JSON, not just XML (#374)</td><td><span class="pill pass">pass</span></td><td>all field names land, no write rejection</td></tr>
+      <tr><td>EC-12</td><td>colliding names disambiguated, not last-wins (#384)</td><td><span class="pill pass">pass</span></td><td>Order_Id, Order_Id_2, order_id_3</td></tr>
+      <tr><td>EC-13</td><td>CSV inference keeps zero-padded keys (#371)</td><td><span class="pill pass">pass</span></td><td>MATNR (18 chars), PSTLZ (01234) intact</td></tr>
+      <tr><td>EC-14</td><td>SAP null-date conventions stay distinct</td><td><span class="pill pass">pass</span></td><td>"00000000", "" and NULL all present</td></tr>
+      <tr><td>EC-15</td><td>trailing-whitespace option doesn't strip padding</td><td><span class="pill pass">pass</span></td><td>NAME1 is 35 characters, both rows</td></tr>
+      <tr><td>EC-16</td><td>UTF-8 survives read/write/catalog round-trip</td><td><span class="pill pass">pass</span></td><td>Río, Guaçu, Krefeld Werk &ndash; Süd, 上海工厂</td></tr>
+      <tr><td>EC-17</td><td>deep nesting preserved, not flattened</td><td><span class="pill pass">pass</span></td><td>4-level struct/array shape intact</td></tr>
+      <tr><td>EC-18</td><td>0-byte file doesn't crash the schema inference</td><td><span class="pill pass">pass</span></td><td>empty table, 0 rows, run succeeds</td></tr>
+      <tr><td>EC-19</td><td>header-only CSV is a valid empty table</td><td><span class="pill pass">pass</span></td><td>4 named columns, 0 rows</td></tr>
+      <tr><td>EC-20</td><td>csv_multiline fixes the quoted-newline split (#375)</td><td><span class="pill pass">pass*</span></td><td>4 rows, not 5; quotes unescape correctly</td></tr>
+      <tr><td>EC-21</td><td>headerless CSV fails closed without a schema hint</td><td><span class="pill pass">pass</span></td><td>refused without hint; typed with one</td></tr>
+      <tr><td>EC-22</td><td>numeric precision and negatives survive</td><td><span class="pill pass">pass</span></td><td>-1250.75, 9.999999999999E10 exact</td></tr>
+      <tr><td>EC-23</td><td>null / empty / single-space stay distinct</td><td><span class="pill pass">pass</span></td><td>all three present and distinguishable</td></tr>
+      <tr><td>EC-24</td><td>column count alone doesn't break the write</td><td><span class="pill pass">pass</span></td><td>122 source columns present</td></tr>
+      <tr><td>EC-25</td><td>append gives 4 rows; merge gives 3, value updated</td><td><span class="pill pass">pass</span></td><td>see Merge writes, below</td></tr>
+      <tr><td>EC-26</td><td>numeric-looking strings never coerced</td><td><span class="pill pass">pass</span></td><td>"1.10" stays "1.10"</td></tr>
+    </table>
+  </div>
+  <p style="font-size:0.85rem;color:var(--muted)">* with the <code>csv_multiline: true</code> override this run applied &mdash; the package default stays <code>false</code> by design.</p>
+
+  <p>Twenty-six of twenty-six pass &mdash; up from the 2026-08-20 staging baseline of 22/26, because #371/#374/#375/#376/#384/#385 fixed exactly the four that failed there, and this run re-proves all of them fresh in prod rather than trusting the staging record to still apply.</p>
+
+  <h2>Merge writes, including the merge+OPTIMIZE audit interaction</h2>
+  <p>Two sequential merges into <code>ec25_merge_optimize_bronze</code> on <code>merge_keys: ["MATNR"]</code>, one folder path, files swapped by hand between runs (archival being broken meant it wouldn't have cleared the first file on its own &mdash; see below):</p>
+  <ol>
+    <li>Batch 1 (2 rows, <code>MATNR</code> <code>...001</code> and <code>...002</code>) &rarr; insert 2. Audit: <code>row_count=2, rows_inserted=2, rows_updated=0</code>.</li>
+    <li>Batch 2 (<code>...001</code> updated <code>BRGEW</code> 25.0&rarr;27.5, <code>...003</code> new) &rarr; <code>DESCRIBE HISTORY</code> shows an auto-<code>OPTIMIZE</code> committed immediately after the <code>MERGE</code> &mdash; the exact shape that broke the audit trail before #385. Audit row: <code>row_count=2, rows_inserted=1, rows_updated=1</code> &mdash; version 2's numbers, not nulled by the OPTIMIZE commit.</li>
+  </ol>
+  <p>Final table: 3 rows, <code>MATNR ...001</code> at 27.5, <code>...002</code> untouched at 30.0, <code>...003</code> inserted at 12.0. #376/#385 hold in prod, on fresh data, with the same OPTIMIZE-adjacency shape that caused the original failure.</p>
+
+  <h2>Two defects found</h2>
+
+  <div class="defect">
+    <h3>Archival silently fails in prod</h3>
+    <p><code>archive_ingested_file</code> tries to move a successfully-ingested file to <code>processed/{date}/</code>, falls back to <code>quarantine_files/</code>, and leaves the file in place only if both moves fail &mdash; logging a warning either way, never raising. That return value is <strong>never written to <code>_ingestion_audit</code></strong> &mdash; only the per-file job-run result carries it, and nothing queries that after the fact.</p>
+    <p>Reproduced three times with fresh, single-purpose fixtures: a standalone one-record file (no <code>processed/</code> or <code>quarantine_files/</code> folder created at all &mdash; both the move and the fallback failed), all 26 edge-case source files, and the 100k run's own <code>migration/</code> folder.</p>
+    <p>Root cause is not confirmed, but <code>bronze_layer/README.md</code>'s grant runbook only documents <code>GRANT USE CATALOG</code> and per-environment schema grants &mdash; it never lists a <code>WRITE VOLUME</code> step. Reads succeed; only writes to the volume fail, consistent with <code>prod-sp</code> never having been granted <code>WRITE VOLUME</code>. Recommended: confirm the grant directly, and persist <code>move_status</code>/<code>move_detail</code> to <code>_ingestion_audit</code> so a future failure is visible without checking the volume by hand.</p>
+  </div>
+
+  <div class="defect">
+    <h3>UC table-tag application fails on every attempt</h3>
+    <p>Set a free-form tag (not a governed <code>class.*</code>/<code>system.*</code>/<code>ai.*</code>/<code>sap.*</code> key) on a fresh single-record ingestion via <code>per_file_config_json</code>'s <code>table_tags</code> field:</p>
+    <ul>
+      <li>Job succeeded; audit row shows <code>tags_failed: true</code>.</li>
+      <li><code>tag_outcome_json</code>: <code>{"applied":0,"failed":["...: 'WorkspaceClient' object has no attribute 'entity_tag_assignments'"]}</code></li>
+      <li><code>information_schema.table_tags</code> confirms zero rows for the table.</li>
+    </ul>
+    <p>Unlike archival, this failure <strong>is</strong> correctly surfaced in the audit trail &mdash; #64's design holds. The defect is a <code>databricks-sdk</code> version mismatch: the deployed SDK's <code>WorkspaceClient</code> doesn't expose <code>entity_tag_assignments</code>. Job-level tags (<code>environment</code>/<code>layer</code> on the job resource itself) are unaffected &mdash; a different mechanism. Recommended: pin or upgrade <code>databricks-sdk</code> in <code>bronze_layer</code>'s dependencies, then re-run this fixture to confirm.</p>
+  </div>
+
+  <h2>Scope and limits</h2>
+  <div class="callout">Prod only. No <code>GRANT</code>, <code>REVOKE</code>, <code>DROP</code> or <code>VACUUM</code> was run by an agent. <code>databricks bundle deploy -t prod</code> was not re-run &mdash; <code>main</code> hasn't moved since the 100k run's deploy, so the already-deployed 0.6.0 wheel is identical to what a redeploy would produce.</div>
+
+  <p><strong>Still not covered, and why:</strong></p>
+  <ul>
+    <li><strong>Retry under real transient failure.</strong> Needs a fault-injection harness, not a fixture variation. Not built.</li>
+    <li><strong><code>ai_metadata_prd</code> and <code>bronze_maintenance_prd</code>.</strong> Neither job was run. <code>bronze_maintenance_prd</code> stays paused pending Tier 2 approval (it runs <code>VACUUM</code>).</li>
+    <li><strong>Streaming / Auto Loader.</strong> The package's streaming mode only supports <code>source_format: json</code> (#323); multi-format Auto Loader is deferred. Not attempted.</li>
+    <li><strong>XML.</strong> Still refused by <code>approved_formats()</code> pending Tier 2 sign-off on #336/#337.</li>
+    <li><strong>Concurrency and sustained load.</strong> Explicitly deferred for this pass &mdash; needs a load-test design, not a fixture rerun.</li>
+  </ul>
+
+  <h2>State left behind</h2>
+  <p><strong>New, correctly-isolated tables</strong> (per-case <code>table_name_template</code>, no cross-case collisions): <code>ec01fix_mara_bronze</code> (+<code>_quarantine</code>), <code>ec02fix_mara_bronze</code> (+<code>_quarantine</code>), <code>ec03b_baseline_bronze</code>, <code>ec03b_mara_bronze</code>, <code>ec04b_baseline_bronze</code>, <code>ec04b_mara_bronze</code>, <code>ec05b_baseline_bronze</code>, <code>ec05b_mara_bronze</code>, <code>ec06_mara_bronze</code>, <code>ec07_vbak_bronze</code>, <code>ec09_vbap_bronze</code>, <code>ec10_mara_bronze</code>, <code>ec11_zcustom_bronze</code>, <code>ec12_zcollide_bronze</code>, <code>ec13_mara_bronze</code>, <code>ec14_mcha_bronze</code>, <code>ec15_kna1_bronze</code>, <code>ec16_t001w_bronze</code>, <code>ec17_zspec_bronze</code>, <code>ec18_vbrp_bronze</code>, <code>ec19_vbrk_bronze</code>, <code>ec20fix_kna1_bronze</code>, <code>ec21hint2_t001w_bronze</code>, <code>ec22_vbap_bronze</code>, <code>ec23_kna1_bronze</code>, <code>ec24_zmara_ext_bronze</code>, <code>ec25_merge_optimize_bronze</code>, <code>ec26_zkeys_bronze</code>, <code>archival_check_bronze</code>, <code>tag_check_bronze</code>.</p>
+
+  <p><strong>Contaminated tables from the first, mis-namespaced attempt</strong> &mdash; each holds mixed rows from multiple unrelated cases sharing a filename, needing manual cleanup: <code>mara_bronze</code> (17 runs), <code>kna1_bronze</code> (7), <code>t001w_bronze</code> (5), <code>vbap_bronze</code> (5), <code>vbak_bronze</code> (3), <code>mcha_bronze</code> (3), <code>baseline_bronze</code> (4), <code>vbrk_bronze</code> (2), <code>vbrp_bronze</code> (2), plus a handful of single-case tables that ran twice due to a background-script race &mdash; harmless duplicates, not cross-contaminated, but still extra. None of this was dropped; <code>DROP TABLE</code> needs a human.</p>
+
+  <p>Source files for every case remain at their original upload paths &mdash; consistent with the archival defect above, not a separate issue. A second run against any of these paths would re-read the files as new. <code>ec21refuse2_t001w_bronze</code> does not exist &mdash; that run's whole point was to fail, and it did.</p>
+
+  <footer>Verified against ingredion_en.ingredion_prd via SQL warehouse ingredion-st, as fabricyash@gmail.com &middot; full narrative in docs/prod_smoke_test_2026-08-21_scope_completion.md</footer>
+</div>
