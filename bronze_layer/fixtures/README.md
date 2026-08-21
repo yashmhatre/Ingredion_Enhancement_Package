@@ -99,7 +99,7 @@ One directory per case, so a failure names itself rather than arriving as one re
 | EC-25 | Two batches sharing a key | `append` gives 4 rows, `merge` on `MATNR` gives 3 with the value updated |
 | EC-26 | Numeric-looking strings | `"1.10"` must not become `1.1`; EANs and phone numbers stay strings |
 
-Several cases need configuration to mean anything. EC-01 and EC-02 need `required_columns` and `unique_columns` set — with the gate unconfigured they pass everything, which is what #250 is open about. EC-03 through EC-05 must be ingested **into a table a baseline run already created**, because drift against an empty table is not drift. EC-21 and EC-25 need a config change rather than a second file.
+Several cases need configuration to mean anything. EC-01 and EC-02 need `required_columns` and `unique_columns` set — with the gate unconfigured they pass everything, which is what #250 is open about. EC-03 through EC-05 must be ingested **into a table a baseline run already created**, because drift against an empty table is not drift: each case now ships its own `baseline/mara.jsonl` (three rows, the shape the drift file is a variation of) alongside the drift file itself. Ingest the baseline first, into the same target table, then ingest the case file on top of it. EC-21 and EC-25 need a config change rather than a second file.
 
 ## Known gaps
 
