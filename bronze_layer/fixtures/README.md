@@ -83,7 +83,7 @@ One directory per case, so a failure names itself rather than arriving as one re
 | EC-09 | Folder-as-table | 3 files become one table of 12 rows |
 | EC-10 | Data beside control file and log | JSON run ingests only JSON, ignores the rest |
 | EC-11 | Identifier canonicalization | Spaces, parentheses, slashes, dots, percent, dash, umlaut |
-| EC-12 | Canonicalization collision | Three names collapsing to one are disambiguated, not last-wins |
+| EC-12 | Canonicalization collision | `Order Id` and `Order.Id` collapse to one name and are disambiguated, not last-wins |
 | EC-13 | Leading zeros | Padded `MATNR` and a `00501` postal code survive CSV inference |
 | EC-14 | SAP null dates | `"00000000"`, null and `""` stay distinct in one column |
 | EC-15 | Trailing spaces | Padding survives; `ignoreTrailingWhiteSpace` must not strip it |

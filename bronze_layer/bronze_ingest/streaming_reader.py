@@ -14,6 +14,7 @@ from pyspark.sql.functions import col, lower
 
 from .config import IngestionConfig
 from .errors import JsonLinesTruncationError
+from .identifiers import ON_COLLISION_DISAMBIGUATE, canonicalize_identifiers
 from .json_reader import JSON_LINES_EXTENSIONS, effective_multiline, is_json_lines_path
 from .logging_utils import logger
 
@@ -118,7 +119,13 @@ def read_json_stream(spark, config: IngestionConfig):
         .drop("_metadata")
     )
 
-    return df
+    # Same rename the batch path gets in `readers.read_source` (#374): a
+    # field name Delta rejects is a rename here, not a write failure. It
+    # runs after the lineage columns are attached so their names go through
+    # the identical rule, and it is a projection on the streaming
+    # DataFrame - it does not touch the schema location or how Auto Loader
+    # evolves the schema, both of which are keyed on the SOURCE names.
+    return canonicalize_identifiers(df, on_collision=ON_COLLISION_DISAMBIGUATE)
 
 
 def assert_no_silent_truncation(
