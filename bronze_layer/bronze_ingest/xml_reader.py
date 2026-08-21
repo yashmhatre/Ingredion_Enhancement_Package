@@ -1,11 +1,12 @@
 """Fail-closed XML batch reading with namespace-safe Delta identifiers."""
 
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Optional
 
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
 from .config import IngestionConfig
+from .identifiers import ON_COLLISION_ERROR, IdentifierCollisionError, canonicalize_identifiers
 from .logging_utils import logger
 from .retry import with_retry
 
@@ -14,8 +15,16 @@ class XMLMalformedDocumentError(ValueError):
     """One or more physical XML documents are not well formed."""
 
 
-class XMLIdentifierCollisionError(ValueError):
-    """Two sibling XML names canonicalize to the same Delta identifier."""
+class XMLIdentifierCollisionError(IdentifierCollisionError):
+    """
+    Two sibling XML names canonicalize to the same Delta identifier.
+
+    Still its own class, and still raised from here, because XML is the one
+    format that fails closed on a collision instead of disambiguating - see
+    `identifiers`'s module docstring for why the policy is per-format. It
+    subclasses the shared `IdentifierCollisionError` so a caller that
+    catches either one keeps working.
+    """
 
 
 def _well_formedness_error(content: bytes) -> Optional[str]:
@@ -45,74 +54,26 @@ def _assert_xml_documents_well_formed(spark: Any, source_path: str) -> None:
         raise XMLMalformedDocumentError(f"Malformed XML document(s): {details}")
 
 
-def _canonical_name(name: str) -> str:
-    return name.replace(":", "__")
-
-
-def _validate_data_type(data_type: Any, path: Tuple[str, ...]) -> None:
-    from pyspark.sql.types import ArrayType, MapType, StructType
-
-    if isinstance(data_type, StructType):
-        _validate_no_collisions(data_type.fields, path)
-    elif isinstance(data_type, ArrayType):
-        _validate_data_type(data_type.elementType, path + ("[]",))
-    elif isinstance(data_type, MapType):
-        _validate_data_type(data_type.valueType, path + ("{}",))
-
-
-def _validate_no_collisions(fields: Iterable[Any], path: Tuple[str, ...] = ()) -> None:
-
-    by_canonical: Dict[str, str] = {}
-    for field in fields:
-        canonical = _canonical_name(field.name)
-        previous = by_canonical.get(canonical)
-        if previous is not None and previous != field.name:
-            location = ".".join(path) or "<root>"
-            raise XMLIdentifierCollisionError(
-                f"XML identifier collision at {location}: {previous!r} and "
-                f"{field.name!r} both canonicalize to {canonical!r}."
-            )
-        by_canonical[canonical] = field.name
-        _validate_data_type(field.dataType, path + (canonical,))
-
-
-def _canonicalize_column(column: Any, data_type: Any) -> Any:
-    from pyspark.sql.functions import lit, struct, transform, transform_values, when
-    from pyspark.sql.types import ArrayType, MapType, StructType
-
-    if isinstance(data_type, StructType):
-        canonical_struct = struct(
-            *(
-                _canonicalize_column(column.getField(field.name), field.dataType).alias(
-                    _canonical_name(field.name)
-                )
-                for field in data_type.fields
-            )
-        )
-        return when(column.isNull(), lit(None)).otherwise(canonical_struct)
-    if isinstance(data_type, ArrayType):
-        return transform(column, lambda item: _canonicalize_column(item, data_type.elementType))
-    if isinstance(data_type, MapType):
-        return transform_values(
-            column, lambda _key, value: _canonicalize_column(value, data_type.valueType)
-        )
-    return column
-
-
 def canonicalize_xml_identifiers(dataframe: Any):
-    """Replace namespace separators recursively, failing on sibling collisions."""
-    from pyspark.sql.functions import col
+    """
+    Rewrite namespace separators - and every other Delta-unsafe character -
+    recursively, failing on sibling collisions.
 
-    _validate_no_collisions(dataframe.schema.fields)
-    projections = []
-    for field in dataframe.schema.fields:
-        escaped = field.name.replace("`", "``")
-        projections.append(
-            _canonicalize_column(col(f"`{escaped}`"), field.dataType).alias(
-                _canonical_name(field.name)
-            )
-        )
-    return dataframe.select(*projections)
+    The implementation moved to `identifiers` in #374 so JSON, CSV and
+    Parquet get the same identifiers from the same code; this is now a thin
+    wrapper that pins the XML-specific choice, `on_collision="error"`.
+    Nothing XML callers relied on changed: `:` is still rewritten to `__`
+    before anything else, so `a:id` and a sibling literally named `a__id`
+    still collide, and a collision is still a hard failure rather than a
+    rename. What is new is that an XML name containing a space or a
+    parenthesis is now canonicalized too, instead of reaching Delta intact.
+    """
+    try:
+        return canonicalize_identifiers(dataframe, on_collision=ON_COLLISION_ERROR)
+    except XMLIdentifierCollisionError:
+        raise
+    except IdentifierCollisionError as exc:
+        raise XMLIdentifierCollisionError(f"XML identifier collision: {exc}") from None
 
 
 def read_xml(spark: Any, config: IngestionConfig):
