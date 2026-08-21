@@ -486,11 +486,21 @@ def read_write_metrics(
     `append` / `overwrite` : `numOutputRows` - rows written. `source_row_count`
         is the same number, because nothing is dropped between the gate and
         the write.
-    `merge` : `numTargetRowsInserted` + `numTargetRowsUpdated` as `row_count`
-        (rows actually changed in the target), the three components
-        separately, and `numSourceRows` as `source_row_count`. The difference
-        between source and target counts is the dedupe/no-op ratio, which is
-        a genuinely useful signal and was previously unobservable.
+    `merge` : `numTargetRowsInserted` + `numTargetRowsMatchedUpdated` as
+        `row_count` (rows actually changed in the target), the three
+        components separately, and `numSourceRows` as `source_row_count`. The
+        difference between source and target counts is the dedupe/no-op
+        ratio, which is a genuinely useful signal and was previously
+        unobservable.
+
+        Uses the `...Matched...` metric keys (`numTargetRowsMatchedUpdated`,
+        `numTargetRowsMatchedDeleted`), not the unqualified
+        `numTargetRowsUpdated`/`numTargetRowsDeleted` (#376). Verified
+        against a real merge commit's `operationMetrics` in dev: the
+        unqualified keys were absent (this package's MERGE never issues a
+        `WHEN NOT MATCHED BY SOURCE` clause), so every merge audit row read
+        back NULL for row_count/rows_updated/rows_deleted even though the
+        write itself was correct.
 
     Never raises. A metrics read failing must not fail an ingestion that has
     already committed - the same rule audit.py and schema_registry.py follow.
@@ -533,7 +543,7 @@ def read_write_metrics(
 
         if write_mode == "merge":
             inserted = _num("numTargetRowsInserted")
-            updated = _num("numTargetRowsUpdated")
+            updated = _num("numTargetRowsMatchedUpdated")
             written = (
                 None if inserted is None and updated is None else (inserted or 0) + (updated or 0)
             )
@@ -542,7 +552,7 @@ def read_write_metrics(
                 "source_row_count": _num("numSourceRows"),
                 "rows_inserted": inserted,
                 "rows_updated": updated,
-                "rows_deleted": _num("numTargetRowsDeleted"),
+                "rows_deleted": _num("numTargetRowsMatchedDeleted"),
             }
 
         written = _num("numOutputRows")

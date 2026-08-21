@@ -480,10 +480,24 @@ def test_shipped_config_yaml_still_constructs_unchanged(config_path):
 # ---- csv_header / csv_infer_schema (#308/#310) ----
 
 
-def test_csv_header_and_csv_infer_schema_default_to_true():
+def test_csv_header_defaults_to_true_and_csv_infer_schema_to_false():
+    """csv_infer_schema is False by default since #371: inference read a
+    zero-padded SAP key as a number and dropped the padding without an error,
+    a warning or a quarantine row. CSV lands as strings; callers cast."""
     cfg = _cfg()
     assert cfg.csv_header is True
-    assert cfg.csv_infer_schema is True
+    assert cfg.csv_infer_schema is False
+
+
+def test_csv_multiline_defaults_to_false():
+    """Off by default (#375): a multiLine CSV file cannot be split across
+    tasks, so turning it on costs parallelism on large extracts."""
+    assert _cfg().csv_multiline is False
+
+
+def test_csv_multiline_is_independent_of_the_json_multiline_field():
+    cfg = _cfg(multiline=True)
+    assert cfg.csv_multiline is False
 
 
 def test_csv_header_and_csv_infer_schema_settable_from_config_file(tmp_path):
@@ -915,6 +929,12 @@ def test_csv_header_must_be_a_real_bool(bad):
 def test_csv_infer_schema_must_be_a_real_bool(bad):
     with pytest.raises(ValueError, match="csv_infer_schema must be a bool"):
         _cfg(csv_infer_schema=bad)
+
+
+@pytest.mark.parametrize("bad", ["true", "false", 1, 0, None])
+def test_csv_multiline_must_be_a_real_bool(bad):
+    with pytest.raises(ValueError, match="csv_multiline must be a bool"):
+        _cfg(csv_multiline=bad)
 
 
 def test_quoted_yaml_bool_is_rejected_by_the_loader_too(tmp_path):

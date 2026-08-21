@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict
 
 from .config import IngestionConfig
 from .csv_reader import read_csv
+from .identifiers import ON_COLLISION_DISAMBIGUATE, canonicalize_identifiers
 from .json_reader import effective_multiline, read_json
 from .parquet_reader import read_parquet
 from .xml_reader import read_xml
@@ -67,6 +68,19 @@ def read_source(spark, config: IngestionConfig):
     would make a half-wired format (registered in `formats.FORMATS`, not yet
     given a reader) look like it works, for exactly as long as nobody checks
     the columns it produced.
+
+    Whatever the dispatched reader returns is then passed through
+    `identifiers.canonicalize_identifiers` before it goes back to the
+    caller, so a field name Delta would reject - a space, a parenthesis, a
+    slash - is a rename here rather than a `DELTA_INVALID_CHARACTERS_IN_
+    COLUMN_NAMES` failure three retries into the write (#374). Doing it
+    here rather than inside each reader is the same argument the dispatch
+    itself rests on: one decision, one place, and a format added later
+    cannot forget it.
+
+    `read_xml` has already canonicalized under its own fail-closed policy
+    by the time the frame arrives; the rule is idempotent, so the second
+    pass is a no-op on it and its collision behavior is untouched.
     """
     try:
         reader = _BATCH_READERS[config.source_format]
@@ -75,7 +89,7 @@ def read_source(spark, config: IngestionConfig):
             f"No registered batch reader for source_format={config.source_format!r}. "
             f"Registered readers: {sorted(_BATCH_READERS)}."
         ) from None
-    return reader(spark, config)
+    return canonicalize_identifiers(reader(spark, config), on_collision=ON_COLLISION_DISAMBIGUATE)
 
 
 def _json_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
@@ -116,6 +130,8 @@ def _csv_batch_reader_options(config: IngestionConfig) -> Dict[str, Any]:
         "header": config.csv_header,
         "inferSchema": config.csv_infer_schema,
         "mode": "PERMISSIVE",
+        "escape": '"',
+        "multiLine": config.csv_multiline,
     }
     if config.schema_hint_ddl:
         options["columnNameOfCorruptRecord"] = config.corrupt_record_column
