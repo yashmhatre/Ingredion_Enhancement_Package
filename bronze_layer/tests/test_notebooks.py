@@ -706,6 +706,14 @@ class _ValidationRow(dict):
     pass
 
 
+#: What the #375 CSV cases expect a correctly-parsed rfc4180.csv to contain:
+#: doubled quotes unescaped, and the quoted newline kept inside one field.
+_RFC4180_ROWS = [
+    _ValidationRow(KUNNR="0000100001", NAME1='He said "premium grade"'),
+    _ValidationRow(KUNNR="0000100002", NAME1="Line one\nLine two"),
+]
+
+
 class _ValidationFrame:
     def __init__(self, filename):
         self.filename = filename
@@ -715,6 +723,8 @@ class _ValidationFrame:
             self.columns = ["id", "name", "_input_file_name"]
         elif filename == "illegal_header.csv":
             self.columns = ["order id", "total(amount)", "_input_file_name"]
+        elif filename == "rfc4180.csv":
+            self.columns = ["KUNNR", "NAME1", "_input_file_name"]
         elif filename == "valid.xml":
             self.columns = ["_id", "customer", "items", "_input_file_name"]
         elif filename == "namespaced.xml":
@@ -723,7 +733,11 @@ class _ValidationFrame:
             self.columns = ["id", "amount", "_corrupt_record", "_rescued_data"]
 
     def count(self):
-        return 2 if self.filename in {"header.csv", "headerless.csv", "malformed.csv"} else 1
+        return (
+            2
+            if self.filename in {"header.csv", "headerless.csv", "malformed.csv", "rfc4180.csv"}
+            else 1
+        )
 
     def select(self, _column):
         return _ValidationSelection(f"/Volumes/c/s/v/{self.filename}")
@@ -731,7 +745,14 @@ class _ValidationFrame:
     def filter(self, _condition):
         return self
 
+    def collect(self):
+        return _RFC4180_ROWS if self.filename == "rfc4180.csv" else []
+
     def first(self):
+        if self.filename == "rfc4180.csv":
+            # .filter() is a no-op here, so the multiLine case's row is the
+            # one it asks for by KUNNR.
+            return _RFC4180_ROWS[1]
         return _ValidationRow(amount=None, _corrupt_record="bad", _rescued_data=None)
 
 
@@ -745,11 +766,13 @@ def _fake_validation_read_source(_spark, config):
 
 
 @pytest.mark.parametrize(
-    "notebook,expected_cases",
-    [("validate_csv_reader", 4), ("validate_xml_reader", 4)],
+    "notebook,expected_cases,expected_fixtures",
+    # Cases and fixture files are counted separately: the two #375 CSV cases
+    # share one rfc4180.csv, so they are no longer one-to-one.
+    [("validate_csv_reader", 6, 5), ("validate_xml_reader", 4, 4)],
 )
 def test_format_validation_notebooks_execute_all_cases(
-    run_notebook, monkeypatch, notebook, expected_cases
+    run_notebook, monkeypatch, notebook, expected_cases, expected_fixtures
 ):
     from bronze_ingest import readers
 
@@ -770,7 +793,7 @@ def test_format_validation_notebooks_execute_all_cases(
     assert run.exit_value == f"SUCCESS: all {expected_cases} " + (
         "CSV cases passed" if notebook == "validate_csv_reader" else "XML cases passed"
     )
-    assert len([call for call in run.dbutils.fs.calls if call[0] == "put"]) == expected_cases
+    assert len([call for call in run.dbutils.fs.calls if call[0] == "put"]) == expected_fixtures
     rows, schema = run.spark.created[0]
     assert schema == "case STRING, status STRING, detail STRING"
     assert len(rows) == expected_cases
