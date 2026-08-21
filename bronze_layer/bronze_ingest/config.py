@@ -81,6 +81,16 @@ class IngestionConfig:
     # string and a caller casts what it actually wants cast, which is also
     # how a migration extract is really shaped. Set True to opt back in.
     csv_infer_schema: bool = False
+    # CSV-only; ignored for every other source_format. CSV's own multiLine
+    # knob, separate from the JSON-only `multiline` field above precisely
+    # because the two options share a name and mean different things - see
+    # csv_reader.read_csv's docstring. Defaults False, matching Spark: a
+    # multiLine CSV file cannot be split across tasks, so turning it on
+    # costs parallelism on exactly the large single-file extracts this
+    # package targets. Set it True when quoted fields may contain newlines;
+    # without it such a record is split in two and the tail lands as a row
+    # of values shifted under the wrong column names (#375).
+    csv_multiline: bool = False
     # XML-only. Spark's XML data source cannot infer the repeated record
     # element safely; there is deliberately no second rowTag source in
     # reader_options.
@@ -384,6 +394,7 @@ class IngestionConfig:
         for _name, _value in (
             ("csv_header", self.csv_header),
             ("csv_infer_schema", self.csv_infer_schema),
+            ("csv_multiline", self.csv_multiline),
         ):
             if not isinstance(_value, bool):
                 raise ValueError(

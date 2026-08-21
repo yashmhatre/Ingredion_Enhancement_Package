@@ -91,7 +91,7 @@ One directory per case, so a failure names itself rather than arriving as one re
 | EC-17 | Deep nesting | Four levels, arrays of scalars and of structs, unflattened |
 | EC-18 | Zero-byte file | No `CANNOT_INFER_EMPTY_SCHEMA` |
 | EC-19 | CSV header, no rows | An empty table is a valid outcome — **this is the shape that crashed staging on 2026-07-29** |
-| EC-20 | CSV quoting | Embedded comma, escaped quotes, newline inside a quoted field: 4 rows, not 5 |
+| EC-20 | CSV quoting | Embedded comma, escaped quotes, newline inside a quoted field: RFC4180 quotes unescaped by default; 4 rows not 5 with `csv_multiline: true` (#375) |
 | EC-21 | Headerless CSV | Refused unless `schema_hint_ddl` names the columns |
 | EC-22 | Numeric extremes | Zero, negative credit amounts, 11 significant digits, float noise |
 | EC-23 | Null vs empty vs space | All three distinct; only null counts as missing |
