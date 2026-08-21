@@ -159,6 +159,45 @@ def test_merge_write_metrics_are_populated_not_null(spark):
     assert metrics["source_row_count"] == 2
 
 
+def test_merge_write_metrics_survive_an_intervening_optimize_commit(spark):
+    """
+    #385: staging re-verification of #376 showed row_count/source_row_count
+    NULL again for a genuine merge, because auto-optimize committed an
+    OPTIMIZE immediately after the MERGE, which became the new "latest"
+    commit before read_write_metrics ran. OPTIMIZE's operationMetrics has
+    no numTargetRows* keys, so every _num(...) call returned None.
+
+    Reproduced here without needing auto-optimize actually enabled: commit
+    the merge, then commit a real OPTIMIZE on top of it by hand, then read
+    metrics with since_version bracketing the merge. The fix must look past
+    the OPTIMIZE commit to the merge's own operationMetrics.
+    """
+    table = f"bw_merge_optimize_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+
+    full = _table(table)
+    version_before = table_version(spark, full)
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated"), (3, "c")], ["id", "name"]), cfg)
+
+    spark.sql(f"OPTIMIZE {full}")
+
+    metrics = read_write_metrics(spark, full, "merge", since_version=version_before)
+
+    assert metrics["rows_inserted"] == 1
+    assert metrics["rows_updated"] == 1
+    assert metrics["rows_deleted"] == 0
+    assert metrics["row_count"] == 2
+    assert metrics["source_row_count"] == 2
+
+
 def test_merge_dedupes_duplicate_keys_before_merge(spark):
     """#48: a source batch with more than one row per merge key used to
     make Delta MERGE throw a cryptic 'multiple source rows matched' error.

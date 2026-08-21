@@ -100,29 +100,38 @@ def _disambiguate(names: Sequence[str], canonicals: Sequence[str], location: str
     """
     Canonical names with duplicates numbered, first occurrence unsuffixed.
 
-    `taken` is seeded with EVERY canonical name in the struct before any
-    suffix is chosen, so a generated `Order_Id_2` cannot land on a third
-    field that is genuinely named `Order_Id_2` at source.
+    Collisions are detected case-INsensitively: Delta rejects
+    `order_id`/`Order_Id` as the same column regardless of `spark.sql.
+    caseSensitive`, so comparing canonicals with plain `==` missed
+    same-name-different-case collisions and let the raw
+    `COLUMN_ALREADY_EXISTS` error through to the write (#384). The keys used
+    for grouping/`taken` are lowercased; the names themselves keep their
+    original case.
+
+    `taken` is seeded with EVERY canonical name (lowercased) in the struct
+    before any suffix is chosen, so a generated `Order_Id_2` cannot land on
+    a third field that is genuinely named `order_id_2` at source.
     """
-    counts = Counter(canonicals)
-    taken = set(canonicals)
+    keys = [canonical.lower() for canonical in canonicals]
+    counts = Counter(keys)
+    taken = set(keys)
     occurrences: Dict[str, int] = {}
     resolved: List[str] = []
-    for source_name, canonical in zip(names, canonicals):
-        if counts[canonical] == 1:
+    for source_name, canonical, key in zip(names, canonicals, keys):
+        if counts[key] == 1:
             resolved.append(canonical)
             continue
-        seen = occurrences.get(canonical, 0)
-        occurrences[canonical] = seen + 1
+        seen = occurrences.get(key, 0)
+        occurrences[key] = seen + 1
         if seen == 0:
             resolved.append(canonical)
             continue
         suffix = seen + 1
         candidate = f"{canonical}_{suffix}"
-        while candidate in taken:
+        while candidate.lower() in taken:
             suffix += 1
             candidate = f"{canonical}_{suffix}"
-        taken.add(candidate)
+        taken.add(candidate.lower())
         resolved.append(candidate)
         logger.warning(
             "Identifier collision at %s: %r canonicalizes to %r, already used by an "
@@ -143,15 +152,18 @@ def _resolve_names(fields: Sequence[Any], on_collision: str, path: Tuple[str, ..
     if on_collision == ON_COLLISION_DISAMBIGUATE:
         return _disambiguate(names, canonicals, location)
 
+    # Delta treats column names case-insensitively, so `order_id` and
+    # `Order_Id` collide there even though `==` says they differ (#384).
     by_canonical: Dict[str, str] = {}
     for source_name, canonical in zip(names, canonicals):
-        previous = by_canonical.get(canonical)
+        key = canonical.lower()
+        previous = by_canonical.get(key)
         if previous is not None and previous != source_name:
             raise IdentifierCollisionError(
                 f"Identifier collision at {location}: {previous!r} and "
                 f"{source_name!r} both canonicalize to {canonical!r}."
             )
-        by_canonical[canonical] = source_name
+        by_canonical[key] = source_name
     return canonicals
 
 
