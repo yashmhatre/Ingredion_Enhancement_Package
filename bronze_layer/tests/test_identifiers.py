@@ -102,12 +102,27 @@ def test_needs_canonicalization_only_fires_on_names_that_change():
 
 
 def test_ec12_collisions_are_disambiguated_rather_than_last_wins():
-    # The EC-12 fixture: three source names, two of which collapse.
+    # The EC-12 fixture: three source names, all three of which collapse to
+    # `order_id` under Delta's case-insensitive column matching (#384) even
+    # though `Order_Id` != `order_id` under plain string equality.
     assert _resolve(["Order Id", "Order.Id", "order_id"]) == [
         "Order_Id",
         "Order_Id_2",
-        "order_id",
+        "order_id_3",
     ]
+
+
+def test_collisions_are_case_insensitive_because_delta_column_matching_is():
+    # `Order_Id` and `order_id` are the same column to Delta regardless of
+    # `spark.sql.caseSensitive` (#384): the write failed with
+    # COLUMN_ALREADY_EXISTS even though the two canonicals compared unequal
+    # under `==`.
+    assert _resolve(["order_id", "Order_Id"]) == ["order_id", "Order_Id_2"]
+
+
+def test_case_insensitive_collision_raises_under_the_error_policy():
+    with pytest.raises(IdentifierCollisionError, match="order_id.*Order_Id.*Order_Id"):
+        _resolve(["order_id", "Order_Id"], on_collision=ON_COLLISION_ERROR)
 
 
 def test_disambiguation_keeps_every_field():

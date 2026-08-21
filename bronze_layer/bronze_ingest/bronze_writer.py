@@ -440,6 +440,35 @@ def _write_core(spark, df, config: IngestionConfig, txn_options=None):
     return full_name
 
 
+#: Delta operations that commit metadata/layout changes with no row-level
+#: metrics of their own - `operationMetrics` has no `numTargetRows*` or
+#: `numOutputRows` keys. Auto-optimize/auto-compaction commits one of these
+#: immediately after our write returns, becoming the new latest commit
+#: before `read_write_metrics` gets a chance to read it (#385). Kept as a
+#: blocklist rather than matching write-mode-specific operations against an
+#: allowlist (`"MERGE"`, `"WRITE"`, ...): the exact operation string Delta
+#: records for a plain `saveAsTable` write is not a stable contract across
+#: Delta versions, and a blocklist is the conservative direction to be
+#: wrong in - it only ever skips MORE commits, never mistakes a real write
+#: for maintenance.
+_MAINTENANCE_OPERATIONS = frozenset(
+    {
+        "OPTIMIZE",
+        "VACUUM START",
+        "VACUUM END",
+        "SET TBLPROPERTIES",
+        "UNSET TBLPROPERTIES",
+        "ADD CONSTRAINT",
+        "DROP CONSTRAINT",
+        "CHANGE COLUMN",
+        "UPGRADE PROTOCOL",
+        "UPGRADE SCHEMA",
+        "COMPUTE STATS",
+        "RESTORE",
+        "FSCK",
+    }
+)
+
 #: What an audit row records about a write. Every value is None when the
 #: metrics could not be read, so a caller never has to distinguish "absent"
 #: from "zero".
@@ -505,31 +534,43 @@ def read_write_metrics(
     Never raises. A metrics read failing must not fail an ingestion that has
     already committed - the same rule audit.py and schema_registry.py follow.
 
-    One honest caveat: this reads the LATEST commit, so a concurrent writer
-    committing between our write and this read would have its metrics
-    attributed to our run. The deployed job sets `max_concurrent_runs: 1`
-    (#153/#164), which closes it for the case that actually occurs here.
+    Reads the latest commit that is NOT a maintenance operation
+    (`_MAINTENANCE_OPERATIONS`), rather than unconditionally the latest
+    commit. On a table with auto-optimize/auto-compaction enabled, Delta
+    commits an `OPTIMIZE` right after the MERGE/WRITE - still before this
+    function runs - and `OPTIMIZE`'s `operationMetrics` has none of the
+    `numTargetRows*`/`numOutputRows` keys this function looks for, so every
+    one of them came back `None` (#385). Looking a fixed 20 commits back
+    for the nearest non-maintenance one is enough for any realistic run of
+    auto-compaction, and is still a metadata-only read.
+
+    One honest caveat: a concurrent writer's non-maintenance commit landing
+    between our write and this read would have its metrics attributed to
+    our run. The deployed job sets `max_concurrent_runs: 1` (#153/#164),
+    which closes it for the case that actually occurs here.
     """
     try:
         from delta.tables import DeltaTable
 
         history = (
-            DeltaTable.forName(spark, full_name).history(1).select("version", "operationMetrics")
+            DeltaTable.forName(spark, full_name)
+            .history(20)
+            .select("version", "operation", "operationMetrics")
         )
-        rows = history.collect()
+        rows = [row for row in history.collect() if row["operation"] not in _MAINTENANCE_OPERATIONS]
         if not rows:
             return dict(EMPTY_WRITE_METRICS)
 
-        # The latest commit is only this run's if it is newer than the
-        # version the table was on before the write. When it is not, this
-        # run committed nothing and the numbers below belong to somebody
-        # else's commit - which is how #366's audit rows came to report five
-        # rows written by a run that wrote none.
+        # The latest (non-maintenance) commit is only this run's if it is
+        # newer than the version the table was on before the write. When it
+        # is not, this run committed nothing and the numbers below belong to
+        # somebody else's commit - which is how #366's audit rows came to
+        # report five rows written by a run that wrote none.
         if since_version is not None and rows[0]["version"] <= since_version:
             logger.warning(
-                "%s is still at version %s, so the latest commit predates this write. "
-                "Reporting no metrics rather than attributing an earlier commit's row "
-                "counts to this run (#366).",
+                "%s is still at version %s, so the latest non-maintenance commit predates "
+                "this write. Reporting no metrics rather than attributing an earlier "
+                "commit's row counts to this run (#366).",
                 full_name,
                 rows[0]["version"],
             )
