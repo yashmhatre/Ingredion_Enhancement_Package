@@ -1,0 +1,483 @@
+<title>Prod Smoke Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFCFD;
+    --surface:    #F1F4F8;
+    --surface-2:  #E7ECF3;
+    --line:       #D6DDE7;
+    --line-soft:  #E4EAF1;
+    --ink:        #14171C;
+    --muted:      #5A6474;
+    --accent:     #2E5AA8;
+    --accent-dim: #E8EEF9;
+    --blocked:    #B32B21;
+    --blocked-bg: #FBEAE8;
+    --gate:       #8A6008;
+    --gate-bg:    #FBF1DC;
+    --ok:         #15675A;
+    --ok-bg:      #E2F2EE;
+    --code-bg:    #14171C;
+    --code-ink:   #E6EAF0;
+    --code-line:  #2A303A;
+
+    --f-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0F1216;
+      --surface:    #161A21;
+      --surface-2:  #1D222B;
+      --line:       #272E39;
+      --line-soft:  #1F252E;
+      --ink:        #E3E8EF;
+      --muted:      #939DAC;
+      --accent:     #7FA6E8;
+      --accent-dim: #18202E;
+      --blocked:    #EE8073;
+      --blocked-bg: #2A1815;
+      --gate:       #DCA83F;
+      --gate-bg:    #2A2110;
+      --ok:         #4FBCA4;
+      --ok-bg:      #10241F;
+      --code-bg:    #0A0C0F;
+      --code-ink:   #DDE3EB;
+      --code-line:  #232A34;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0F1216;
+    --surface:    #161A21;
+    --surface-2:  #1D222B;
+    --line:       #272E39;
+    --line-soft:  #1F252E;
+    --ink:        #E3E8EF;
+    --muted:      #939DAC;
+    --accent:     #7FA6E8;
+    --accent-dim: #18202E;
+    --blocked:    #EE8073;
+    --blocked-bg: #2A1815;
+    --gate:       #DCA83F;
+    --gate-bg:    #2A2110;
+    --ok:         #4FBCA4;
+    --ok-bg:      #10241F;
+    --code-bg:    #0A0C0F;
+    --code-ink:   #DDE3EB;
+    --code-line:  #232A34;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 6rem;
+  }
+
+  .mast { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.1rem;
+    align-items: center;
+    margin: 0;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 5.5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.024em;
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 1.075rem;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 1.6rem 0 0;
+    overflow: hidden;
+  }
+  .meta-cell { background: var(--surface); padding: 0.8rem 1rem; }
+  .meta-cell dt {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.28rem;
+  }
+  .meta-cell dd {
+    margin: 0;
+    font-family: var(--f-mono);
+    font-size: 0.86rem;
+    font-weight: 500;
+    word-break: break-word;
+  }
+
+  .score {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 2.5rem 0 0;
+    overflow: hidden;
+  }
+  .score div { background: var(--surface); padding: 1rem 1.1rem; }
+  .score .n {
+    font-family: var(--f-mono);
+    font-size: 1.85rem;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .score .l {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-top: 0.3rem;
+  }
+  .score .ok  .n { color: var(--ok); }
+  .score .bad .n { color: var(--blocked); }
+
+  section {
+    padding-top: 3rem;
+    margin-top: 3rem;
+    border-top: 1px solid var(--line);
+  }
+  section h2 {
+    font-size: clamp(1.35rem, 3vw, 1.7rem);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    line-height: 1.2;
+    text-wrap: balance;
+    margin: 0 0 0.5rem;
+  }
+  section h3 {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 2rem 0 0.7rem;
+  }
+  section p { margin: 0 0 1rem; max-width: var(--measure); }
+  section p:last-child { margin-bottom: 0; }
+  .lede { color: var(--muted); max-width: var(--measure); margin: 0 0 1.5rem; }
+
+  .panel {
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 1.3rem clamp(1.05rem, 3vw, 1.6rem);
+    margin: 0 0 1.5rem;
+  }
+  .panel:last-child { margin-bottom: 0; }
+  .panel h3 { margin-top: 0; }
+  .panel p:last-child { margin-bottom: 0; }
+  .panel.good { border-color: var(--ok); background: var(--ok-bg); }
+  .panel.good > .ttl { color: var(--ok); }
+  .panel.bad  { border-color: var(--blocked); background: var(--blocked-bg); }
+  .panel.bad  > .ttl { color: var(--blocked); }
+  .panel.warn { border-color: var(--gate); background: var(--gate-bg); }
+  .panel.warn > .ttl { color: var(--gate); }
+  .ttl {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 0 0 0.55rem;
+  }
+
+  .tbl-scroll { overflow-x: auto; margin: 0 0 1.25rem; border: 1px solid var(--line); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.85rem;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  thead th {
+    background: var(--surface-2);
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface); }
+  tbody tr.total td { font-weight: 600; background: var(--surface-2); }
+  td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td.id  { font-family: var(--f-mono); font-weight: 600; white-space: nowrap; }
+  td.mono, th.mono { font-family: var(--f-mono); font-size: 0.82rem; }
+
+  .st {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .st.yes { color: var(--ok); }
+  .st.no  { color: var(--blocked); }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.875em;
+    background: var(--surface-2);
+    padding: 0.09em 0.34em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+  pre {
+    margin: 0 0 1.25rem;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--code-line);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  ul, ol { margin: 0 0 1rem; padding-left: 1.15rem; max-width: var(--measure); }
+  li { margin-bottom: 0.4rem; }
+
+  a { color: var(--accent); text-underline-offset: 0.15em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  .foot {
+    margin-top: 3.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow"><span>Bronze layer</span><span>Prod</span><span>2026-08-21</span><span>main @ 0ceaf28</span></p>
+    <h1>100,012 rows into a schema that had never taken a write</h1>
+    <p class="standfirst">
+      <code>ingredion_prd</code> held a schema and an empty volume path, and nothing else, before this
+      run. Twenty times the row count of the staging smoke test, through the same three-format load.
+      Every number below came from querying Unity Catalog directly, not from what a job reported.
+    </p>
+
+    <div class="score">
+      <div class="ok"><span class="n">100,012</span><span class="l">Rows reconciled</span></div>
+      <div class="ok"><span class="n">9 / 9</span><span class="l">Tables succeeded</span></div>
+      <div><span class="n">0</span><span class="l">Rows quarantined</span></div>
+      <div><span class="n">0</span><span class="l">New defects</span></div>
+      <div class="bad"><span class="n">1</span><span class="l">Follow-up flagged</span></div>
+    </div>
+
+    <dl class="meta-grid">
+      <div class="meta-cell"><dt>Workspace</dt><dd>adb-7405607398572130</dd></div>
+      <div class="meta-cell"><dt>Catalog / schema</dt><dd>ingredion_en.ingredion_prd</dd></div>
+      <div class="meta-cell"><dt>Package</dt><dd>bronze_ingest-0.6.0</dd></div>
+      <div class="meta-cell"><dt>Fixture seed</dt><dd>20260821</dd></div>
+      <div class="meta-cell"><dt>Runs as</dt><dd>prod-sp 8cbc9ba5</dd></div>
+      <div class="meta-cell"><dt>Verified from</dt><dd>SQL warehouse ingredion-st</dd></div>
+    </dl>
+  </header>
+
+  <section>
+    <h2>How this got to prod</h2>
+    <p class="lede">
+      <code>main</code> had not moved since #189 on 2026-08-02. Everything since — 0.6.0, plus the
+      fixes the 2026-08-20 staging smoke test found necessary — was still sitting on <code>staging</code>.
+    </p>
+    <p>
+      A 2026-08-21 re-verification of the six bugfixes staging had already absorbed found two of them
+      reproducing under different conditions: #374's collision case and #376's row-count logic, filed
+      as <strong>#384</strong> and <strong>#385</strong>. Both were fixed and promoted to
+      <code>staging</code> first. Only once that was clean did <code>staging</code> — 246 commits ahead
+      of <code>main</code>'s prior tip — go into a PR and get merged. Nothing about this promotion was
+      a silent fast-forward.
+    </p>
+  </section>
+
+  <section>
+    <h2>Nine tables, 100,012 rows, every count reconciles</h2>
+    <p class="lede">
+      Three passes over <code>migration/</code>, one per format, <code>source_format</code> overridden
+      per pass at the CLI. Each pass touched only the files matching its format.
+    </p>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Table</th><th>Format</th><th class="num">Source</th><th class="num">Bronze</th><th class="num">Quarantine</th><th>Reconciles</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="id">kna1</td><td>JSON</td><td class="num">8,000</td><td class="num">8,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">mara</td><td>JSON</td><td class="num">10,000</td><td class="num">10,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">vbak</td><td>JSON Lines</td><td class="num">14,000</td><td class="num">14,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">aufk</td><td>JSON Lines</td><td class="num">5,000</td><td class="num">5,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">mcha</td><td>JSON Lines</td><td class="num">4,000</td><td class="num">4,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">makt</td><td>CSV</td><td class="num">20,000</td><td class="num">20,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">t001w</td><td>CSV</td><td class="num">12</td><td class="num">12</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">lfa1</td><td>CSV</td><td class="num">3,000</td><td class="num">3,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">vbap</td><td>Parquet</td><td class="num">36,000</td><td class="num">36,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr class="total"><td class="id">Total</td><td></td><td class="num">100,012</td><td class="num">100,012</td><td class="num">0</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Three job runs, back to back: JSON in 2m40s, CSV in 2m18s, Parquet in 2m00s — about 7 minutes of
+      job wall time for 100,012 rows on the same <code>2X-Small</code> warehouse staging used. Nothing
+      timed out, throttled, or needed a retry.
+    </p>
+  </section>
+
+  <section>
+    <h2>What staging found, checked at 20x the rows</h2>
+    <p class="lede">
+      Every defect the 2026-08-20 staging run surfaced and this project fixed was checked again here,
+      against real row counts instead of the low hundreds staging had to work with.
+    </p>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Issue</th><th>What it was</th><th>Checked here</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="id">#371</td><td>CSV type inference destroyed zero-padded keys</td><td>All 20,000 <code>makt.MATNR</code> and 3,000 <code>lfa1.PSTLZ</code> read back as <code>string</code>, values intact</td></tr>
+          <tr><td class="id">#374 / #384</td><td>Identifier canonicalization missing outside XML; collisions not disambiguated</td><td>Not re-tested — extract has no colliding or spaced field names by design; every unit still wrote clean on the first attempt</td></tr>
+          <tr><td class="id">#376 / #385</td><td>Merge writes lost row counts, especially after an auto-OPTIMIZE</td><td>Not exercised — this run is append-only; verified separately on staging before promotion</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Referential integrity holds at scale: <code>makt.MATNR subset of mara.MATNR</code> and
+      <code>vbap.VBELN subset of vbak.VBELN</code> both return zero orphans, checked against the
+      20,000- and 36,000-row tables directly. Trailing-space preservation holds too — all 8,000
+      <code>kna1.NAME1</code> values are still padded to width 35.
+    </p>
+
+    <div class="panel good">
+      <p class="ttl">No new defect surfaced</p>
+      <p>
+        That's a narrower claim than "correct at scale." This run loaded one directory once, in three
+        sequential passes, with no concurrency and no retry. It says the specific defects staging found
+        stay fixed at 20x the row count — not that scale carries no risk of its own.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>A follow-up, not a defect</h2>
+    <div class="panel warn">
+      <p class="ttl">Source files were never archived</p>
+      <p>
+        All nine files remain at their original upload path under <code>migration/</code>, modification
+        timestamps unchanged, rather than moving to <code>processed/{date}/</code> the way
+        <code>fs/archival.py</code> is documented to move them — and the way the staging run observed
+        its own files move. Correctness wasn't affected: every audit row reports success and every count
+        reconciles. But a second run against this path would try to re-read all nine files as new,
+        since discovery only skips <code>processed/</code> and <code>quarantine_files/</code> and never
+        checked whether either exists here.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Scope and limits</h2>
+    <p>
+      Prod only. No <code>GRANT</code>, <code>REVOKE</code>, <code>DROP</code> or <code>VACUUM</code>
+      was run by an agent — the <code>GRANT SELECT ON SCHEMA</code> needed to verify this run was
+      requested and applied by Yash directly, since no human had queried <code>ingredion_prd</code>
+      before this run.
+    </p>
+    <p><strong>Not covered:</strong></p>
+    <ul>
+      <li>The 26-case edge-case matrix — exercised twice on staging already; this run's ask was volume, not a second correctness pass.</li>
+      <li>Merge writes, and a live re-check of #376/#385 against this run's own data.</li>
+      <li>Streaming and Auto Loader.</li>
+      <li>XML, which <code>approved_formats()</code> still refuses pending #336 and #337.</li>
+      <li>Retry under real transient failure, and why archival didn't run here.</li>
+      <li>Unity Catalog tag application — the prod job configures no tags.</li>
+      <li><code>ai_metadata_prd</code> and <code>bronze_maintenance_prd</code>, neither run. Maintenance stays paused pending Tier 2 approval — it runs <code>VACUUM</code>.</li>
+      <li>Concurrency and sustained load — three sequential passes over one directory, not a traffic pattern.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>State left behind</h2>
+    <p>
+      <code>ingredion_prd</code> now holds 9 bronze tables, <code>_ingestion_audit</code> (9 rows, all
+      success), and <code>_schema_registry</code> (9 rows, one per table). Every table carries CDF at
+      the default 30-day retention. This is the schema's first data — nothing was dropped or
+      overwritten.
+    </p>
+    <p>
+      All nine source files sit unarchived at
+      <code>/Volumes/.../PROD/Raw/migration/</code>. Clearing or archiving that folder by hand is worth
+      doing before anything else runs against this volume.
+    </p>
+  </section>
+
+  <p class="foot">
+    Companion record: docs/prod_smoke_test_2026-08_sap_migration.md · Fixtures:
+    generate_sap_migration.py --rows 100000 --seed 20260821 · Promotion: PR #390
+  </p>
+
+</div>
