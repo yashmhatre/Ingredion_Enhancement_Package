@@ -83,7 +83,7 @@ One directory per case, so a failure names itself rather than arriving as one re
 | EC-09 | Folder-as-table | 3 files become one table of 12 rows |
 | EC-10 | Data beside control file and log | JSON run ingests only JSON, ignores the rest |
 | EC-11 | Identifier canonicalization | Spaces, parentheses, slashes, dots, percent, dash, umlaut |
-| EC-12 | Canonicalization collision | Three names collapsing to one are disambiguated, not last-wins |
+| EC-12 | Canonicalization collision | `Order Id` and `Order.Id` collapse to one name and are disambiguated, not last-wins |
 | EC-13 | Leading zeros | Padded `MATNR` and a `00501` postal code survive CSV inference |
 | EC-14 | SAP null dates | `"00000000"`, null and `""` stay distinct in one column |
 | EC-15 | Trailing spaces | Padding survives; `ignoreTrailingWhiteSpace` must not strip it |
@@ -91,7 +91,7 @@ One directory per case, so a failure names itself rather than arriving as one re
 | EC-17 | Deep nesting | Four levels, arrays of scalars and of structs, unflattened |
 | EC-18 | Zero-byte file | No `CANNOT_INFER_EMPTY_SCHEMA` |
 | EC-19 | CSV header, no rows | An empty table is a valid outcome — **this is the shape that crashed staging on 2026-07-29** |
-| EC-20 | CSV quoting | Embedded comma, escaped quotes, newline inside a quoted field: 4 rows, not 5 |
+| EC-20 | CSV quoting | Embedded comma, escaped quotes, newline inside a quoted field: RFC4180 quotes unescaped by default; 4 rows not 5 with `csv_multiline: true` (#375) |
 | EC-21 | Headerless CSV | Refused unless `schema_hint_ddl` names the columns |
 | EC-22 | Numeric extremes | Zero, negative credit amounts, 11 significant digits, float noise |
 | EC-23 | Null vs empty vs space | All three distinct; only null counts as missing |
@@ -99,7 +99,7 @@ One directory per case, so a failure names itself rather than arriving as one re
 | EC-25 | Two batches sharing a key | `append` gives 4 rows, `merge` on `MATNR` gives 3 with the value updated |
 | EC-26 | Numeric-looking strings | `"1.10"` must not become `1.1`; EANs and phone numbers stay strings |
 
-Several cases need configuration to mean anything. EC-01 and EC-02 need `required_columns` and `unique_columns` set — with the gate unconfigured they pass everything, which is what #250 is open about. EC-03 through EC-05 must be ingested **into a table a baseline run already created**, because drift against an empty table is not drift. EC-21 and EC-25 need a config change rather than a second file.
+Several cases need configuration to mean anything. EC-01 and EC-02 need `required_columns` and `unique_columns` set — with the gate unconfigured they pass everything, which is what #250 is open about. EC-03 through EC-05 must be ingested **into a table a baseline run already created**, because drift against an empty table is not drift: each case now ships its own `baseline/mara.jsonl` (three rows, the shape the drift file is a variation of) alongside the drift file itself. Ingest the baseline first, into the same target table, then ingest the case file on top of it. EC-21 and EC-25 need a config change rather than a second file.
 
 ## Known gaps
 

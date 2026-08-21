@@ -125,6 +125,40 @@ def test_merge_updates_matched_and_inserts_new_rows(spark):
     assert rows == {1: "a-updated", 2: "b", 3: "c"}
 
 
+def test_merge_write_metrics_are_populated_not_null(spark):
+    """
+    #376: every row-accounting column in the audit trail came back NULL for
+    a merge write, including rows_inserted/rows_updated/rows_deleted, which
+    exist in the schema specifically for merge. Root cause was reading the
+    unqualified `numTargetRowsUpdated`/`numTargetRowsDeleted` metric keys -
+    absent from a plain MERGE's operationMetrics, which only carries the
+    `...Matched...` variants because this package never issues a `WHEN NOT
+    MATCHED BY SOURCE` clause.
+    """
+    table = f"bw_merge_metrics_{uuid.uuid4().hex[:8]}"
+    cfg = _cfg(
+        table,
+        write_mode="merge",
+        merge_keys=["id"],
+        required_columns=["id"],
+        dedupe_before_merge=False,
+    )
+
+    write_bronze(spark, spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"]), cfg)
+
+    full = _table(table)
+    version_before = table_version(spark, full)
+    write_bronze(spark, spark.createDataFrame([(1, "a-updated"), (3, "c")], ["id", "name"]), cfg)
+
+    metrics = read_write_metrics(spark, full, "merge", since_version=version_before)
+
+    assert metrics["rows_inserted"] == 1
+    assert metrics["rows_updated"] == 1
+    assert metrics["rows_deleted"] == 0
+    assert metrics["row_count"] == 2
+    assert metrics["source_row_count"] == 2
+
+
 def test_merge_dedupes_duplicate_keys_before_merge(spark):
     """#48: a source batch with more than one row per merge key used to
     make Delta MERGE throw a cryptic 'multiple source rows matched' error.

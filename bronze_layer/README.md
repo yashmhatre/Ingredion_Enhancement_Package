@@ -154,6 +154,20 @@ parsing on a `.jsonl` file anyway — it is misnamed, but that is not the
 package's call — set `reader_options: {multiLine: "true"}`, which is
 applied last and wins.
 
+**CSV is read as RFC4180 by default**: `escape` is `"` (a double quote
+inside a quoted field is escaped by doubling it), not Spark's backslash.
+A source that really uses backslash escapes sets
+`reader_options: {escape: "\\"}`. Newlines inside quoted fields are a
+separate switch, `csv_multiline`, CSV's own field — distinct from the
+JSON-only `multiline` above, which never reaches the CSV reader even
+though Spark spells both options `multiLine`. It defaults to `false`
+because a multiLine CSV file cannot be split across tasks, which costs
+parallelism on large single-file extracts. Leave it off and a quoted
+newline splits the record: the tail arrives as an extra row with its
+values under the wrong column names, with no error and no change in any
+count-based check (#375). Turn it on for any extract whose quoted fields
+may contain newlines.
+
 `write_mode: overwrite` is rejected by default for both per-file and
 folder-as-table directory ingestion (raises `ValueError` before touching
 any file) - directory ingestion's whole point is discovering files

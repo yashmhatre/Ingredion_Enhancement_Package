@@ -21,9 +21,33 @@ def read_csv(spark: Any, config: IngestionConfig):
     Production behavior:
       - `header` and `inferSchema` come from `config.csv_header` /
         `config.csv_infer_schema` - CSV's own knobs, added for exactly this
-        purpose (#308).
+        purpose (#308). `csv_infer_schema` defaults to False, so unless a
+        caller opts in every column arrives as a string; see the field's
+        comment in `config.py` for the zero-padded-key corruption that
+        default prevents (#371).
       - `mode=PERMISSIVE` (Spark's default) unconditionally, so unparseable
         rows don't kill the whole job, same as `read_json`.
+      - `escape` is set to `"` rather than left at Spark's backslash
+        default (#375). RFC4180 escapes a double quote inside a quoted
+        field by doubling it, and that is what "CSV" means to nearly every
+        producer; a backslash escape is the unusual dialect. With Spark's
+        default, a field written as `He said ""premium grade""` inside
+        quotes parses verbatim - outer quotes and doubled inner quotes
+        kept - instead of `He said "premium grade"`. Nothing warns and the row count is
+        unaffected, so no count-based check notices the corruption. A
+        source that really does use backslash escapes overrides it with
+        `reader_options={'escape': '\\\\'}`.
+      - `multiLine` comes from `config.csv_multiline`, CSV's own knob
+        (defaulting False, as Spark does), NOT from `config.multiline` -
+        see below. It is a config field rather than only a
+        `reader_options` entry because it is needed by ordinary RFC4180
+        input: a newline inside a quoted field splits the record in two,
+        and the tail becomes an extra row of values shifted under the
+        wrong column names. It defaults off because a multiLine CSV file
+        cannot be split across tasks, so it costs parallelism on large
+        single-file extracts - the trade-off is the operator's to make,
+        per source, and this makes it a one-line config change instead of
+        a hand-written reader option.
       - `config.multiline` is NEVER read here. It is a JSON-only field:
         `multiLine` means "this file is one document, not one per line" for
         JSON, but "a quoted field may contain a newline" for CSV - an
@@ -31,9 +55,10 @@ def read_csv(spark: Any, config: IngestionConfig):
         job (`bronze_layer/resources/bronze_ingest_jobs.yml`) hardcodes
         `multiline: "true"` for JSON's benefit; if this reader took that
         value, every CSV run would silently set `multiLine=true` too. A
-        source whose quoted fields genuinely contain newlines can still set
-        it, explicitly, via `reader_options={'multiLine': 'true'}` - the
-        same escape hatch `read_json` documents for its own override.
+        source whose quoted fields genuinely contain newlines sets
+        `csv_multiline: true` instead (and `reader_options={'multiLine':
+        'true'}` still works, and still wins, since reader_options are
+        applied last).
         Deliberately no warning here (unlike `json_reader.effective_multiline`):
         `multiline` defaults to `True` and the bundle sets it explicitly too,
         so config has no way to tell "the operator asked for this" from "this
@@ -45,9 +70,11 @@ def read_csv(spark: Any, config: IngestionConfig):
         includes every field). For CSV this is not merely mirroring
         `read_json`'s style - it is required: Spark only materialises
         `columnNameOfCorruptRecord` for CSV when that column is DECLARED in
-        the read schema. Against an inferred schema (the default here),
+        the read schema. Without `schema_hint_ddl` (the default path),
         malformed rows do not raise and do not populate the corrupt-record
-        column; they surface as NULLs in whatever columns failed to parse,
+        column - and inference is not the only way to end up without a
+        declared schema, since the default all-string read has none either.
+        They surface as NULLs in whatever columns failed to parse,
         indistinguishable from genuinely missing values. There is no
         runtime warning for this, and the column is never auto-appended to
         an operator-supplied `schema_hint_ddl` - if corrupt-record capture
@@ -75,6 +102,10 @@ def read_csv(spark: Any, config: IngestionConfig):
         .option("header", config.csv_header)
         .option("inferSchema", config.csv_infer_schema)
         .option("mode", "PERMISSIVE")
+        # RFC4180 doubled-quote escaping, not Spark's backslash default (#375).
+        .option("escape", '"')
+        # CSV's own knob - never config.multiline. See the docstring above.
+        .option("multiLine", config.csv_multiline)
     )
 
     if config.schema_hint_ddl:

@@ -1,0 +1,679 @@
+<title>SAP Migration Smoke Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFCFD;
+    --surface:    #F1F4F8;
+    --surface-2:  #E7ECF3;
+    --line:       #D6DDE7;
+    --line-soft:  #E4EAF1;
+    --ink:        #14171C;
+    --muted:      #5A6474;
+    --accent:     #2E5AA8;
+    --accent-dim: #E8EEF9;
+    --blocked:    #B32B21;
+    --blocked-bg: #FBEAE8;
+    --gate:       #8A6008;
+    --gate-bg:    #FBF1DC;
+    --ok:         #15675A;
+    --ok-bg:      #E2F2EE;
+    --code-bg:    #14171C;
+    --code-ink:   #E6EAF0;
+    --code-line:  #2A303A;
+
+    --f-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0F1216;
+      --surface:    #161A21;
+      --surface-2:  #1D222B;
+      --line:       #272E39;
+      --line-soft:  #1F252E;
+      --ink:        #E3E8EF;
+      --muted:      #939DAC;
+      --accent:     #7FA6E8;
+      --accent-dim: #18202E;
+      --blocked:    #EE8073;
+      --blocked-bg: #2A1815;
+      --gate:       #DCA83F;
+      --gate-bg:    #2A2110;
+      --ok:         #4FBCA4;
+      --ok-bg:      #10241F;
+      --code-bg:    #0A0C0F;
+      --code-ink:   #DDE3EB;
+      --code-line:  #232A34;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0F1216;
+    --surface:    #161A21;
+    --surface-2:  #1D222B;
+    --line:       #272E39;
+    --line-soft:  #1F252E;
+    --ink:        #E3E8EF;
+    --muted:      #939DAC;
+    --accent:     #7FA6E8;
+    --accent-dim: #18202E;
+    --blocked:    #EE8073;
+    --blocked-bg: #2A1815;
+    --gate:       #DCA83F;
+    --gate-bg:    #2A2110;
+    --ok:         #4FBCA4;
+    --ok-bg:      #10241F;
+    --code-bg:    #0A0C0F;
+    --code-ink:   #DDE3EB;
+    --code-line:  #232A34;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 2.5rem) 6rem;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .mast { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.1rem;
+    align-items: center;
+    margin: 0;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 5.5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.024em;
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 1.075rem;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 1.6rem 0 0;
+    overflow: hidden;
+  }
+  .meta-cell { background: var(--surface); padding: 0.8rem 1rem; }
+  .meta-cell dt {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.28rem;
+  }
+  .meta-cell dd {
+    margin: 0;
+    font-family: var(--f-mono);
+    font-size: 0.86rem;
+    font-weight: 500;
+    word-break: break-word;
+  }
+
+  /* ---------- scoreboard ---------- */
+
+  .score {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin: 2.5rem 0 0;
+    overflow: hidden;
+  }
+  .score div { background: var(--surface); padding: 1rem 1.1rem; }
+  .score .n {
+    font-family: var(--f-mono);
+    font-size: 1.85rem;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .score .l {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-top: 0.3rem;
+  }
+  .score .ok  .n { color: var(--ok); }
+  .score .bad .n { color: var(--blocked); }
+
+  /* ---------- sections ---------- */
+
+  section {
+    padding-top: 3rem;
+    margin-top: 3rem;
+    border-top: 1px solid var(--line);
+  }
+  section h2 {
+    font-size: clamp(1.35rem, 3vw, 1.7rem);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    line-height: 1.2;
+    text-wrap: balance;
+    margin: 0 0 0.5rem;
+  }
+  section h3 {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 2rem 0 0.7rem;
+  }
+  section p { margin: 0 0 1rem; max-width: var(--measure); }
+  section p:last-child { margin-bottom: 0; }
+  .lede { color: var(--muted); max-width: var(--measure); margin: 0 0 1.5rem; }
+
+  /* ---------- callouts ---------- */
+
+  .panel {
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 1.3rem clamp(1.05rem, 3vw, 1.6rem);
+    margin: 0 0 1.5rem;
+  }
+  .panel:last-child { margin-bottom: 0; }
+  .panel h3 { margin-top: 0; }
+  .panel p:last-child { margin-bottom: 0; }
+  .panel.good { border-color: var(--ok); background: var(--ok-bg); }
+  .panel.good > .ttl { color: var(--ok); }
+  .panel.bad  { border-color: var(--blocked); background: var(--blocked-bg); }
+  .panel.bad  > .ttl { color: var(--blocked); }
+  .panel.warn { border-color: var(--gate); background: var(--gate-bg); }
+  .panel.warn > .ttl { color: var(--gate); }
+  .ttl {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 0 0 0.55rem;
+  }
+
+  /* ---------- tables ---------- */
+
+  .tbl-scroll { overflow-x: auto; margin: 0 0 1.25rem; border: 1px solid var(--line); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.85rem;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  thead th {
+    background: var(--surface-2);
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface); }
+  td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td.id  { font-family: var(--f-mono); font-weight: 600; white-space: nowrap; }
+  td.mono, th.mono { font-family: var(--f-mono); font-size: 0.82rem; }
+  tr.fail td { background: var(--blocked-bg); }
+  tr.fail:hover td { background: var(--blocked-bg); }
+
+  .st {
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .st.yes { color: var(--ok); }
+  .st.no  { color: var(--blocked); }
+
+  .sev {
+    font-family: var(--f-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.18rem 0.45rem;
+    border-radius: 2px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .sev.high { color: var(--blocked); border-color: var(--blocked); background: var(--blocked-bg); }
+  .sev.med  { color: var(--gate);    border-color: var(--gate);    background: var(--gate-bg); }
+  .sev.low  { color: var(--muted);   border-color: var(--line);    background: var(--surface); }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.875em;
+    background: var(--surface-2);
+    padding: 0.09em 0.34em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+  pre {
+    margin: 0 0 1.25rem;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--code-line);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  ul, ol { margin: 0 0 1rem; padding-left: 1.15rem; max-width: var(--measure); }
+  li { margin-bottom: 0.4rem; }
+
+  a { color: var(--accent); text-underline-offset: 0.15em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  .foot {
+    margin-top: 3.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow"><span>Bronze layer</span><span>Staging</span><span>2026-08-20</span><span>staging @ 0bda9e4</span></p>
+    <h1>SAP migration extract, on real compute</h1>
+    <p class="standfirst">
+      The first run of this package against data shaped like a real cutover extract. 5,012 rows
+      across nine SAP tables, plus 26 isolated edge cases. Every number below was read back out of
+      Unity Catalog by query, not taken from what a job returned.
+    </p>
+
+    <div class="score">
+      <div class="ok"><span class="n">5,012</span><span class="l">Rows reconciled</span></div>
+      <div class="ok"><span class="n">22</span><span class="l">Cases pass</span></div>
+      <div class="bad"><span class="n">4</span><span class="l">Cases fail</span></div>
+      <div><span class="n">0</span><span class="l">Not run</span></div>
+      <div class="bad"><span class="n">6</span><span class="l">Defects filed</span></div>
+    </div>
+
+    <dl class="meta-grid">
+      <div class="meta-cell"><dt>Workspace</dt><dd>adb-7405607398572130</dd></div>
+      <div class="meta-cell"><dt>Catalog / schema</dt><dd>ingredion_en.ingredion_stg</dd></div>
+      <div class="meta-cell"><dt>Package</dt><dd>bronze_ingest-0.6.0</dd></div>
+      <div class="meta-cell"><dt>Fixture seed</dt><dd>20260820</dd></div>
+      <div class="meta-cell"><dt>Runs as</dt><dd>SP 6ea945e0</dd></div>
+      <div class="meta-cell"><dt>Verified from</dt><dd>SQL warehouse ingredion-st</dd></div>
+    </dl>
+  </header>
+
+  <section>
+    <h2>The blocker from the last run is fixed</h2>
+    <p class="lede">
+      The 0.6.0 staging validation stopped at Phase 07 on 2026-08-19: a drifted file ingested as a
+      no-op, reported <code>SUCCESS</code>, and was archived anyway. EC-03 is that same shape, run
+      against a wheel rebuilt from the #366 fix.
+    </p>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Observation</th><th>2026-08-19, pre-fix</th><th>This run</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Delta version</td><td class="mono">2 &rarr; 2</td><td class="mono">1 &rarr; 2</td></tr>
+          <tr><td>Table rows</td><td class="mono">10 &rarr; 10</td><td class="mono">3 &rarr; 4</td></tr>
+          <tr><td>Commit</td><td class="mono">none</td><td class="mono">WRITE, numOutputRows 1</td></tr>
+          <tr><td>Audit <code>row_count</code></td><td class="mono">5, from the previous commit</td><td class="mono">1</td></tr>
+          <tr><td>Added column merged</td><td><span class="st no">no</span></td><td><span class="st yes">yes</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The drifted row lands, <code>merge_schema</code> adds the column, and the audit row matches the
+      commit rather than echoing the one before it. EC-04 and EC-05 pass on the same path.
+    </p>
+    <p>
+      Staging had been serving a wheel built from <code>d2cda99</code>, which predates the fix.
+      Running the drift cases against it would have reproduced the same false green, so
+      <code>dev</code> was promoted to <code>staging</code> and the bundle redeployed first. The
+      deployed wheel was then checked directly rather than trusted by version string:
+      <code>_resolve_idempotent_txn_version</code> returns <code>config.idempotent_txn_version</code>
+      and derives nothing.
+    </p>
+  </section>
+
+  <section>
+    <h2>Nine tables, 5,012 rows, every count reconciled</h2>
+    <p class="lede">
+      Three passes over <code>migration/</code>, one per format, because <code>source_format</code>
+      drives discovery. Each pass ignored the other two formats without erroring. CSV and Parquet ran
+      on real compute here for the first time.
+    </p>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Table</th><th>Format</th><th class="num">Source</th><th class="num">Bronze</th><th class="num">Quarantine</th><th>Reconciles</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="id">kna1</td><td>JSON</td><td class="num">400</td><td class="num">400</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">mara</td><td>JSON</td><td class="num">500</td><td class="num">500</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">vbak</td><td>JSON Lines</td><td class="num">700</td><td class="num">700</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">aufk</td><td>JSON Lines</td><td class="num">250</td><td class="num">250</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">mcha</td><td>JSON Lines</td><td class="num">200</td><td class="num">200</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">makt</td><td>CSV</td><td class="num">1,000</td><td class="num">1,000</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">t001w</td><td>CSV</td><td class="num">12</td><td class="num">12</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">lfa1</td><td>CSV</td><td class="num">150</td><td class="num">150</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+          <tr><td class="id">vbap</td><td>Parquet</td><td class="num">1,800</td><td class="num">1,800</td><td class="num">0</td><td><span class="st yes">yes</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      All nine audit rows report <code>status: success</code> with <code>row_count</code> equal to
+      <code>source_row_count</code> and to the count in the table. Six referential-integrity checks
+      return zero orphans. Trailing spaces survive: <code>NAME1</code> is padded to width 35 in all
+      400 <code>kna1</code> rows and all 150 <code>lfa1</code> rows.
+    </p>
+  </section>
+
+  <section>
+    <h2>The counts reconcile and the data is still wrong</h2>
+
+    <div class="panel bad">
+      <p class="ttl">Every CSV table lost its zero-padded keys to type inference</p>
+      <p>
+        <code>csv_infer_schema</code> defaults to <code>True</code>. Spark reads an 18-character
+        zero-padded <code>MATNR</code> as a number and the padding is gone — no error, no warning, no
+        quarantined row.
+      </p>
+    </div>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Source</th><th>Format</th><th class="mono">In source</th><th class="mono">In bronze</th><th>Type</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="id">mara.json</td><td>JSON</td><td class="mono">000000000001000001</td><td class="mono">000000000001000001</td><td class="mono">string</td></tr>
+          <tr><td class="id">vbap.parquet</td><td>Parquet</td><td class="mono">000000000001000001</td><td class="mono">000000000001000001</td><td class="mono">string</td></tr>
+          <tr class="fail"><td class="id">makt.csv</td><td>CSV</td><td class="mono">000000000001000001</td><td class="mono">1000001</td><td class="mono">int</td></tr>
+          <tr class="fail"><td class="id">lfa1.csv</td><td>CSV</td><td class="mono">0000500001</td><td class="mono">500001</td><td class="mono">int</td></tr>
+          <tr class="fail"><td class="id">t001w.csv</td><td>CSV</td><td class="mono">"100"</td><td class="mono">100</td><td class="mono">int</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      All 1,000 <code>makt</code> rows and all 150 <code>lfa1</code> rows are affected, and
+      <code>MANDT</code> — the client field every SAP table carries — became an integer.
+    </p>
+
+    <div class="panel warn">
+      <p class="ttl">Why this is the most useful result in the run</p>
+      <p>
+        Row counts reconcile exactly, so no count-based check notices. And the referential-integrity
+        check <code>makt.MATNR subset of mara.MATNR</code> returned zero orphans, because Spark
+        coerced the string side to a number in order to compare it. The check passed
+        <em>because</em> of the corruption.
+      </p>
+      <p>
+        A silver-layer join written the obvious way, string to string, matches nothing. Filed as
+        <strong>#371</strong>.
+      </p>
+    </div>
+
+    <p>
+      EC-26 is the control that makes this unambiguous. The same shapes arriving as JSON all survive:
+      a padded <code>MATNR</code>, postal code <code>01234</code>, <code>0001</code>, and a version
+      string <code>1.10</code> that stays <code>"1.10"</code> rather than becoming <code>1.1</code>.
+    </p>
+  </section>
+
+  <section>
+    <h2>The 26 edge cases</h2>
+    <p class="lede">
+      One directory per case, one table per case, so a failure names itself. Every case has a
+      recorded outcome; none is unrun.
+    </p>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Case</th><th>Result</th><th>Evidence</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="id">EC-01</td><td>Null required key</td><td><span class="st yes">pass</span></td><td>2 to bronze, 2 to quarantine, sums to the 4 source rows</td></tr>
+          <tr><td class="id">EC-02</td><td>Duplicate business key</td><td><span class="st yes">pass</span></td><td>Duplicate <code>MATNR</code> quarantined; <code>…001</code> and <code>…003</code> kept</td></tr>
+          <tr><td class="id">EC-03</td><td>Drift, column added</td><td><span class="st yes">pass</span></td><td>4 rows, <code>added:["NEW_FIELD"]</code>, column merged</td></tr>
+          <tr><td class="id">EC-04</td><td>Drift, column removed</td><td><span class="st yes">pass</span></td><td><code>removed:["MATKL"]</code>; 3 baseline rows keep <code>STARCH</code>, drift row null</td></tr>
+          <tr><td class="id">EC-05</td><td>Drift, type changed</td><td><span class="st yes">pass</span></td><td><code>type_changed</code> reports <code>BRGEW</code> double &rarr; string; values intact</td></tr>
+          <tr><td class="id">EC-06</td><td>Corrupt JSON record</td><td><span class="st yes">pass</span></td><td>3 rows; malformed line held verbatim in <code>_corrupt_record</code></td></tr>
+          <tr><td class="id">EC-07</td><td><code>.jsonl</code> with multiline</td><td><span class="st yes">pass</span></td><td>5 rows — the extension overrode <code>multiline=true</code>, #146 holds</td></tr>
+          <tr><td class="id">EC-08</td><td>Empty folder</td><td><span class="st yes">pass</span></td><td>Reported skipped, not failed; no table created</td></tr>
+          <tr><td class="id">EC-09</td><td>Folder as table</td><td><span class="st yes">pass</span></td><td>12 rows in one table, from 3 distinct source files</td></tr>
+          <tr><td class="id">EC-10</td><td>Data beside control file</td><td><span class="st yes">pass</span></td><td>Took <code>mara.json</code>; ignored <code>_control.csv</code> and <code>extract.log</code></td></tr>
+          <tr class="fail"><td class="id">EC-11</td><td>Identifier canonicalization</td><td><span class="st no">fail</span></td><td>Write rejects <code>Gross Weight (KG)</code>, <code>Material Number</code> — #374</td></tr>
+          <tr class="fail"><td class="id">EC-12</td><td>Canonicalization collision</td><td><span class="st no">fail</span></td><td>Write rejects <code>Order Id</code>; the collision question never arises — #374</td></tr>
+          <tr class="fail"><td class="id">EC-13</td><td>Leading zeros</td><td><span class="st no">fail</span></td><td><code>MATNR</code>, <code>PSTLZ</code>, <code>MANDT</code> inferred as int — #371</td></tr>
+          <tr><td class="id">EC-14</td><td>SAP null dates</td><td><span class="st yes">pass</span></td><td><code>"00000000"</code>, <code>""</code> and null stay distinct in one column</td></tr>
+          <tr><td class="id">EC-15</td><td>Trailing spaces</td><td><span class="st yes">pass</span></td><td><code>NAME1</code> is 35 characters; padding preserved</td></tr>
+          <tr><td class="id">EC-16</td><td>Unicode</td><td><span class="st yes">pass</span></td><td><code>San Juan del Río</code>, <code>Mogi Guaçu</code>, <code>Krefeld Werk – Süd</code>, <code>上海工厂</code></td></tr>
+          <tr><td class="id">EC-17</td><td>Deep nesting</td><td><span class="st yes">pass</span></td><td>Four levels preserved; arrays of scalars and of structs intact</td></tr>
+          <tr><td class="id">EC-18</td><td>Zero-byte file</td><td><span class="st yes">pass</span></td><td>Empty table, no <code>CANNOT_INFER_EMPTY_SCHEMA</code></td></tr>
+          <tr><td class="id">EC-19</td><td>CSV header, no rows</td><td><span class="st yes">pass</span></td><td>4 columns, 0 rows — the shape that crashed staging on 2026-07-29</td></tr>
+          <tr class="fail"><td class="id">EC-20</td><td>CSV quoting</td><td><span class="st no">fail</span></td><td>Defaults give 5 rows and a shifted garbage row — #375</td></tr>
+          <tr><td class="id">EC-21</td><td>Headerless CSV</td><td><span class="st yes">pass</span></td><td>Refused without <code>schema_hint_ddl</code>; named and typed with one</td></tr>
+          <tr><td class="id">EC-22</td><td>Numeric extremes</td><td><span class="st yes">pass</span></td><td><code>0</code>, <code>-1250.75</code>, <code>9.999999999999E10</code>, <code>0.30000000000000004</code> exact</td></tr>
+          <tr><td class="id">EC-23</td><td>Null vs empty vs space</td><td><span class="st yes">pass</span></td><td>All three distinct; only null counts as missing</td></tr>
+          <tr><td class="id">EC-24</td><td>122-column wide row</td><td><span class="st yes">pass</span></td><td>All 122 columns present</td></tr>
+          <tr><td class="id">EC-25</td><td>Two batches sharing a key</td><td><span class="st yes">pass</span></td><td>Append gives 4 rows; merge on <code>MATNR</code> gives 3, value updated</td></tr>
+          <tr><td class="id">EC-26</td><td>Numeric-looking strings</td><td><span class="st yes">pass</span></td><td><code>"1.10"</code> stays a string; EANs and padded keys survive</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>What the four failures mean</h3>
+    <p>
+      <strong>EC-11 and EC-12</strong> fail because identifier canonicalization exists only in
+      <code>xml_reader.py</code>. A JSON field named <code>Gross Weight (KG)</code> reaches Delta
+      unchanged and the write is rejected.
+    </p>
+
+    <div class="panel good">
+      <p class="ttl">This failure has the right shape</p>
+      <p>
+        The job fails, the audit row records <code>failure_stage: write</code> with the Delta error,
+        and the source file moves to <code>quarantine_files/</code> rather than
+        <code>processed/</code>. It stays recoverable in the landing area. Compare #366, which
+        reported success and archived the file. The problem is only that this case should not fail
+        at all.
+      </p>
+    </div>
+
+    <p>
+      <strong>EC-13</strong> is #371 in isolation, on the case written to catch it.
+      <strong>EC-20</strong> needs both <code>multiLine</code> and <code>escape='"'</code> set by
+      hand; with package defaults the quoted newline splits the record into a fifth row carrying
+      values under the wrong columns. With both set, all four of its assertions pass.
+    </p>
+  </section>
+
+  <section>
+    <h2>Defects filed</h2>
+    <p class="lede">Six, each with the query evidence and the options for fixing it.</p>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Issue</th><th>Severity</th><th>What</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="id">#371</td><td><span class="sev high">high</span></td><td>CSV inference destroys zero-padded SAP keys, and every count still reconciles</td></tr>
+          <tr><td class="id">#374</td><td><span class="sev high">high</span></td><td>Identifier canonicalization is XML-only, so JSON field names with spaces fail the write</td></tr>
+          <tr><td class="id">#375</td><td><span class="sev med">medium</span></td><td>CSV defaults mis-parse RFC4180 escaped quotes and split quoted newlines</td></tr>
+          <tr><td class="id">#376</td><td><span class="sev med">medium</span></td><td>A merge write records no row counts at all in the audit trail</td></tr>
+          <tr><td class="id">#372</td><td><span class="sev low">low</span></td><td>Edge-case fixtures write JSON Lines under a <code>.json</code> extension</td></tr>
+          <tr><td class="id">#373</td><td><span class="sev low">low</span></td><td>Drift cases EC-03/04/05 ship without the baseline they require</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Corrections to this record</h2>
+
+    <div class="panel warn">
+      <p class="ttl">#372 was filed wrong, and has been corrected</p>
+      <p>
+        It originally claimed the <code>.json</code> / JSON-Lines mismatch causes row loss under the
+        deployed <code>multiline: "true"</code>, reasoning from the measurement in
+        <code>json_reader.effective_multiline</code>'s docstring. Tested directly, it does not:
+        EC-01 run at <code>multiline=true</code> returned the same 2 bronze and 2 quarantine rows as
+        at <code>multiline=false</code>, all four records accounted for.
+      </p>
+      <p>
+        The docstring records <code>multiLine=true &rarr; 1 row</code> on a 3-record file, measured
+        against a local Spark session. That did not reproduce on Databricks serverless. The override
+        logic is still right; its stated justification does not hold on the platform the code runs
+        on, and re-measuring it is worth doing.
+      </p>
+    </div>
+
+    <h3>Two apparent defects were harness errors</h3>
+    <p>
+      Both are recorded because both cost time. <code>_ingestion_audit</code> stores fully-qualified
+      table names, so a filter on the bare name returns nothing — which reads exactly like a missing
+      audit row. And a merge write is refused unless every merge key is also in
+      <code>required_columns</code>; the first EC-25 merge attempt failed for that reason. The
+      refusal is correct and well argued: <code>NULL = NULL</code> is null in a SQL MERGE, so a null
+      merge key never matches and inserts a duplicate on every run.
+    </p>
+
+    <h3>Archival consumes the source directory</h3>
+    <p>
+      Every ingestion archives its source into <code>processed/</code> inside the source directory,
+      and discovery skips <code>processed/</code> and <code>quarantine_files/</code>. So a second run
+      over the same path finds nothing. This is correct behaviour, and it means any case needing a
+      second pass over one file needs a fresh copy at a new path. Four case steps were re-run that
+      way.
+    </p>
+  </section>
+
+  <section>
+    <h2>Scope and limits</h2>
+    <p>
+      Staging only. No <code>GRANT</code>, <code>REVOKE</code>, <code>DROP</code> or
+      <code>VACUUM</code> was run by an agent. The <code>GRANT SELECT ON SCHEMA</code> from the
+      previous run was still in place, so no new grant was needed.
+    </p>
+    <p><strong>Not covered:</strong></p>
+    <ul>
+      <li>Streaming and Auto Loader.</li>
+      <li>XML, which <code>approved_formats()</code> still refuses pending #336 and #337.</li>
+      <li>Retry under real transient failure.</li>
+      <li>UC tag application, which stays null because the staging job configures no tags.</li>
+      <li><code>ai_metadata_stg</code> and <code>bronze_maintenance_stg</code>, neither of which was run.</li>
+      <li>Scale. 5,012 rows shows correctness, not partitioning or clustering behaviour.</li>
+    </ul>
+    <p>
+      The drift baseline is harness-built rather than shipped by the generator (#373). It reproduces
+      <code>mara_row()</code> exactly: the same eight columns, <code>BRGEW</code> numeric, three rows
+      with distinct <code>MATNR</code>.
+    </p>
+    <p>
+      EC-12's actual question — whether three colliding names are disambiguated rather than
+      last-wins — is still unanswered. The run fails before reaching it.
+    </p>
+  </section>
+
+  <section>
+    <h2>State left behind</h2>
+    <p>
+      36 bronze tables, 3 quarantine tables, <code>_ingestion_audit</code> (47 rows: 41 success, 6
+      failed) and <code>_schema_registry</code> (36 rows, one per bronze table — quarantine tables
+      are deliberately not registered). Every table carries CDF and 30-day retention, which is a
+      storage line item.
+    </p>
+    <p>
+      The 6 failed audit rows are three attempts each for EC-11 and EC-12, which
+      <code>max_retries: 2</code> retried to exhaustion. Three bronze tables belong to EC-20 rather
+      than to one case each: <code>ec20_kna1_bronze</code> from the case itself, plus
+      <code>ec20ctl_kna1_bronze</code> and <code>ec20esc_kna1_bronze</code> from the two control runs
+      that isolated #375.
+    </p>
+    <p>
+      Nothing was dropped. The tables are left in place so the numbers above can be re-queried;
+      cleanup is a separate decision.
+    </p>
+    <p>
+      Source files for successful units are in <code>processed/</code> under their case directories.
+      The two files that failed the write, <code>zcustom.json</code> and <code>zcollide.json</code>,
+      are in <code>quarantine_files/</code> beside them, along with <code>t001w.csv</code> from its
+      expected refusal.
+    </p>
+  </section>
+
+  <p class="foot">
+    Companion record: docs/staging_smoke_test_2026-08_sap_migration.md · Fixtures:
+    generate_sap_migration.py --seed 20260820 · Issue #369
+  </p>
+
+</div>
