@@ -256,11 +256,44 @@ def _ingest_folder_as_table(
     for df in validated_dataframes[1:]:
         merged_df = merged_df.unionByName(df, allowMissingColumns=True)
 
+    # Archival is parallelized: benchmarking showed sequential moves at
+    # ~0.5s/file were the dominant linear cost (9.4x scaling for 10x files,
+    # vs ~4x for read/write). It only runs from inside the hook below, which
+    # `_execute` calls after the write succeeds - Spark has already finished
+    # reading the files by then, so it's safe to move them.
+    folder_archive_results: List[tuple] = []
+
+    def _archive_folder(
+        source_dir=source_dir,
+        validated_file_paths=validated_file_paths,
+        folder_name=folder_name,
+        folder_archive_results=folder_archive_results,
+    ):
+        if not validated_file_paths:
+            return None
+        outcomes = archive_files_parallel(
+            source_dir, validated_file_paths, relative_subpath=folder_name
+        )
+        folder_archive_results.extend(outcomes)
+        statuses = {r.get("move_status") for _, r in outcomes}
+        if statuses == {"moved"}:
+            agg_status = "moved"
+        elif "failed_left_in_place" in statuses:
+            agg_status = "failed_left_in_place"
+        else:
+            agg_status = "quarantined"
+        return {
+            "move_status": agg_status,
+            "move_detail": f"{len(outcomes)} file(s) archived to processed/quarantine_files",
+        }
+
     try:
         cfg = IngestionConfig.from_dict(
             {**shared_config, "source_path": folder_path, "table": table}
         )
-        summary = BronzeIngestion(spark, cfg).run_on_dataframe(merged_df)
+        summary = BronzeIngestion(spark, cfg).run_on_dataframe(
+            merged_df, post_write_hook=_archive_folder
+        )
     except Exception as exc:
         logger.error("Failed to write merged table for folder %s: %s", folder_path, exc)
         if stop_on_error:
@@ -273,18 +306,12 @@ def _ingest_folder_as_table(
             "file_results": file_results,
         }
 
-    # Write succeeded - now safe to archive the validated files, since
-    # Spark has already finished reading them. Archival is parallelized:
-    # benchmarking showed sequential moves at ~0.5s/file were the dominant
-    # linear cost (9.4x scaling for 10x files, vs ~4x for read/write).
     retry_state = RetryState.load(source_dir)
     for file_path in validated_file_paths:
         retry_state.clear(file_path)
     retry_state.flush()
 
-    for file_path, move_result in archive_files_parallel(
-        source_dir, validated_file_paths, relative_subpath=folder_name
-    ):
+    for file_path, move_result in folder_archive_results:
         file_results.append({"file": file_path, "status": "success", **move_result})
 
     return {
@@ -513,11 +540,21 @@ def ingest_directory_to_bronze(
                     cfg = IngestionConfig.from_dict(
                         {**item_config, "source_path": file_path, "table": table}
                     )
-                    summary = BronzeIngestion(spark, cfg).run()
+
+                    def _archive(source_dir=source_dir, file_path=file_path):
+                        # Run while audited_run is still open, so the outcome
+                        # lands on this run's audit row (archive_status/
+                        # archive_detail) instead of being computed after the
+                        # row has already been written and closed.
+                        return archive_ingested_file(source_dir, file_path)
+
+                    summary = BronzeIngestion(spark, cfg).run(post_write_hook=_archive)
 
                     retry_state.clear(file_path)
 
-                    move_result = archive_ingested_file(source_dir, file_path)
+                    move_result: Dict[str, Any] = {
+                        k: summary[k] for k in ("move_status", "move_detail") if k in summary
+                    }
                     results.append(
                         {
                             "file": file_path,

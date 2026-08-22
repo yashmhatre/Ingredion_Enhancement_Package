@@ -5,7 +5,7 @@ This is the single entry point most users need. It wires together:
   readers.read_source -> add audit columns -> bronze_writer.write_bronze
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .audit import audited_run, tag_failure_stage
 from .bronze_writer import (
@@ -71,6 +71,7 @@ class BronzeIngestion:
         stream_batch_id=None,
         record_metadata=True,
         schema_audit=None,
+        post_write_hook: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
     ):
         """
         The single ingestion sequence, shared by all three entry points:
@@ -120,6 +121,17 @@ class BronzeIngestion:
             Stamped before the read, so a batch that fails still carries it -
             a run that drifted and then broke is precisely the one worth
             being able to find.
+
+        post_write_hook: zero-argument callable run AFTER a successful write,
+            still INSIDE the audited_run block - directory ingestion's only
+            use today, to archive the source file(s) while their outcome can
+            still land on this run's audit row (archive_status/
+            archive_detail) instead of being computed after audited_run has
+            already committed and closed, which is why it was never
+            reaching _ingestion_audit before. May return None (nothing to
+            record) or a dict with "move_status"/"move_detail" keys, mirroring
+            archive_ingested_file's own return shape. Never called on failure
+            or by streaming/replay, which don't archive per-run.
         """
         with audited_run(
             self.spark,
@@ -197,6 +209,13 @@ class BronzeIngestion:
                 tag_outcome = apply_catalog_tags(self.spark, self.config)
                 audit.update(summarise_tag_outcome(tag_outcome))
 
+            archive_result = None
+            if post_write_hook is not None:
+                archive_result = post_write_hook()
+                if archive_result:
+                    audit["archive_status"] = archive_result.get("move_status")
+                    audit["archive_detail"] = archive_result.get("move_detail")
+
             logger.info(
                 "Wrote %s row(s) to %s (%d quarantined)",
                 "?" if row_count is None else row_count,
@@ -216,9 +235,14 @@ class BronzeIngestion:
                 else None,
                 "columns": final_df.columns,
                 "write_mode": self.config.write_mode,
+                **(archive_result or {}),
             }
 
-    def run_on_dataframe(self, raw_df) -> Dict[str, Any]:
+    def run_on_dataframe(
+        self,
+        raw_df,
+        post_write_hook: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+    ) -> Dict[str, Any]:
         """
         Same as run(), but skips the read step and uses raw_df directly -
         used by directory ingestion's folder-as-table path, where files
@@ -230,9 +254,12 @@ class BronzeIngestion:
             lambda: raw_df,
             lambda df: write_bronze(self.spark, df, self.config),
             "Starting batch ingestion from pre-loaded DataFrame -> %s",
+            post_write_hook=post_write_hook,
         )
 
-    def run(self) -> Dict[str, Any]:
+    def run(
+        self, post_write_hook: Optional[Callable[[], Optional[Dict[str, Any]]]] = None
+    ) -> Dict[str, Any]:
         """
         Executes the full read -> transform -> quality-gate -> write pipeline
         in batch mode. Returns a summary dict. Raises DataQualityError if
@@ -248,6 +275,7 @@ class BronzeIngestion:
             self.read,
             lambda df: write_bronze(self.spark, df, self.config),
             f"Starting batch ingestion from {self.config.source_path} -> %s",
+            post_write_hook=post_write_hook,
         )
 
     def run_streaming(self, await_termination: bool = True):

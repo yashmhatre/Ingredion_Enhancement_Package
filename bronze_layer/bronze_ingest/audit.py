@@ -93,6 +93,17 @@ AUDIT_SCHEMA = StructType(
         # is "nothing was attempted", distinct from false/"attempted and fine".
         StructField("tags_failed", BooleanType(), nullable=True),
         StructField("tag_outcome_json", StringType(), nullable=True),
+        # Post-write file archival outcome (prod smoke test, 2026-08-21):
+        # archive_ingested_file's return value was only ever attached to the
+        # per-unit job-run result dict, which nothing queries after the run
+        # ends - so a failed archive (falling back to quarantine, or leaving
+        # the file in place) was invisible without re-deriving it from the
+        # volume by hand. Same shape as tags_failed/tag_outcome_json above:
+        # never fails the run, both NULL when nothing was archived (e.g.
+        # streaming, replay), non-NULL only on the batch/directory paths that
+        # actually attempt a move.
+        StructField("archive_status", StringType(), nullable=True),
+        StructField("archive_detail", StringType(), nullable=True),
         StructField("started_at", TimestampType(), nullable=False),
         StructField("finished_at", TimestampType(), nullable=True),
         StructField("error_message", StringType(), nullable=True),
@@ -374,6 +385,8 @@ _CALLER_FIELDS = (
     "schema_drift_json",
     "tags_failed",
     "tag_outcome_json",
+    "archive_status",
+    "archive_detail",
 )
 
 

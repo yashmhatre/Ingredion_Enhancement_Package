@@ -143,6 +143,15 @@ def test_audit_schema_matches_documented_fields():
         # and fine".
         "tags_failed",
         "tag_outcome_json",
+        # Post-write archival outcome (prod smoke test, 2026-08-21). A pair
+        # mirroring tags_failed/tag_outcome_json above: archive_ingested_file
+        # already returned this, but only to the per-unit job-run result,
+        # never to the audit trail - so a broken archive (missing WRITE
+        # VOLUME grant, e.g.) was invisible without re-deriving it from the
+        # volume by hand. Both NULL when nothing was archived (streaming,
+        # replay, a failed write).
+        "archive_status",
+        "archive_detail",
         "started_at",
         "finished_at",
         "error_message",
