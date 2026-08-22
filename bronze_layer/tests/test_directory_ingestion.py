@@ -241,10 +241,15 @@ def _make_failing_config_class(fail_on_filenames):
     failures across multiple calls without needing real bad JSON content
     (which would also need real Spark schema behavior to fail correctly)."""
 
-    def fake_run(self):
+    def fake_run(self, post_write_hook=None):
         if any(name in self.config.source_path for name in fail_on_filenames):
             raise ValueError("simulated ingestion failure")
-        return {"table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0}
+        result = {"table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0}
+        if post_write_hook is not None:
+            archive_result = post_write_hook()
+            if archive_result:
+                result.update(archive_result)
+        return result
 
     return fake_run
 
@@ -346,12 +351,17 @@ def test_folder_as_table_merges_files_into_one_table(spark, json_test_dir, monke
 
     from bronze_ingest.pipeline import BronzeIngestion
 
-    def fake_run_on_dataframe(self, df):
-        return {
+    def fake_run_on_dataframe(self, df, post_write_hook=None):
+        result = {
             "table": self.config.full_table_name,
             "row_count": df.count(),
             "quarantined_row_count": 0,
         }
+        if post_write_hook is not None:
+            archive_result = post_write_hook()
+            if archive_result:
+                result.update(archive_result)
+        return result
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
 
@@ -397,7 +407,7 @@ def test_folder_with_no_json_does_not_mask_a_real_failure(spark, json_test_dir, 
 
     from bronze_ingest.pipeline import BronzeIngestion
 
-    def boom(self, df):
+    def boom(self, df, post_write_hook=None):
         raise RuntimeError("write blew up")
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", boom)
@@ -427,12 +437,17 @@ def test_folder_as_table_one_bad_file_does_not_block_the_rest(spark, json_test_d
 
     monkeypatch.setattr(di, "read_source", flaky_read_source)
 
-    def fake_run_on_dataframe(self, df):
-        return {
+    def fake_run_on_dataframe(self, df, post_write_hook=None):
+        result = {
             "table": self.config.full_table_name,
             "row_count": df.count(),
             "quarantined_row_count": 0,
         }
+        if post_write_hook is not None:
+            archive_result = post_write_hook()
+            if archive_result:
+                result.update(archive_result)
+        return result
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
 
@@ -466,7 +481,7 @@ def test_xml_folder_with_one_malformed_document_writes_and_archives_nothing(
     monkeypatch.setattr(
         BronzeIngestion,
         "run_on_dataframe",
-        lambda self, df: writes.append((self, df)),
+        lambda self, df, post_write_hook=None: writes.append((self, df)),
     )
     monkeypatch.setattr(
         di,
@@ -499,12 +514,17 @@ def test_folder_as_table_archives_files_with_folder_name_preserved(
 
     from bronze_ingest.pipeline import BronzeIngestion
 
-    def fake_run_on_dataframe(self, df):
-        return {
+    def fake_run_on_dataframe(self, df, post_write_hook=None):
+        result = {
             "table": self.config.full_table_name,
             "row_count": df.count(),
             "quarantined_row_count": 0,
         }
+        if post_write_hook is not None:
+            archive_result = post_write_hook()
+            if archive_result:
+                result.update(archive_result)
+        return result
 
     monkeypatch.setattr(BronzeIngestion, "run_on_dataframe", fake_run_on_dataframe)
 
@@ -667,7 +687,7 @@ def test_per_file_config_is_applied_to_the_named_file(spark, json_test_dir, monk
 
     from bronze_ingest.pipeline import BronzeIngestion
 
-    def fake_run(self):
+    def fake_run(self, post_write_hook=None):
         seen[self.config.table] = list(self.config.required_columns)
         return {"table": self.config.full_table_name, "row_count": 1, "quarantined_row_count": 0}
 
@@ -918,7 +938,7 @@ def test_source_format_discovers_and_ingests_only_that_format(spark, json_test_d
 
     monkeypatch.setitem(readers._BATCH_READERS, "csv", fake_csv_reader)
 
-    def fake_run_on_dataframe(self, df):
+    def fake_run_on_dataframe(self, df, post_write_hook=None):
         return {
             "table": self.config.full_table_name,
             "row_count": df.count(),
