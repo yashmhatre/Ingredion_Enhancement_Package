@@ -552,7 +552,7 @@ def ingest_directory_to_bronze(
 
                     retry_state.clear(file_path)
 
-                    move_result = {
+                    move_result: Dict[str, Any] = {
                         k: summary[k] for k in ("move_status", "move_detail") if k in summary
                     }
                     results.append(
