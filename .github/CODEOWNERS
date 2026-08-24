@@ -10,8 +10,7 @@
 #      mistake has actually reached production before.
 #
 # Enable "Require review from Code Owners" in branch protection for `dev` to
-# make these binding rather than advisory. See docs/agent_governance.md for
-# which of these paths escalate to a named sign-off.
+# make these binding rather than advisory.
 
 # Implementation surfaces. Behaviour changes here escalate to the Project
 # Lead rather than being merged on an agent's own authority.
@@ -22,17 +21,16 @@
 /bronze_layer/notebooks/          @yashmhatre
 /bronze_layer/tests/test_notebooks.py  @yashmhatre
 
-# Deploy and provisioning config: Tier 2 territory, drafts only.
+# Deploy and provisioning config: drafts only, never a direct merge.
 /bronze_layer/resources/          @yashmhatre
 /databricks.yml                   @yashmhatre
 /azure_setup.md                   @yashmhatre
 
-# The gates themselves. Weakening one of these is Tier 3.
+# The gates themselves. Weakening one of these needs a named sign-off.
 /.github/workflows/               @yashmhatre
 /scripts/verify.sh                @yashmhatre
 /scripts/check_path_ownership.py  @yashmhatre
 /scripts/hooks/                   @yashmhatre
 
-# Which agent-config version is pinned, and the rules the agents operate under.
+# Which agent-config version is pinned.
 /agents.lock                      @yashmhatre
-/docs/agent_governance.md         @yashmhatre

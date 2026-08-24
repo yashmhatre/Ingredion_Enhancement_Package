@@ -4,30 +4,20 @@ This file is intentionally short. It points to the authority docs instead of rep
 
 ## Read these first
 
-- `AGENTS.md` — project rules, branch flow, and the entry point for any coding agent
-- `docs/agent_governance.md` — approval tiers, escalation paths, and the seven-role roster
+- `AGENTS.md` — project rules, branch flow, approval rules, and the entry point for any coding agent
 - `docs/README.md` — which document owns each subject
 
-## Approval tiers
+## Approval rules
 
-These apply to Copilot exactly as they do to any other agent.
-
-- Tier 0: read, search, explain, run `./scripts/verify.sh`, draft on a branch, open a PR into `dev`
-- Tier 1: merge into `dev`; changes to `IngestionConfig`, notebooks, `resources/*.yml`, CI, or suppressions
-- Tier 2: staging/prod deploys, grants, vacuum, `run_as` changes, and promotion PRs; draft only and stop
-- Tier 3: credentials, IAM/RBAC, hotfixes to `main`, and weakening a gate; never autonomous
-
-If a task could be higher risk than it looks, treat it as higher risk and ask.
+These apply to Copilot exactly as they do to any other agent. See `AGENTS.md`'s
+"Approval and risk rules" for the current list of actions that need Yash's
+sign-off before they run. If a task could be higher risk than it looks, treat
+it as higher risk and ask.
 
 ## Path ownership
 
-| Path | Owner |
-| --- | --- |
-| `bronze_layer/bronze_ingest/` | `builder` |
-| `bronze_layer/notebooks/`, `tests/test_notebooks.py` | `notebook-qa` |
-| `databricks.yml`, `bronze_layer/resources/*.yml` | `platform` |
-
-`scripts/check_path_ownership.py` enforces this in CI and at commit time. It is not advisory.
+`scripts/check_path_ownership.py` enforces path ownership (its `OWNERSHIP`
+table) in CI and at commit time. It is not advisory.
 
 ## Chat modes
 

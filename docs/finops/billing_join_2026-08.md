@@ -33,7 +33,7 @@ account console), not a `GRANT` a workspace user can be given.
 
 **So #258 cannot be completed as written until someone with account-admin
 rights enables `system.billing` and grants `USE SCHEMA` + `SELECT` on it.**
-That is Tier 3 under `docs/agent_governance.md`.
+That is an IAM/account-admin action, never autonomous.
 
 ## What is already ready — the framework half of the join
 

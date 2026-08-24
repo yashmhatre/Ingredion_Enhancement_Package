@@ -5,7 +5,7 @@ directly.
 
 These four agents are the orchestration/planning/read-only layer.
 Implementation always goes through builder, notebook-qa, or platform via a
-filed issue -- see docs/agent_governance.md and AGENTS.md's agent roster.
+filed issue -- see AGENTS.md.
 
 The names below are matched as exact strings. A roster rename that lands
 without updating this set leaves the hook matching nothing and failing open
@@ -103,7 +103,7 @@ def main() -> int:
         f"{relative_path or file_path}. This path belongs to "
         "builder, notebook-qa, or platform. File or "
         "update an issue describing the change instead of editing it "
-        "directly -- see docs/agent_governance.md.\n"
+        "directly.\n"
     )
     return 2
 

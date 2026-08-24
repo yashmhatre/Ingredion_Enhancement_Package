@@ -99,8 +99,8 @@ rejection and quarantine remain `quality.py`'s alone, deterministically,
 exactly as the superseded paragraph says. Also on that NEVER list, and so
 outside this exception entirely: `_ingestion_audit` and `_schema_registry`
 (both **Fact**, below), business column values in a bronze row, any delete
-against any table, any Tier 2 or Tier 3 action under
-`docs/agent_governance.md`, any config field that redirects where data is
+against any table, any deploy, grant, or destructive action requiring
+a named sign-off, any config field that redirects where data is
 read from or written to, the safety mechanisms themselves, and anything
 outside the bronze layer.
 

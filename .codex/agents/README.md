@@ -13,6 +13,5 @@ export AGENT_CONFIG_TOKEN=<read-only token for ingredion-agent-config>
 ./scripts/bootstrap_agents.sh
 ```
 
-The generated TOML files are proprietary and gitignored. `AGENTS.md` and
-`docs/agent_governance.md` remain the public sources of truth for ownership
-and approval tiers.
+The generated TOML files are proprietary and gitignored. `AGENTS.md` remains
+the public source of truth for ownership and approval rules.

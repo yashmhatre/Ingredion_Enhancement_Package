@@ -18,8 +18,8 @@ The rule is simple: the code wins. If two documents disagree, the owner below wi
 | contribution rules and branch flow | `CONTRIBUTING.md` | keeps the repo workflow consistent |
 | release notes and deployment warnings | `CHANGELOG.md` | migration steps matter more than the summary |
 | performance numbers | `bronze_layer/docs/testing_directory_ingestion.md` | the benchmark owner |
-| AI agent authority and approval rules | `docs/agent_governance.md` | this is the policy document |
 | why agent prompt content is not committed here | `docs/private_agent_architecture.md` | explains the private repo + pinned fetch model |
+| how to build an agent team | `docs/building_an_agent_team.md` | a hands-on guide, not a policy document |
 | non-technical overview | `docs/overview.md` | plain-language companion to the technical docs |
 | business intake and reconciliation | `docs/business_requirements.md` | owned by `architect` |
 | skill config for this repo | `docs/agents/` | `issue-tracker.md`, `triage-labels.md`, and `domain.md` |

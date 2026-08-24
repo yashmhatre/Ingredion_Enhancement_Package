@@ -40,5 +40,5 @@ state. Do not close these, and do not move them to `wontfix` — the verificatio
 ## Readiness is not authorisation
 
 `ready-for-agent` means the issue is specified well enough for an agent to pick up. It does
-**not** grant the agent permission to merge, deploy, or promote. The approval tiers in
-`docs/agent_governance.md` apply regardless of what a triage label says.
+**not** grant the agent permission to merge, deploy, or promote. `AGENTS.md`'s approval
+rules apply regardless of what a triage label says.

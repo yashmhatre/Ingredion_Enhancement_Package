@@ -12,8 +12,8 @@
 # ---------------------------------------------------------------------------
 # SCHEDULE IS PAUSED, DELIBERATELY.
 #
-# Deploying and unpausing this is a Tier 2 action under docs/agent_governance.md
-# and needs the Project Lead's sign-off. It is drafted here so the decision has
+# Deploying and unpausing this needs the Project Lead's sign-off before it runs.
+# It is drafted here so the decision has
 # something concrete to approve, not so it starts running.
 #
 # Two things to settle before unpausing:
