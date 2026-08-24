@@ -49,7 +49,7 @@ Each BR file should carry the same structure:
   - `docs/roadmap.md` for sequencing
   - `docs/buy_vs_build_2026-08.md` for build-vs-buy decisions
   - `docs/bronze_silver_contract.md` for Bronze/Silver contract boundaries
-  - `docs/agent_governance.md` for approval and ownership rules
+  - `AGENTS.md` for approval and ownership rules
 
 ---
 

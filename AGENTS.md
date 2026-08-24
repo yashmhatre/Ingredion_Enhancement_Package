@@ -23,27 +23,13 @@ If a task assumes Silver or Gold behavior, stop and validate it against `docs/ro
 - Add or update tests for behavior changes.
 - Verify the source of truth before proceeding.
 
-## Agent roster and ownership
-
-This repo uses a function-based model, not a reporting hierarchy.
-
-- `orchestrator`: routes work and merges Tier 1 changes into `dev` once CI is green.
-- `architect`: owns intake and `docs/business_requirements.md`.
-- `reviewer`: performs adversarial review on escalation paths.
-- `builder`: owns `bronze_layer/bronze_ingest/`.
-- `notebook-qa`: owns `bronze_layer/notebooks/` and `tests/test_notebooks.py`.
-- `platform`: owns `databricks.yml` and `bronze_layer/resources/*.yml` in draft form only.
-- `scout`: produces briefs only; it is never evidence.
-
-Yash signs off on staging/prod deploys, credentials, GRANT/REVOKE/DROP/VACUUM actions, and promotion PRs. He does not implement in the normal path.
-
 ## Approval and risk rules
 
 - Deployments to staging or prod require explicit human approval.
 - `GRANT`, `REVOKE`, `DROP`, and `VACUUM` are controlled actions, not routine edits.
 - Credential handling and promotion PRs require named sign-off.
 - Do not edit `databricks.yml` or Azure deployment config without reading `azure_setup.md` and the deployment section in `bronze_layer/README.md` first.
-- Follow `docs/agent_governance.md` for the approval tiers and escalation boundaries.
+- Yash signs off on staging/prod deploys, credentials, GRANT/REVOKE/DROP/VACUUM actions, and promotion PRs. He does not implement in the normal path.
 
 ## Repo rules
 
@@ -77,7 +63,7 @@ Use these before making decisions:
 
 - `docs/README.md` for ownership and the doc map
 - `docs/roadmap.md` for sequencing and priorities
-- `docs/agent_governance.md` for approval rules and escalation rules
+- `docs/building_an_agent_team.md` for how the agent roster gets built and scoped
 - `CONTRIBUTING.md` for dev setup and repo-specific expectations
 - `azure_setup.md` before changing cloud or deployment assumptions
 

@@ -22,8 +22,8 @@ Two rules, both deterministic:
 
 2. **One commit must not touch two different guarded surfaces.** A change
    spanning `bronze_ingest/` and `notebooks/` is two roles' work and gets
-   reviewed as two changes -- see docs/agent_governance.md, and #320/#321 for
-   why a bundle parameter and its widget ship sequenced rather than together.
+   reviewed as two changes -- see #320/#321 for why a bundle parameter and
+   its widget ship sequenced rather than together.
 
 Neither rule is about a promotion. Both ask "who authored this, and did the
 right role review it?" -- a question already answered, per role, when the work
@@ -159,7 +159,7 @@ def main() -> int:
                 f"    {role:12} <- {', '.join(paths)}" for role, paths in sorted(guarded.items())
             )
             + "\n  These are different roles' work and get reviewed separately.\n"
-              "  Split them into sequenced changes (see docs/agent_governance.md)."
+              "  Split them into sequenced changes."
         )
 
     owning_role = next(iter(guarded)) if len(guarded) == 1 else None
@@ -192,7 +192,7 @@ def main() -> int:
         print("path-ownership: FAILED\n", file=sys.stderr)
         for p in problems:
             print(f"  - {p}\n", file=sys.stderr)
-        print("  See docs/agent_governance.md for who owns what.", file=sys.stderr)
+        print("  See OWNERSHIP in this script for who owns what.", file=sys.stderr)
         return 1
 
     print(f"path-ownership: ok - {', '.join(sorted(guarded))} "

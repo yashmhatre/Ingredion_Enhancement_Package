@@ -37,8 +37,7 @@ CODEX_PREAMBLE = """Codex rendering note:
 You are running this repository role as a Codex custom subagent. Ignore any
 substrate-specific directions below about switching between Claude, Copilot,
 or Ollama models. Preserve the role's ownership boundaries, governance rules,
-handoff requirements, and completion criteria. Read AGENTS.md and
-docs/agent_governance.md before acting.
+handoff requirements, and completion criteria. Read AGENTS.md before acting.
 """
 
 

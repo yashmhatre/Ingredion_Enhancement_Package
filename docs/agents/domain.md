@@ -43,8 +43,8 @@ Match the existing convention.
 ## Writing decision records — draft only
 
 **`docs/decisions/` is not an ordinary ADR directory.** Per `docs/README.md`, a record there
-is *binding once signed off*, and per `docs/agent_governance.md` it carries a **named Project
-Lead sign-off under Tier 2**. A decision stays in force until a later record supersedes it,
+is *binding once signed off* and carries a **named Project Lead sign-off**. A decision
+stays in force until a later record supersedes it,
 and it is amended by writing the amendment into it — never by rewriting the reasoning.
 
 So when a skill produces a decision record:

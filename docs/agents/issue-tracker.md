@@ -63,12 +63,12 @@ Run `gh issue view <number> --comments`.
 
 ## Governance boundary
 
-Writing to the tracker is a Tier 1 action — agents may open, label, comment on,
-and close issues without a human sign-off. **Merging and promotion are not.**
-The branch is the boundary: everything into `dev` is the agent team's call,
-`dev` → `staging` and `staging` → `main` are the Project Lead's. A skill that
+Agents may open, label, comment on, and close issues without a human
+sign-off. **Merging and promotion are not the same thing.** The branch is
+the boundary: everything into `dev` is an agent's own call, `dev` →
+`staging` and `staging` → `main` are the Project Lead's. A skill that
 produces tickets or a spec stops at the ticket; it does not merge, deploy, or
-open a promotion PR. See `docs/agent_governance.md`.
+open a promotion PR. See `AGENTS.md`.
 
 Where docs disagree, `docs/README.md`'s ownership table decides. If that is
 still ambiguous, **open GitHub issues are the tiebreak** — which is the other

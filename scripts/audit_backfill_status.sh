@@ -4,8 +4,8 @@
 #
 # READ-ONLY. This script issues SELECTs against information_schema and COUNT(*)
 # against `_ingestion_audit`. It writes nothing, in any environment. That is
-# deliberate: the audit is Tier 0 under docs/agent_governance.md and needs no
-# sign-off, while the UPDATE it informs is Tier 2/3 and does. Keep them separate
+# deliberate: the audit needs no sign-off, while the UPDATE it informs is a
+# destructive change and does. Keep them separate
 # — do not add the UPDATE to this script.
 #
 # Why an audit before the backfill at all: docs/roadmap.md Phase 0 records that

@@ -97,8 +97,7 @@ still under review; nothing there has been built or committed to yet.
 ## Who owns what
 
 Yash is the Project Lead and final reviewer on this project — every
-significant Tier 2 or Tier 3 decision goes through that review, whether the
-work was drafted by a person or by one of the project's AI coding assistants.
-The `orchestrator` routes work and merges routine Tier 1 changes into `dev`
-after CI and required reviewer gates pass; see `docs/agent_governance.md` for
-the exact boundary.
+significant deploy, credential, or destructive-action decision goes through
+that review, whether the work was drafted by a person or by one of the
+project's AI coding assistants. Routine changes into `dev` can merge once CI
+and required reviewer gates pass; see `AGENTS.md` for the exact boundary.
