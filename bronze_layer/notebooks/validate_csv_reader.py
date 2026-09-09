@@ -31,6 +31,13 @@ dbutils.fs.put(f"{SCRATCH}/header.csv", "id,name,amount\n1,Ana,10.5\n2,Bob,20.0\
 dbutils.fs.put(f"{SCRATCH}/headerless.csv", "1,Ana\n2,Bob\n", True)
 dbutils.fs.put(f"{SCRATCH}/illegal_header.csv", "order id,total(amount)\n1,10.5\n", True)
 dbutils.fs.put(f"{SCRATCH}/malformed.csv", "id,amount\n1,10.5\n2,not-a-number\n", True)
+dbutils.fs.put(
+    f"{SCRATCH}/rfc4180.csv",
+    '"KUNNR","NAME1"\n'
+    '"0000100001","He said ""premium grade"""\n'
+    '"0000100002","Line one\nLine two"\n',
+    True,
+)
 
 results: list[tuple[str, str, str]] = []
 
@@ -87,10 +94,28 @@ def malformed_value_is_preserved():
     assert bad["_corrupt_record"] is not None or bad["_rescued_data"] is not None
 
 
+def rfc4180_quotes_are_unescaped():
+    """#375: escape defaults to the doubled quote, not Spark's backslash."""
+    df = read_source(spark, config("rfc4180.csv", csv_multiline=True))
+    names = {r["KUNNR"]: r["NAME1"] for r in df.collect()}
+    assert names["0000100001"] == 'He said "premium grade"', names
+
+
+def csv_multiline_keeps_a_quoted_newline_in_one_row():
+    """#375: left off (the default) this file reads as 3 rows, the third
+    one values shifted under the wrong column names."""
+    df = read_source(spark, config("rfc4180.csv", csv_multiline=True))
+    assert df.count() == 2
+    row = df.filter("KUNNR = '0000100002'").first()
+    assert row["NAME1"] == "Line one\nLine two", row["NAME1"]
+
+
 check("header_and_metadata_file_path", header_and_lineage)
 check("headerless_with_explicit_schema", headerless)
 check("illegal_header_characters", illegal_headers_are_visible)
 check("malformed_value_rescue", malformed_value_is_preserved)
+check("rfc4180_escaped_quotes", rfc4180_quotes_are_unescaped)
+check("csv_multiline_quoted_newline", csv_multiline_keeps_a_quoted_newline_in_one_row)
 
 display(spark.createDataFrame(results, "case STRING, status STRING, detail STRING"))
 failed = [row for row in results if row[1] != "PASS"]
