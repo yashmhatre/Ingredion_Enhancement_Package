@@ -1,4 +1,4 @@
-# Ingredion Enhancement Package
+# Lakehouse Ingestion Framework
 
 This repo is a Databricks + Unity Catalog ELT package focused on a production-ready bronze layer.
 
@@ -70,8 +70,8 @@ AI does not drive ingestion decisions. It remains outside the write path.
 ## Getting started
 
 ```bash
-git clone https://github.com/yashmhatre/Ingredion_Enhancement_Package.git
-cd Ingredion_Enhancement_Package/bronze_layer
+git clone https://github.com/yashmhatre/lakehouse-ingestion-framework.git
+cd lakehouse-ingestion-framework/bronze_layer
 pip install -e ".[dev]"
 pytest
 ```
